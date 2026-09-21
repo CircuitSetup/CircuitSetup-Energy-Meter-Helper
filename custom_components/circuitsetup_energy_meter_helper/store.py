@@ -36,6 +36,7 @@ from .meter_configuration import (
     VoltageLayout,
     VoltageReferenceConfig,
     _source_id,
+    _text,
     _total_outputs,
     validate_meter_configuration,
 )
@@ -613,6 +614,8 @@ class StoredMeterConfiguration:
         for setting in self.automatic_totals:
             _source_id(setting.candidate_id, "automatic candidate_id")
             _total_outputs(setting.outputs, "automatic total output")
+            if setting.name is not None:
+                _text(setting.name, "automatic total name")
             if type(setting.enabled) is not bool or setting.candidate_id in candidate_ids:
                 raise ValueError("automatic totals must have unique IDs and boolean enabled")
             candidate_ids.add(setting.candidate_id)
@@ -898,6 +901,7 @@ def _serialize_meter_configuration(
                 "candidate_id": total.candidate_id,
                 "enabled": total.enabled,
                 "outputs": _serialize_outputs(total.outputs),
+                **({"name": total.name} if total.name is not None else {}),
             }
             for total in configuration.automatic_totals
         ],
@@ -1251,10 +1255,11 @@ def _deserialize_v15_meter_configuration(
         raise TypeError("stored meter configuration totals are invalid")
     automatic = tuple(
         AutomaticTotalSettings(
-            _exact_mapping(item, {"candidate_id", "enabled", "outputs"}, "automatic total")["candidate_id"],
-            _exact_mapping(item, {"candidate_id", "enabled", "outputs"}, "automatic total")["enabled"],
-            _outputs(_exact_mapping(item, {"candidate_id", "enabled", "outputs"}, "automatic total")["outputs"], "automatic outputs"),
-        ) for item in data["automatic_totals"]
+            item["candidate_id"], item["enabled"], _outputs(item["outputs"], "automatic outputs"),
+            item.get("name"),
+        )
+        for raw in data["automatic_totals"]
+        for item in (_exact_mapping(raw, {"candidate_id", "enabled", "outputs", *( {"name"} if isinstance(raw, dict) and "name" in raw else set())}, "automatic total"),)
     )
     aggregates: list[CircuitAggregate] = []
     for raw_aggregate in data["aggregates"]:

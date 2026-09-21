@@ -209,7 +209,13 @@ def test_offset_preview_rejects_ordinary_metadata_authority_before_work(
         try:
             record = await recovery.async_load(lease)
             if purpose == "offset_preparation":
-                plan = recovery.build_preparation_plan(record, source, 1, binding.targets)
+                plan = config_mutator.build_offset_table_mutation(
+                    source,
+                    _topology(),
+                    {instance: ZERO for instance in binding.targets},
+                    {},
+                    enable_calibration=frozenset(binding.targets),
+                )
             else:
                 plan = recovery.build_finalization_plan(record, source)
                 binding = await recovery.async_review_finalization(
@@ -454,7 +460,8 @@ def test_mixed_gain_final_plan_uses_real_reservation_without_claiming_flash_clea
             await workflow.async_restart_and_verify(handle.session_id)
         assert len(record.results) == 3
 
-        async def snapshots(targets, *, offset_stage):
+        async def snapshots(targets, *, offset_stage, **kwargs):
+            del kwargs
             return {
                 instance: replace(
                     observed(instance, api.connection_generation),
@@ -753,9 +760,9 @@ def test_final_selection_and_explicit_new_cycle_archive_preserve_truth(tmp_path)
             assert not current.results and current.preparation is None
             assert current.original.content == builder.remote_content
             assert len(current.observations) == 4
-            assert {item.snapshot.reported_state for item in current.observations} == {
-                "configuration"
-            }
+            assert {
+                item.snapshot.reported_state for item in current.observations
+            } == {"configuration"}
             assert await recovery.async_load_archive(lease) == selected
             assert not recovery.is_action_ready(current)
         finally:
@@ -765,8 +772,11 @@ def test_final_selection_and_explicit_new_cycle_archive_preserve_truth(tmp_path)
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(
+    "selection_failure", (None, "missing", "generation", "disconnected")
+)
 def test_workflow_final_review_install_selection_reload_and_explicit_next_cycle(
-    tmp_path,
+    tmp_path, selection_failure
 ):
     from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
         ConfigTransactionManager,
@@ -818,6 +828,9 @@ def test_workflow_final_review_install_selection_reload_and_explicit_next_cycle(
         )
 
         async def install(review):
+            if review["transaction"] is None:
+                assert review["mode"] == "native"
+                return
             transaction_id = review["transaction"].transaction_id
             await workflow.transactions.async_confirm_write(transaction_id, "admin")
             await workflow.transactions.async_compile(transaction_id)
@@ -901,16 +914,74 @@ def test_workflow_final_review_install_selection_reload_and_explicit_next_cycle(
         assert handle.stock_offset_pending
         stock.snapshot_unknown = True
         stock.snapshot_overrides.clear()
+        if selection_failure is not None:
+            from custom_components.circuitsetup_energy_meter_helper.esphome_api import (
+                ESPHomeSessionDisconnectedError,
+            )
+            from custom_components.circuitsetup_energy_meter_helper.workflow import (
+                WorkflowCapabilityUnavailable,
+            )
+
+            lease = await sessions.async_acquire_calibration(MAC)
+            try:
+                before_record = await workflow._offset_recovery.async_load(lease)
+                assert before_record is not None
+                recovery_path = workflow._offset_recovery._path(lease)
+                before_bytes = recovery_path.read_bytes()
+            finally:
+                lease.release()
+            before_transactions = tuple(
+                (item.transaction_id, item.state, item.closed)
+                for item in sessions._transactions()
+            )
+            before_writes = tuple(
+                call for call in builder.calls if call in {"write", "compile", "upload"}
+            )
+            before_events = list(stock.events)
+            selection_requests: list[tuple[str, ...]] = []
+
+            async def blocked_selection(targets, **kwargs):
+                del kwargs
+                selection_requests.append(tuple(sorted(targets)))
+                if selection_failure == "missing":
+                    return {}
+                if selection_failure == "generation":
+                    return {
+                        instance: stock.connection_generation + 1
+                        for instance in targets
+                    }
+                raise ESPHomeSessionDisconnectedError("selection disconnected")
+
+            stock.async_offset_configuration_selection = blocked_selection
+            with pytest.raises(WorkflowCapabilityUnavailable):
+                await workflow.async_preview_offset_preparation(
+                    handle.session_id, 0, 1, backup_acknowledged=True
+                )
+            assert selection_requests == [("meter_main1", "meter_main2")]
+            lease = await sessions.async_acquire_calibration(MAC)
+            try:
+                after_record = await workflow._offset_recovery.async_load(lease)
+                assert after_record == before_record
+                assert recovery_path.read_bytes() == before_bytes
+                assert after_record.revision == before_record.revision
+            finally:
+                lease.release()
+            assert tuple(
+                (item.transaction_id, item.state, item.closed)
+                for item in sessions._transactions()
+            ) == before_transactions
+            assert tuple(
+                call for call in builder.calls if call in {"write", "compile", "upload"}
+            ) == before_writes
+            assert stock.events == before_events
+            await native.async_shutdown()
+            return
         next_review = await workflow.async_preview_offset_preparation(
             handle.session_id, 0, 1, backup_acknowledged=True
         )
         assert next_review["targets"] == ("meter_main1", "meter_main2")
-        assert (
-            "enable_offset_calibration: true"
-            in sessions._get_transaction(
-                next_review["transaction"].transaction_id
-            ).plan.proposed_content
-        )
+        assert next_review["mode"] == "native"
+        assert next_review["transaction"] is None
         assert stock.events == before
         await native.async_shutdown()
 

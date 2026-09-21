@@ -43,7 +43,8 @@ it("shows affected SPI pins and hardware troubleshooting without allowing Contin
   expect(warning?.textContent).toContain("update the configuration to match");
   expect(warning?.textContent).toContain("stays with the same add-on");
   expect(host.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(true);
-  [...host.querySelectorAll("button")].find((button) => button.textContent === "Retry Install")?.click();
+  expect(warning?.textContent).toContain("without another upload");
+  [...host.querySelectorAll("button")].find((button) => button.textContent === "Retry verification")?.click();
   expect(retry).toHaveBeenCalledOnce();
 
   render(buildInstallStep("install_configuration", { ...status, state: "verified", evidence: [], communication_failed_cs_pins: [] },
@@ -51,6 +52,7 @@ it("shows affected SPI pins and hardware troubleshooting without allowing Contin
   expect(host.querySelector(".recovery-panel")).toBeNull();
   expect(host.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(false);
 });
+
 
 it("renders purpose-specific configuration installation controls", () => {
   const host = document.createElement("div");
@@ -62,8 +64,8 @@ it("renders purpose-specific configuration installation controls", () => {
   expect(host.textContent).toContain("Save and validate configuration");
   expect(host.textContent).toContain("Build firmware");
   expect(host.textContent).toContain("Install on meter");
-  expect(host.querySelector("details pre")?.getAttribute("aria-label")).toBe("Redacted substitution diff");
-  expect(host.querySelector("details")?.textContent).toContain("source_checked");
+  expect(host.querySelector("details pre")?.getAttribute("aria-label")).toBe("Configuration file diff");
+  expect(host.querySelector("details")?.textContent).not.toContain("source_checked");
 
   render(buildInstallStep("save_calibration", status, noop, noop, noop, noop, noop, noop), host);
   expect(host.textContent).toContain("Save verified calibration");
@@ -140,7 +142,7 @@ it.each(["entity_mismatch", "reconnect_unavailable"] as const)("shows only the l
   expect(host.textContent).toContain("Build or install needs attention");
   expect(host.querySelectorAll(".upload-progress li")).toHaveLength(0);
   expect(host.querySelector<HTMLProgressElement>("progress")?.value).toBe(100);
-  expect([...host.querySelectorAll("button")].find((button) => button.textContent === "Retry Install")?.disabled).toBe(false);
+  expect([...host.querySelectorAll("button")].find((button) => button.textContent === "Retry verification")?.disabled).toBe(false);
   expect([...host.querySelectorAll("button")].some((button) => button.textContent === "Rollback")).toBe(true);
 });
 
@@ -215,7 +217,7 @@ describe("explicit totals adoption and migration transactions", () => {
       managed_advanced_totals: false, reason_codes: ["totals_adoption_required"] });
     const calls: Record<string, unknown>[] = [];
     const responses: Record<string, unknown> = { setup_status: { state: "device_discovered", devices: [device] },
-      preview_meter_configuration: reviewed(), cancel_session: { ...session, state: "cancelled" }, get_meter_configuration: meter,
+      preview_meter_configuration: reviewed(), cancel_session: { ...session, state: "cancelled" }, close_session: { session_id: "session", closed: true }, get_meter_configuration: meter,
       preview_total_graph: { plan_id: meter.plan_id, source_sha256: meter.source_sha256, configuration_impact: meter.configuration_impact,
         automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [], graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } }, ...overrides };
     const hass = makeHass(responses); const call = hass.callWS;
@@ -323,8 +325,7 @@ describe("explicit totals adoption and migration transactions", () => {
     expect(extra.restartResult).toEqual(restart);
     expect(calls.some((message) => /preview_meter_configuration|apply_ct_config|cancel_session/.test(String(message.type)))).toBe(false);
     panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="finish"]')?.click();
-    await panel.updateComplete;
-    expect(state.selectedDeviceId).toBeNull();
+    await vi.waitFor(() => expect(state.selectedDeviceId).toBeNull());
     confirm.mockRestore();
   });
 
@@ -347,6 +348,16 @@ describe("explicit totals adoption and migration transactions", () => {
     expect(calls.some((message) => String(message.type).endsWith("preview_meter_configuration"))).toBe(true);
     expect(state.meterConfiguration.configuration.totals_change_intent.legacy_parent_decisions).toHaveLength(1);
     expect(calls.some((message) => String(message.type).endsWith("complete_calibration_without_changes"))).toBe(false);
+  });
+
+  it("cancels and clears a no-change finish without closing the session twice", async () => {
+    const { panel, state, calls } = await prepare({}, false);
+    state.session = session;
+    await state.finishWithoutCalibration();
+    expect(calls.filter((message) => String(message.type).endsWith("cancel_session"))).toHaveLength(1);
+    expect(calls.some((message) => String(message.type).endsWith("close_session"))).toBe(false);
+    expect(state.selectedDeviceId).toBeNull();
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
   });
 
   it.each(["adoption", "keep independent"])("retains metadata-only %s after a failed install and clears it only on verified retry", async (choice) => {
@@ -522,7 +533,7 @@ const contrastRatio = (first: string, second: string): number => {
   return (Math.max(...values) + 0.05) / (Math.min(...values) + 0.05);
 };
 
-it("offers install retry after reconnect verification is exhausted", () => {
+it("offers verification retry after reconnect verification is exhausted", () => {
   const root = document.createElement("div");
   const status = { purpose: "install_configuration", transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64),
     changes: [], redacted_diff: "", rollback_available: true, evidence: ["reconnect_unavailable"], progress: ["firmware_compiled", "ota_uploaded"],
@@ -532,7 +543,7 @@ it("offers install retry after reconnect verification is exhausted", () => {
   render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop), root);
 
   expect(root.textContent).toContain("Build or install needs attention");
-  expect([...root.querySelectorAll("button")].find((button) => button.textContent === "Retry Install")?.disabled).toBe(false);
+  expect([...root.querySelectorAll("button")].find((button) => button.textContent === "Retry verification")?.disabled).toBe(false);
   expect([...root.querySelectorAll("button")].some((button) => button.textContent === "Rollback")).toBe(true);
 });
 
@@ -619,7 +630,7 @@ describe("server-authoritative total graph", () => {
       graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } });
     await tick(); await panel.updateComplete;
     expect(state.totalGraphState).toBe("ready");
-    expect(text(panel).includes("43 public entities")).toBe(true);
+    expect(text(panel).includes("43 Helper-managed measurements")).toBe(true);
     expect(panel.shadowRoot!.querySelector<HTMLButtonElement>('[data-action="continue"]')!.disabled).toBe(false);
     await state.continueFromCt();
     expect(writes).toHaveLength(1);
@@ -668,7 +679,7 @@ describe("server-authoritative total graph", () => {
     await state.backFromBuild(); await panel.updateComplete;
     expect(pending).toHaveLength(packageTouched ? 2 : 1);
     expect(state.totalGraphState).toBe("pending");
-    expect(text(panel).includes("41 public entities")).toBe(false);
+    expect(text(panel).includes("41 Helper-managed measurements")).toBe(false);
     expect(pending.at(-1)!.request.channels[0]!.role).toBe("solar");
     const preview = { plan_id: fresh.plan_id, source_sha256: fresh.source_sha256,
       automatic_candidates: [candidate], automatic_totals: [{ candidate, enabled: true, outputs: candidate.recommended_outputs }],
@@ -678,12 +689,12 @@ describe("server-authoritative total graph", () => {
     pending.at(-1)!.resolve(preview); await tick(); await panel.updateComplete;
     expect(state.totalGraphState).toBe("ready");
     expect(state.meterConfiguration.configuration.channels[0]!.role).toBe("solar");
-    expect(text(panel).includes("43 public entities")).toBe(true);
+    expect(text(panel).includes("43 Helper-managed measurements")).toBe(true);
     expect(text(panel).includes("Restored solar")).toBe(true);
     if (packageTouched) {
       pending[0]!.resolve({ ...preview, automatic_candidates: [], automatic_totals: [], configuration_impact: fresh.configuration_impact });
       await tick(); await panel.updateComplete;
-      expect(text(panel).includes("43 public entities")).toBe(true);
+      expect(text(panel).includes("43 Helper-managed measurements")).toBe(true);
       expect(text(panel).includes("Restored solar")).toBe(true);
     }
   });
@@ -733,7 +744,7 @@ describe("server-authoritative total graph", () => {
     state.journeyOrigin = "new_install";
     state.setMeterConfiguration(response);
     panel.showInventory(response); await panel.updateComplete;
-    expect(text(panel)).toContain(`${numeric} public entities`);
+    expect(text(panel)).toContain(`${numeric} Helper-managed measurements`);
     expect(text(panel)).toContain(`${totals} public total entities`);
     expect(text(panel)).toContain(`${internal} internal total sensors`);
     expect(state.meterConfiguration.configuration.aggregates).toEqual([]);
@@ -748,7 +759,7 @@ describe("server-authoritative total graph", () => {
     state.journeyOrigin = "new_install"; state.packageOptionsTouched = true;
     state.packageOptions = { power_quality: [false], status_fields: [false] };
     state.setMeterConfiguration(response); panel.showInventory(response); await panel.updateComplete;
-    expect(text(panel).includes("41 public entities")).toBe(false);
+    expect(text(panel).includes("41 Helper-managed measurements")).toBe(false);
   });
 
   it("labels unresolved native visibility as confirmed incomplete counts", async () => {
@@ -756,7 +767,7 @@ describe("server-authoritative total graph", () => {
     const response = meterResponse(); response.totals.migration.native_visibility_resolved = false;
     const state = panel as unknown as { setMeterConfiguration(value: typeof response): void };
     state.setMeterConfiguration(response); panel.showInventory(response); await panel.updateComplete;
-    expect(text(panel)).toContain("confirmed public entities");
+    expect(text(panel)).toContain("confirmed Helper-managed measurements");
     expect(text(panel)).toContain("incomplete");
   });
 
@@ -785,7 +796,7 @@ describe("server-authoritative total graph", () => {
       channels: state.meterConfiguration.configuration.channels.map((channel) => ({ ...channel, name, role: channel.channel <= 2 ? name === "reappear" ? "grid" : "branch" : channel.role })) });
     edit("older"); edit("newer"); await panel.updateComplete;
     expect(text(panel)).toContain("Updating total graph");
-    expect(text(panel)).not.toContain("43 public entities");
+    expect(text(panel)).not.toContain("43 Helper-managed measurements");
     expect(text(panel).includes("Server mains")).toBe(false);
     expect(panel.shadowRoot!.querySelectorAll(".default-total-card")).toHaveLength(1);
     expect(pending).toHaveLength(2);
@@ -795,7 +806,7 @@ describe("server-authoritative total graph", () => {
       graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } };
     state.updateCircuitConfiguration({ ...state.meterConfiguration.configuration });
     pending[1]!.resolve(preview); await tick(); await panel.updateComplete;
-    expect(text(panel)).toContain("43 public entities");
+    expect(text(panel)).toContain("43 Helper-managed measurements");
     expect(state.meterConfiguration.configuration.automatic_totals).toEqual([]);
     pending[0]!.resolve({ ...preview, automatic_candidates: [candidate], automatic_totals: [{ candidate, enabled: true, outputs: off.outputs }],
       configuration_impact: response.configuration_impact }); await tick();
@@ -807,7 +818,7 @@ describe("server-authoritative total graph", () => {
     expect(state.meterConfiguration.configuration.automatic_totals).toEqual([off]);
     edit("invalid"); pending[3]!.reject(new Error("invalid graph")); await tick(); await panel.updateComplete;
     expect(text(panel)).toContain("Total graph unavailable");
-    expect(text(panel)).not.toContain("43 public entities");
+    expect(text(panel)).not.toContain("43 Helper-managed measurements");
     expect(panel.shadowRoot!.querySelectorAll(".default-total-card")).toHaveLength(1);
     expect(state.totalGraphPreview).toBeNull();
     edit("old device"); state.selectedDeviceId = "other-meter";
@@ -892,6 +903,28 @@ describe("meter configuration review and summary", () => {
     expect(state.step).toBe("ct");
   });
 
+  it.each(["preview_meter_configuration", "preview_total_graph"])("explains %s generated total ID conflicts without exposing server details", async (operation) => {
+    const response = meterResponse();
+    const hass = makeHass({ setup_status: { state: "no_device", devices: [] } });
+    const call = hass.callWS.bind(hass);
+    hass.callWS = <T>(message: Record<string, unknown>): Promise<T> => String(message.type).endsWith(`/${operation}`)
+      ? Promise.reject({ code: "generated_total_id_conflict", message: "private-generated-id-canary" }) : call<T>(message);
+    const panel = await mount(hass);
+    const state = panel as unknown as { selectedDeviceId: string; setMeterConfiguration(value: typeof response): void;
+      previewCanonicalConfiguration(): Promise<void>; refreshTotalGraph(configuration: MeterConfigurationRequest): Promise<void>;
+      meterConfiguration: typeof response; step: string };
+    state.selectedDeviceId = "meter-1";
+    state.setMeterConfiguration(response);
+    panel.showInventory(response);
+    if (operation === "preview_meter_configuration") await state.previewCanonicalConfiguration();
+    else await state.refreshTotalGraph(state.meterConfiguration.configuration);
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector('[role="alert"]')?.textContent).toContain("Rename one of the totals");
+    expect(text(panel)).not.toContain("Device Builder");
+    expect(text(panel)).not.toContain("private-generated-id-canary");
+    expect(state.step).toBe("ct");
+  });
+
   it.each([
     ["helper YAML", { configurationMode: "helper_managed", legacyChoice: null, completedWithoutChanges: false, restart: { source_authority: "configuration" }, verifiedConfiguration: true }, "Configuration and calibration are installed in ESPHome.", []],
     ["helper unchanged", { configurationMode: "helper_managed", legacyChoice: null, completedWithoutChanges: true, configurationInstalled: false, restart: null, verifiedConfiguration: true }, "Existing calibration was kept unchanged.", []],
@@ -952,16 +985,24 @@ describe("meter configuration review and summary", () => {
   it("reviews physical, semantic, package, and entity details without threshold controls", () => {
     const meter = meterResponse() as unknown as import("../src/types").MeterConfiguration;
     meter.configuration.aggregates = [{ aggregate_id: "main-service", name: "Main service", role: "grid", sources: [{ kind: "channel" as const, channel: 1 }, { kind: "channel" as const, channel: 2 }], measurement_method: "two_ct_sum", energy_mode: "bidirectional", outputs: { watts: true, amps: true, kwh: true }, origin: "advanced" as const }];
-    const transaction = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "Meter:\n+ interval: 5", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: true } as import("../src/types").TransactionStatus;
+    const transaction = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "@@ -1,3 +1,3 @@\n Meter:\n- - old\n+ - new", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: true } as import("../src/types").TransactionStatus;
     const root = document.createElement("div");
     render(configReview(transaction, meter.configuration, meter.configuration_impact), root);
     const review = root.textContent ?? "";
     expect(review).toContain("Electrical profile");
     expect(review).toContain("Voltage references");
     expect(review).toContain("CT1 CT1: branch on main");
+    expect(review).not.toContain("burden");
     expect(review).toContain("Main service = CT1 + CT2");
     expect(review).toContain("Power quality");
     expect(review).not.toContain("threshold");
+    const diff = [...root.querySelectorAll(".diff-line")];
+    expect(diff.map((line) => line.textContent)).toEqual(["@@ -1,3 +1,3 @@", "Meter:", " - old", " - new"]);
+    expect(diff.map((line) => line.className)).toEqual(["diff-line context", "diff-line context", "diff-line removed", "diff-line added"]);
+    const differences = root.querySelector("details");
+    expect(differences?.querySelector("summary")?.textContent).toBe("Configuration differences");
+    expect(differences?.querySelector("dl")).toBeNull();
+    expect(differences?.textContent).not.toContain("Transaction ID");
 
     const finish = vi.fn();
     render(summaryStep(meter.topology, null, { ...transaction, state: "verified" }, new Map(), new Map(), null, false, "2026.8.0", () => undefined, () => undefined, meter, meter.configuration_impact, finish), root);
@@ -971,7 +1012,7 @@ describe("meter configuration review and summary", () => {
     expect(summary).toContain("public energy entities");
     expect(summary).toContain("Installed package scope");
     expect(summary).toContain("Main board");
-    expect(summary).toContain("Reporting and entities");
+    expect(summary).toContain("Reporting and measurements");
     root.querySelector<HTMLButtonElement>('[data-action="finish"]')?.click();
     expect(finish).toHaveBeenCalledOnce();
 
@@ -1214,6 +1255,17 @@ describe("CircuitSetup panel", () => {
     expect((panel as unknown as { meterConfiguration: typeof configuration }).meterConfiguration.configuration.channels[0]).toMatchObject({ enabled: false, role: "unused" });
   });
 
+  it("collapses CT technical details on initial inventory render", async () => {
+    const response = meterResponse();
+    response.channels[0] = { ...response.channels[0]!, selected_model_id: null, raw_gain_ct: 27518,
+      selection_verified_against_config: false };
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    panel.showInventory(response as unknown as CtInventory);
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector<HTMLDetailsElement>("details.technical-details")?.open).toBe(false);
+  });
+
   it("reloads role, model, and multiplier from the authoritative meter configuration", async () => {
     const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
     const state = panel as unknown as {
@@ -1236,7 +1288,7 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector<HTMLSelectElement>('[aria-label="CT1 role"]')?.value).toBe("grid");
     expect(panel.shadowRoot?.querySelector<HTMLSelectElement>('[aria-label="CT1 model"]')?.value).toBe("saved-model");
     expect(panel.shadowRoot?.querySelector<HTMLSelectElement>('[aria-label="CT1 multiplier"]')?.value).toBe("2");
-    expect(panel.shadowRoot?.querySelector('[aria-label="CT1"] .row-toggle')?.textContent?.trim()).toBe("OK");
+    expect(panel.shadowRoot?.querySelector('[aria-label="CT1"] .row-toggle')).toBeNull();
   });
 
   it("allows aggregate channels to overlap but rejects disabled circuits", () => {
@@ -1397,16 +1449,18 @@ describe("CircuitSetup panel", () => {
     response.configuration.channels = response.configuration.channels.map((channel) => channel.channel <= 2
       ? { ...channel, role: "grid" } : channel);
     const loaded = structuredClone(response.configuration);
+    const normalized = { ...loaded, meter: { ...loaded.meter,
+      voltage_references: loaded.meter.voltage_references.map((reference) => ({ ...reference, nominal_voltage_v: 120 })) } };
 
     state.journeyOrigin = "existing_meter";
     state.setMeterConfiguration(response);
 
-    expect((state.meterConfiguration as import("../src/types").MeterConfiguration).configuration).toEqual(loaded);
-    expect(state.canonicalConfigurationChanged).toBe(false);
+    expect((state.meterConfiguration as import("../src/types").MeterConfiguration).configuration).toEqual(normalized);
+    expect(state.canonicalConfigurationChanged).toBe(true);
 
-    state.updateCircuitConfiguration(loaded, false);
-    expect((state.meterConfiguration as import("../src/types").MeterConfiguration).configuration).toEqual(loaded);
-    expect(state.canonicalConfigurationChanged).toBe(false);
+    state.updateCircuitConfiguration(normalized, false);
+    expect((state.meterConfiguration as import("../src/types").MeterConfiguration).configuration).toEqual(normalized);
+    expect(state.canonicalConfigurationChanged).toBe(true);
   });
 
   it("reuses the canonical meter plan when advancing to CTs and preview", async () => {
@@ -1562,6 +1616,41 @@ describe("CircuitSetup panel", () => {
     expect(operations.filter(({ operation }) => operation === "preview_meter_configuration").map(({ planId }) => planId)).toEqual(["b".repeat(32), "c".repeat(32)]);
   });
 
+  it("abandons a chip-failure retry and keeps the fresh applied baseline", async () => {
+    const calls: string[] = [];
+    const saved = meterResponse(); saved.source_sha256 = "c".repeat(64); saved.configuration.meter.friendly_name = "Fresh external edit";
+    const retry = { transaction_id: "1".repeat(32), state: "install_confirmation_required" as const,
+      source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true,
+      evidence: ["meter_communication_failed"], progress: ["firmware_compiled", "ota_uploaded"],
+      validation_detail: null, upload_progress: [], purpose: "install_configuration" as const,
+      aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    const hass = makeHass({ setup_status: { state: "no_device", devices: [] }, get_meter_configuration: saved,
+      abandon_ct_config: { ...retry, state: "failed", rollback_available: false, evidence: ["meter_communication_failed", "cancelled"] } });
+    const call = hass.callWS;
+    hass.callWS = async <T>(message: Record<string, unknown>) => {
+      calls.push(String(message.type).split("/").at(-1) ?? "");
+      return call<T>(message);
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & { backFromBuild(): Promise<void>; canonicalConfigurationChanged: boolean };
+    const edited = meterResponse(); edited.configuration.meter.friendly_name = "Stale edit";
+    state.selectedDeviceId = "meter-1";
+    state.meterConfiguration = edited;
+    state.transaction = retry;
+    state.step = "install-configuration";
+
+    await state.backFromBuild();
+
+    expect(calls).toContain("abandon_ct_config");
+    expect(calls).not.toContain("rollback_ct_config");
+    expect(calls).not.toContain("preview_meter_configuration");
+    expect(state.transaction).toBeNull();
+    expect((state.meterConfiguration as import("../src/types").MeterConfiguration).source_sha256).toBe("c".repeat(64));
+    expect((state.meterConfiguration as import("../src/types").MeterConfiguration).configuration.meter.friendly_name).toBe("Fresh external edit");
+    expect(state.canonicalConfigurationChanged).toBe(false);
+    expect(state.step).toBe("ct");
+  });
+
   it("keeps a failed review cancellation visible and does not discard edits", async () => {
     const preview = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
     const hass: HomeAssistant = {
@@ -1587,6 +1676,70 @@ describe("CircuitSetup panel", () => {
     expect(state.transaction).toBe(preview);
     expect(state.error).toBe("The review could not be cancelled. Retry Back before editing the configuration.");
     expect(panel.shadowRoot?.querySelector("[role=alert]")?.textContent).toContain("The review could not be cancelled");
+  });
+
+  it("preserves active meter state when existing inspection fails", async () => {
+    const panel = await mount(makeHass({
+      setup_status: { state: "no_device", devices: [] },
+      inspect_existing_meter: Object.assign(new Error("busy"), { code: "device_busy" }),
+    }));
+    const state = panel as unknown as Record<string, unknown> & {
+      inspectExistingMeter(deviceId: string): Promise<void>;
+    };
+    const activeSession = { session_id: "session", device_id: "meter-1", state: "ready",
+      preflight: { zeroed_roles: [] } };
+    state.selectedDeviceId = "meter-1";
+    state.session = activeSession;
+    state.step = "offset";
+
+    await state.inspectExistingMeter("meter-2");
+
+    expect(state.selectedDeviceId).toBe("meter-1");
+    expect(state.session).toBe(activeSession);
+    expect(state.step).toBe("offset");
+    expect(state.error).toBe("This ESPHome meter could not be safely inspected.");
+  });
+
+  it("preserves active meter state when adopting another meter fails", async () => {
+    const panel = await mount(makeHass({
+      setup_status: { state: "no_device", devices: [] },
+      adopt_device: Object.assign(new Error("busy"), { code: "device_busy" }),
+    }));
+    const state = panel as unknown as Record<string, unknown> & {
+      adopt(deviceId: string): Promise<void>;
+    };
+    const activeSession = { session_id: "session", device_id: "meter-1", state: "ready",
+      preflight: { zeroed_roles: [] } };
+    state.selectedDeviceId = "meter-1";
+    state.session = activeSession;
+    state.step = "offset";
+
+    await state.adopt("meter-2");
+
+    expect(state.selectedDeviceId).toBe("meter-1");
+    expect(state.session).toBe(activeSession);
+    expect(state.step).toBe("offset");
+    expect(state.error).toBe("Finish or cancel current work before importing another meter.");
+  });
+
+  it("cancels a reviewed calibration-preparation transaction without losing the setup route", async () => {
+    const preview = { purpose: "install_configuration", transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64),
+      changes: [{ key: "package.main.calibration", old_value: "disabled", new_value: "enabled" }],
+      redacted_diff: "+ calibration controls", rollback_available: false, evidence: [], progress: [], validation_detail: null,
+      upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] },
+      abandon_ct_config: { ...preview, state: "failed" } }));
+    const state = panel as unknown as Record<string, unknown> & { backFromBuild(): Promise<void> };
+    state.selectedDeviceId = "meter-1";
+    state.transaction = preview;
+    state.step = "install-configuration";
+
+    await state.backFromBuild();
+
+    expect(state.step).toBe("setup");
+    expect(state.transaction).toBeNull();
+    expect(state.session).toBeNull();
+    expect(state.announcement).toContain("Calibration preparation review cancelled");
   });
 
   it("rejects preserved review drafts when the source changes before reload", async () => {
@@ -1979,10 +2132,19 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector('[name="line-frequency"]')).toBeNull();
     expect(text(panel)).toContain("Add-on address jumper settings");
     expect(text(panel)).toContain("Install firmware");
+    expect(text(panel)).toContain("ESPHome Device Builder must be installed and running in Home Assistant");
+    expect(panel.shadowRoot?.querySelector<HTMLAnchorElement>('a[href="https://esphome.io/install/"]')?.textContent).toContain("See how to install it in Home Assistant");
+    expect(Array.from(panel.shadowRoot?.querySelectorAll(".firmware-steps li") ?? [], (item) => item.textContent?.trim())).toEqual([
+      "Connect the ESP32 you will use for your energy meter to your computer with a USB cable.",
+      "Click Install firmware, select the ESP32's CP2102 USB to UART, then click Connect.",
+      "Select Install CircuitSetup 6 Channel Energy Meter when ESP Web Tools asks for the firmware.",
+      "Before clicking Install, hold down the right IO0 (or BOOT) button on the ESP32.",
+    ]);
     expect(Array.from(panel.shadowRoot?.querySelectorAll(".next-steps li") ?? [], (item) => item.textContent?.trim())).toEqual([
-      "Install the selected firmware and select Next in ESP Web Tools.",
-      "Select Add to Home Assistant and approve the discovered ESPHome device.",
-      "Return here. The helper will import it into ESPHome Builder and continue.",
+      "After the firmware is installed, click Next.",
+      "If you are using Wi-Fi, enter your Wi-Fi credentials.",
+      "Select Add to Home Assistant, then approve the discovered ESPHome device in ESPHome Device Builder.",
+      "Return here. The helper will import your meter so you can customize its settings.",
     ]);
     expect(text(panel)).toContain("Rescan for device");
     expect(text(panel)).toContain("USB data cable");
@@ -2000,7 +2162,7 @@ describe("CircuitSetup panel", () => {
       panel.shadowRoot?.querySelector('[data-action="firmware-version"]'),
       panel.shadowRoot?.querySelector("esp-web-install-button"),
       panel.shadowRoot?.querySelector(".next-steps"),
-      panel.shadowRoot?.querySelector(".info-band"),
+      panel.shadowRoot?.querySelector(".setup-step > p.info-band:last-of-type"),
       panel.shadowRoot?.querySelector('[data-action="rescan"]'),
     ];
     const completeOrder = setupOrder.filter((element): element is Element => Boolean(element));
@@ -2012,6 +2174,46 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
     expect(text(panel)).toContain("Add-on 6");
     expect(text(panel)).toContain("(15, 26)");
+  });
+
+  it.each([false, true])("uses the requested unsuccessful-search message (request fails: %s)", async (failed) => {
+    const hass = makeHass({
+      setup_status: { state: "no_device", devices: [] },
+      list_existing_meters: [],
+    });
+    const call = hass.callWS;
+    hass.callWS = async <T>(message: Record<string, unknown>) => {
+      if (failed && String(message.type).endsWith("/list_existing_meters")) throw new Error("Search failed");
+      return call<T>(message);
+    };
+    const panel = await mount(hass);
+
+    panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="find-existing"]')?.click();
+    await tick(); await panel.updateComplete;
+
+    expect(text(panel)).toContain("Could not find any more CircuitSetup energy meters");
+  });
+
+  it("does not persist installer intent when rescanning a bound meter", async () => {
+    const configured = { ...device, importable: false, configuration: "meter.yaml" };
+    const calls: string[] = [];
+    const hass = makeHass({
+      setup_status: { state: "device_discovered", devices: [configured], bound_device_id: device.entry_id },
+      rescan: { state: "device_discovered", devices: [configured], bound_device_id: device.entry_id },
+    });
+    const call = hass.callWS;
+    hass.callWS = async <T>(message: Record<string, unknown>) => {
+      calls.push(String(message.type));
+      return call<T>(message);
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as { topology: MeterTopology; rescan: () => Promise<void>; error: string };
+    state.topology = meterResponse().topology;
+    await state.rescan();
+
+    expect(calls.some((type) => type.endsWith("/set_installer_intent"))).toBe(false);
+    expect(calls.some((type) => type.endsWith("/rescan"))).toBe(true);
+    expect(state.error).toBe("");
   });
 
   it("keeps electrical profile values out of new-meter setup and installer intent", async () => {
@@ -2143,7 +2345,7 @@ describe("CircuitSetup panel", () => {
     state.existingConfigurationChoice = "manage_with_helper";
     panel.showInventory(meter);
     state.updateDraft(1, { preserveExistingGain: false });
-    expect(state.drafts.get(1)).toMatchObject({ modelId: "custom", customGainCt: 20894, customLabel: "CT1", multiplier: 2 });
+    expect(state.drafts.get(1)).toMatchObject({ modelId: "custom", customGainCt: 20894, multiplier: 2 });
     expect(state.meterConfiguration.configuration).toEqual(original);
     state.updateDraft(1, { modelId: "model", customGainCt: undefined });
     state.updateDraft(2, { preserveExistingGain: false });
@@ -2357,10 +2559,10 @@ describe("CircuitSetup panel", () => {
     panel.shadowRoot?.querySelector<HTMLInputElement>('[name="connection-type"][value="ethernet_lilygo"]')?.click();
     await panel.updateComplete;
 
-    expect(Array.from(panel.shadowRoot?.querySelectorAll(".next-steps li") ?? [], (item) => item.textContent?.trim())).toHaveLength(3);
+    expect(Array.from(panel.shadowRoot?.querySelectorAll(".next-steps li") ?? [], (item) => item.textContent?.trim())).toHaveLength(4);
     expect(text(panel)).toContain("connect Ethernet and power, then wait for an address from DHCP");
     expect(text(panel)).not.toContain("ESP Web Tools asks for your Wi-Fi network and password");
-    const handoff = panel.shadowRoot?.querySelector(".info-band")?.textContent ?? "";
+    const handoff = panel.shadowRoot?.querySelector(".setup-step > p.info-band:last-of-type")?.textContent ?? "";
     expect(handoff).not.toMatch(/wi-fi|password|credential/i);
   });
 
@@ -2481,12 +2683,12 @@ describe("CircuitSetup panel", () => {
     const state = panel as unknown as { setMeterConfiguration(value: typeof response): void };
     response.configuration_impact = { ...response.configuration_impact, numeric_entity_count: 14, approximate_publications_per_second: 2.8 };
     state.setMeterConfiguration(response); panel.showInventory(response); await panel.updateComplete;
-    expect(text(panel)).toContain("14 public entities");
+    expect(text(panel)).toContain("14 Helper-managed measurements");
     response.configuration_impact = { ...response.configuration_impact, numeric_entity_count: 210, text_entity_count: 6,
       public_total_entity_count: 24, internal_total_sensor_count: 2, approximate_publications_per_second: 43.2 };
     state.setMeterConfiguration(response); await panel.updateComplete;
     expect(text(panel)).toContain("Warning: high entity count.");
-    expect(text(panel)).toContain("216 public entities");
+    expect(text(panel)).toContain("216 Helper-managed measurements");
   });
 
   it("routes accepted safety acknowledgement to the Offset step", async () => {
@@ -2575,7 +2777,7 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector(".sr-status")?.textContent).not.toContain("applied_pending_restart_verification");
   });
 
-  it.each(["offset_tables_unavailable", "operation_failed"])("explains offset preparation failure %s without claiming a backup", async (code) => {
+  it.each(["offset_tables_unavailable", "offset_communication_failed", "offset_diagnostics_incomplete", "offset_chip_identity_unavailable", "operation_failed"])("explains offset preparation failure %s without claiming a backup", async (code) => {
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
     const preview = vi.fn().mockRejectedValue({ code, message: "private backend details" });
     const state = panel as unknown as { api: unknown; session: unknown; offsetBackupAcknowledged: boolean;
@@ -2589,10 +2791,31 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).not.toContain("private backend details");
     expect(text(panel)).not.toContain("Recovery is retained.");
     expect(text(panel)).toContain(code === "offset_tables_unavailable"
-      ? "Stock ESPHome can omit these before the first offset calibration"
-      : "preparation could not be reviewed");
+      ? "even when the firmware supports offset calibration"
+      : code === "offset_communication_failed"
+        ? "could not verify meter-chip communication"
+        : code === "offset_diagnostics_incomplete"
+          ? "diagnostics for the selected Main Board were incomplete"
+          : code === "offset_chip_identity_unavailable"
+            ? "mapping for the selected Main Board could not be verified"
+            : "preparation could not be reviewed");
     if (code === "operation_failed") expect(text(panel)).not.toContain("Stock ESPHome");
     expect(state.transaction).toBeNull();
+  });
+
+  it("identifies the selected add-on in offset communication errors", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const preview = vi.fn().mockRejectedValue({ code: "offset_communication_failed", message: "private backend details" });
+    const state = panel as unknown as { api: unknown; session: unknown; board: number; offsetBackupAcknowledged: boolean;
+      reviewOffsetPreparation(): Promise<void> };
+    state.api = { previewOffsetPreparation: preview };
+    state.session = { session_id: "session" };
+    state.board = 2;
+    state.offsetBackupAcknowledged = true;
+    await state.reviewOffsetPreparation();
+    await panel.updateComplete;
+    expect(text(panel)).toContain("selected Add-on 2");
+    expect(text(panel)).not.toContain("Board 3");
   });
 
   it("renders ordered offset preparation, gates Stage 2, and bounds seven-board tabs", async () => {
@@ -2607,6 +2830,9 @@ describe("CircuitSetup panel", () => {
       offset_boards: Array.from({ length: 7 }, (_, board_index) => ({ board_index, stages: [
         { stage: 1, state: "not_started" }, { stage: 2, state: "not_started" },
       ] })), has_pending_calibration: false };
+    state.offsetPreparation = { backup_available: true, operation_id: "4".repeat(32), stage: 1,
+      targets: ["meter_main1", "meter_main2"], mode: "native", installed: false, cancelled: false,
+      action_ready: true, attempted: [], completed: [] };
 
     panel.showState("offset" as never);
     await panel.updateComplete;
@@ -2617,10 +2843,70 @@ describe("CircuitSetup panel", () => {
     expect(copy).toContain("power the meter from USB only");
     expect(copy).toContain("check that every voltage/current phase reads near zero");
     expect(copy).toContain("Measurements cannot prove");
+    expect(copy).not.toContain("never had offset calibration applied");
     expect(panel.shadowRoot?.querySelectorAll("[data-offset-board]")).toHaveLength(7);
     expect(panel.shadowRoot?.querySelector("[data-offset-stage='1']")?.getAttribute("aria-current")).toBe("step");
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-offset-stage='2']")?.disabled).toBe(true);
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action='calibrate-offset']")?.disabled).toBe(true);
+  });
+
+  it("advances offset Continue to the next board and scrolls to the heading", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const state = panel as unknown as Record<string, unknown>;
+    state.configurationMode = "runtime_only";
+    state.topology = { addon_count: 1, board_count: 2, ct_count: 12, group_count: 4,
+      connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name, evidence: [] };
+    state.session = { session_id: "session", device_id: "meter-1", state: "ready", safety_acknowledged: true,
+      preflight: { issues: [], zeroed_roles: [] }, entity_role_counts: {},
+      offset_capability: { status: "available", repair_reason: null }, offset_disposition: "in_progress",
+      offset_boards: [
+        { board_index: 0, stages: [{ stage: 1, state: "completed" }, { stage: 2, state: "not_started" }] },
+        { board_index: 1, stages: [{ stage: 1, state: "not_started" }, { stage: 2, state: "not_started" }] },
+      ], has_pending_calibration: false };
+    state.offsetStage = 1;
+    state.board = 0;
+    panel.showState("offset" as never);
+    await panel.updateComplete;
+
+    const scrollIntoView = vi.fn();
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
+    try {
+      const continueButton = panel.shadowRoot?.querySelector<HTMLButtonElement>(".offset-footer .primary");
+      expect(continueButton?.disabled).toBe(false);
+      expect(continueButton?.textContent?.trim()).toBe("Continue to Add-on 1");
+      continueButton?.click();
+      await panel.updateComplete;
+      expect(state.board).toBe(1);
+      expect(text(panel)).toContain("Optional offset calibration · Stage 1 · Add-on 1");
+      expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".offset-footer .primary")?.textContent?.trim()).toBe("Continue to Stage 2");
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+
+      state.session = { ...(state.session as Record<string, unknown>), offset_boards: [
+        { board_index: 0, stages: [{ stage: 1, state: "completed" }, { stage: 2, state: "not_started" }] },
+        { board_index: 1, stages: [{ stage: 1, state: "completed" }, { stage: 2, state: "not_started" }] },
+      ] };
+      panel.requestUpdate(); await panel.updateComplete;
+      panel.shadowRoot?.querySelector<HTMLButtonElement>(".offset-footer .primary")?.click();
+      await panel.updateComplete;
+      expect(state.board).toBe(0);
+      expect(state.offsetStage).toBe(2);
+      expect(text(panel)).toContain("Optional offset calibration · Stage 2 · Main Board");
+      expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".offset-footer .primary")?.textContent?.trim()).toBe("Continue to Add-on 1");
+      expect(scrollIntoView).toHaveBeenCalledTimes(2);
+
+      state.session = { ...(state.session as Record<string, unknown>), offset_boards: [
+        { board_index: 0, stages: [{ stage: 1, state: "completed" }, { stage: 2, state: "completed" }] },
+        { board_index: 1, stages: [{ stage: 1, state: "completed" }, { stage: 2, state: "not_started" }] },
+      ] };
+      panel.requestUpdate(); await panel.updateComplete;
+      panel.shadowRoot?.querySelector<HTMLButtonElement>(".offset-footer .primary")?.click();
+      await panel.updateComplete;
+      expect(state.board).toBe(1);
+      expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".offset-footer .primary")?.textContent?.trim()).toBe("Continue to Voltage");
+    } finally {
+      Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: originalScrollIntoView });
+    }
   });
 
   it("shows invalid offset capability as repair-aware skip-only", async () => {
@@ -3759,7 +4045,7 @@ describe("CircuitSetup panel", () => {
 
     panel.showState("voltage"); await panel.updateComplete;
     let footer = [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>(".action-footer button") ?? []];
-    expect(footer.map((button) => button.textContent?.trim())).toEqual(["Back", "Skip voltage calibration", "Continue"]);
+    expect(footer.map((button) => button.textContent?.trim())).toEqual(["Back", "Skip voltage calibration", "Continue to Current"]);
     expect(footer[2]?.disabled).toBe(true);
     footer[1]?.click(); await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Voltage");
@@ -3961,7 +4247,7 @@ describe("CircuitSetup panel", () => {
 
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Voltage");
     [...panel.shadowRoot?.querySelectorAll<HTMLButtonElement>(".action-footer button") ?? []]
-      .find((button) => button.textContent?.trim() === "Continue")?.click();
+      .find((button) => button.textContent?.trim() === "Continue to Current")?.click();
     await panel.updateComplete;
 
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Current");
@@ -4062,7 +4348,7 @@ describe("CircuitSetup panel", () => {
     expect(contrastRatio("#ffffff", "#00639b")).toBeGreaterThanOrEqual(4.5);
   });
 
-  it("requires exact Custom CT fields and burden acknowledgement before review", async () => {
+  it("keeps Custom Gain inside technical details and requires burden acknowledgement", async () => {
     const inventory: CtInventory = {
       plan_id: "plan-1", source_sha256: "a".repeat(64),
       channels: [{ channel: 1, name: "CT1", raw_gain_ct: 5500, reporting_multiplier: 1,
@@ -4074,9 +4360,9 @@ describe("CircuitSetup panel", () => {
         source_repository: "CircuitSetup/repo", source_ref: "approved", schema_version: 1 },
     };
     const custom = new Map<number, CtDraft>([[1, { name: "Workshop", modelId: "custom", multiplier: 2,
-      customGainCt: 32000, customLabel: "Clamp", burdenAcknowledged: true, expanded: true }]]);
+      customGainCt: 32000, burdenAcknowledged: true, expanded: true }]]);
     expect(changesFromDrafts(inventory, custom)).toEqual([{ channel: 1, name: "Workshop", model_id: "custom",
-      reporting_multiplier: 2, custom_gain_ct: 32000, custom_label: "Clamp", burden_output_acknowledged: true }]);
+      reporting_multiplier: 2, custom_gain_ct: 32000, custom_label: "Workshop", burden_output_acknowledged: true }]);
     custom.set(1, { ...custom.get(1)!, modelId: "preset-burden", burdenAcknowledged: false });
     expect(changesFromDrafts(inventory, custom)).toEqual([{ channel: 1, name: "Workshop", model_id: "preset-burden",
       reporting_multiplier: 2, burden_output_acknowledged: false }]);
@@ -4089,15 +4375,15 @@ describe("CircuitSetup panel", () => {
     const model = panel.shadowRoot?.querySelector<HTMLSelectElement>('[aria-label="CT1 model"]');
     if (model) { model.value = "custom"; model.dispatchEvent(new Event("change")); }
     await panel.updateComplete;
-    expect(panel.shadowRoot?.querySelector('[aria-label="CT1 custom gain"]')).not.toBeNull();
-    expect(panel.shadowRoot?.querySelector('[aria-label="CT1 custom label"]')).not.toBeNull();
+    expect([...model?.options ?? []].map((option) => option.textContent)).toContain("Custom Gain");
+    expect(panel.shadowRoot?.querySelector('details.technical-details [aria-label="CT1 custom gain"]')).not.toBeNull();
+    expect(panel.shadowRoot?.querySelector('[aria-label="CT1 custom label"]')).toBeNull();
+    expect(panel.shadowRoot?.querySelector('[aria-label="CT1 technical details"]')).toBeNull();
     expect(panel.shadowRoot?.querySelector('[aria-label="CT1 burden output acknowledgement"]')).not.toBeNull();
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.disabled).toBe(true);
-    const gain = panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 custom gain"]');
-    const label = panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 custom label"]');
+    const gain = panel.shadowRoot?.querySelector<HTMLInputElement>('details.technical-details [aria-label="CT1 custom gain"]');
     const burden = panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 burden output acknowledgement"]');
     if (gain) { gain.value = "32000"; gain.dispatchEvent(new Event("input")); }
-    if (label) { label.value = "Clamp"; label.dispatchEvent(new Event("input")); }
     burden?.click(); await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.disabled).toBe(false);
   });
@@ -4147,7 +4433,7 @@ describe("CircuitSetup panel", () => {
 
     const lines = [...(panel.shadowRoot?.querySelectorAll(".config-diff .diff-line") ?? [])];
     expect(lines.map((line) => line.textContent)).toEqual([
-      "- current_cal_ct1: 27518", "+ current_cal_ct1: 13759", "+     phase_a:",
+      " current_cal_ct1: 27518", " current_cal_ct1: 13759", "     phase_a:",
     ]);
     expect(lines.map((line) => line.className)).toEqual(expect.arrayContaining([expect.stringContaining("removed"), expect.stringContaining("added")]));
     expect(panel.shadowRoot?.querySelector("style")?.textContent).toContain("white-space: pre");
@@ -4172,10 +4458,11 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector('[aria-label="CT1 custom gain"]')).toBeNull();
     expect(panel.shadowRoot?.querySelector('[aria-label="CT1 custom label"]')).toBeNull();
-    panel.shadowRoot?.querySelector<HTMLButtonElement>(".row-toggle")?.click();
+    const details = panel.shadowRoot?.querySelector<HTMLDetailsElement>("details.technical-details");
+    if (details) { details.open = true; details.dispatchEvent(new Event("toggle")); }
     await panel.updateComplete;
-    expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 custom gain"]')?.value).toBe("32000");
-    expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 custom label"]')?.value).toBe("Existing clamp");
+    expect(panel.shadowRoot?.querySelector<HTMLInputElement>('details.technical-details [aria-label="CT1 custom gain"]')?.value).toBe("32000");
+    expect(panel.shadowRoot?.querySelector('[aria-label="CT1 custom label"]')).toBeNull();
     expect(panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 burden output acknowledgement"]')?.checked).toBe(true);
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .primary")?.disabled).toBe(false);
 
@@ -4205,8 +4492,8 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(false);
     expect([...state.drafts.values()].every((draft) => !draft.burdenAcknowledged)).toBe(true);
-    expect(panel.shadowRoot?.querySelector<HTMLOptionElement>('[aria-label="CT3 model"] option:checked')?.textContent).toBe("Keep existing gain");
-    for (const patch of [{ customGainCt: 28000 }, { multiplier: 2 }, { customLabel: "Different CT" }]) {
+    expect(panel.shadowRoot?.querySelector<HTMLOptionElement>('[aria-label="CT3 model"] option:checked')?.textContent).toBe("Custom Gain");
+    for (const patch of [{ customGainCt: 28000 }, { multiplier: 2 }]) {
       const drafts = new Map(state.drafts).set(3, { ...state.drafts.get(3)!, ...patch });
       expect(draftsAreValid(meter, drafts, false, meter.configuration)).toBe(false);
     }
@@ -4232,7 +4519,7 @@ describe("CircuitSetup panel", () => {
     state.updateDraft(3, { customGainCt: 28000 });
     state.totalGraphState = "ready"; await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(true);
-    expect(panel.shadowRoot?.querySelector('[aria-label="CT3 technical details"]')?.textContent).toBe("Needs attention");
+    expect(panel.shadowRoot?.querySelectorAll<HTMLDetailsElement>("details.technical-details")[2]?.open).toBe(true);
     panel.shadowRoot?.querySelector<HTMLSelectElement>('[aria-label="CT3 model"]')?.dispatchEvent(new Event("change"));
     state.totalGraphState = "ready"; await panel.updateComplete;
     expect(state.drafts.get(3)?.burdenAcknowledged).toBe(false);
@@ -4247,7 +4534,7 @@ describe("CircuitSetup panel", () => {
     inventory.channels = [{ ...inventory.channels[0]!, selected_model_id: null,
       selection_verified_against_config: false, reporting_multiplier: 2 }];
     const drafts = new Map<number, CtDraft>([[1, { name: " Kitchen ", modelId: "custom", multiplier: 8,
-      customGainCt: 12345, customLabel: "Discarded selection", preserveExistingGain: true,
+      customGainCt: 12345, preserveExistingGain: true,
       burdenAcknowledged: true, expanded: false }]]);
 
     expect(changesFromDrafts(inventory, drafts)).toEqual([
@@ -4320,11 +4607,12 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
     panel.shadowRoot?.querySelectorAll<HTMLInputElement>('[name="name-mode"]')[1]?.click();
     await panel.updateComplete;
-    panel.shadowRoot?.querySelector<HTMLButtonElement>(".row-toggle")?.click();
+    const details = panel.shadowRoot?.querySelector<HTMLDetailsElement>("details.technical-details");
+    if (details) { details.open = true; details.dispatchEvent(new Event("toggle")); }
     await panel.updateComplete;
 
     for (const selector of ['[aria-label="CT1 model"]', '[aria-label="CT1 multiplier"]',
-      '[aria-label="CT1 custom gain"]', '[aria-label="CT1 custom label"]',
+      '[aria-label="CT1 custom gain"]',
       '[aria-label="CT1 burden output acknowledgement"]']) {
       expect(panel.shadowRoot?.querySelector<HTMLInputElement>(selector)?.disabled).toBe(true);
     }
@@ -4741,7 +5029,8 @@ describe("CircuitSetup panel", () => {
 
     panel.showState("install-configuration"); await panel.updateComplete;
 
-    expect(text(panel)).toContain("0 errors; 0 warnings");
+    expect(text(panel)).toContain("Errors0 records (unreported)");
+    expect(text(panel)).toContain("Warnings0 records (unreported)");
     expect(text(panel)).toContain("ESPHome rejected the config (code 2)");
     expect(text(panel)).toContain("original config was restored");
   });
@@ -4750,6 +5039,11 @@ describe("CircuitSetup panel", () => {
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
     panel.showState("summary"); await panel.updateComplete;
     expect(text(panel)).not.toContain("exact restart verification are complete");
+    expect(text(panel)).not.toContain("Build evidence");
+    expect(text(panel)).not.toContain("Transaction ID: Unavailable");
+    expect(text(panel)).not.toContain("Sample windows by target");
+    expect(text(panel)).not.toContain("Calibration results by target");
+    expect(text(panel)).not.toContain("Calibration completion record");
 
     const state = panel as unknown as Record<string, unknown>;
     state.topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
@@ -4771,6 +5065,9 @@ describe("CircuitSetup panel", () => {
     panel.showState("summary"); await panel.updateComplete;
     for (const expected of ["saved flash", "9.9", "5500", "5600", "0.4", "65%", "warning"])
       expect(text(panel).toLowerCase()).toContain(expected.toLowerCase());
+    expect(text(panel)).toContain("Sample windows by target");
+    expect(text(panel)).toContain("Calibration results by target");
+    expect(text(panel)).toContain("Calibration completion record");
     expect(text(panel)).not.toMatch(/Mean|Standard deviation|Range/);
   });
 
@@ -4940,6 +5237,12 @@ describe("CircuitSetup panel", () => {
 
   it("keeps verified calibration in flash without opening a YAML transaction", async () => {
     const operations: string[] = [];
+    const build = { transaction_id: "2".repeat(32), state: "verified", source_sha256: "b".repeat(64), changes: [],
+      redacted_diff: "", rollback_available: false, evidence: [],
+      progress: ["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted"],
+      validation_detail: { code: 0, reported_error_count: 0, reported_warning_count: 0, error_record_count: 0, warning_record_count: 0 },
+      upload_progress: [{ stage: "finished", percentage: 100 }], purpose: "install_configuration" as const,
+      aggregate_entity_mismatch: false, full_meter_configuration_verified: true };
     const restart = { mac: "aabbccddeeff", config_filename: "meter.yaml", config_sha256: "a".repeat(64),
       topology_addon_count: 0, topology_project_name: device.project_name, topology_connection_type: "wifi",
       topology_voltage_layout: "two_groups", connection_generation: 4, groups: [], verification_id: "1".repeat(32),
@@ -4954,6 +5257,7 @@ describe("CircuitSetup panel", () => {
     };
     const panel = await mount(hass);
     const state = panel as unknown as Record<string, unknown>;
+    state.transaction = build;
     state.restartResult = restart;
     panel.showState("summary"); await panel.updateComplete;
 
@@ -4963,6 +5267,11 @@ describe("CircuitSetup panel", () => {
     expect(operations).not.toContain("clear_calibration_flash");
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup complete");
     expect(text(panel)).toContain("Installing firmware may replace it");
+    expect(state.transaction).toEqual(build);
+    expect(text(panel)).toContain("No build issues recorded.");
+    expect(text(panel)).toContain(build.transaction_id);
+    expect(text(panel)).toContain(build.source_sha256);
+    expect(text(panel)).toContain("firmware_compiled");
   });
 
   it("guards handoff preview reentry and ignores a late preview after keeping flash", async () => {
@@ -5013,12 +5322,72 @@ describe("CircuitSetup panel", () => {
     expect(state.pendingAction).toBe("");
   });
 
-  it("reconnect assigns the returned live session instead of discarding it", async () => {
+  it("reconnect inspects the live meter and assigns the returned session", async () => {
+    const calls: string[] = [];
     const live = { session_id: "session", device_id: "meter-1", state: "unstable", safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
-    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] }, get_session: live }));
+    const hass = makeHass({ setup_status: { state: "device_discovered", devices: [device] }, reconnect_session: live });
+    const callWS = hass.callWS;
+    hass.callWS = async <T>(message: Record<string, unknown>) => {
+      calls.push(String(message.type).split("/").at(-1) ?? "");
+      return callWS<T>(message);
+    };
+    const panel = await mount(hass);
     const state = panel as unknown as Record<string, unknown> & { reconnectSession(): Promise<void> };
     state.session = { ...live, state: "indeterminate" };
     await state.reconnectSession();
     expect((state.session as { state: string }).state).toBe("unstable");
+    expect(calls).toContain("reconnect_session");
+  });
+
+  it("waits for server close before clearing the selected Summary device", async () => {
+    let resolveClose!: (value: unknown) => void;
+    const close = new Promise((resolve) => { resolveClose = resolve; });
+    const hass: HomeAssistant = {
+      callWS: async <T>(message: Record<string, unknown>): Promise<T> => {
+        const operation = String(message.type).split("/").at(-1) ?? "";
+        if (operation === "setup_status") return { state: "device_discovered", devices: [device] } as T;
+        if (operation === "close_session") return close as Promise<T>;
+        return {} as T;
+      },
+      connection: { subscribeMessage: async () => () => undefined },
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & { finishFlow(message: string): Promise<void> };
+    state.selectedDeviceId = "meter-1";
+    state.session = { session_id: "session", device_id: "meter-1", state: "verified", safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
+    panel.showState("summary");
+
+    const finishing = state.finishFlow("Finished");
+    await tick();
+    expect(state.selectedDeviceId).toBe("meter-1");
+    resolveClose({ session_id: "session", closed: true });
+    await finishing;
+    expect(state.selectedDeviceId).toBeNull();
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
+  });
+
+  it("clears Summary locally when no calibration session exists", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const state = panel as unknown as Record<string, unknown> & { finishFlow(message: string): Promise<void> };
+    state.selectedDeviceId = "meter-1";
+    panel.showState("summary");
+
+    await state.finishFlow("Finished");
+    expect(state.selectedDeviceId).toBeNull();
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
+  });
+
+  it("keeps Summary selected when server close fails", async () => {
+    const hass = makeHass({ setup_status: { state: "device_discovered", devices: [device] }, close_session: new Error("busy") });
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & { finishFlow(message: string): Promise<void> };
+    state.selectedDeviceId = "meter-1";
+    state.session = { session_id: "session", device_id: "meter-1", state: "verified", safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
+    panel.showState("summary");
+
+    await state.finishFlow("Finished");
+    expect(state.selectedDeviceId).toBe("meter-1");
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup complete");
+    expect(text(panel)).toContain("Summary remains available");
   });
 });

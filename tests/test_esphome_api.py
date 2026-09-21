@@ -45,11 +45,11 @@ from custom_components.circuitsetup_energy_meter_helper.esphome_api import (
     sanitize_control_text,
 )
 from custom_components.circuitsetup_energy_meter_helper.log_parser import (
+    MeterCommunicationError,
     OffsetTableSnapshot,
 )
 from custom_components.circuitsetup_energy_meter_helper.state_tracker import (
     FreshWindowError,
-    StateUnavailableError,
 )
 
 
@@ -492,7 +492,7 @@ def test_absolute_sensor_window_rejects_another_connection_generation() -> None:
     asyncio.run(run())
 
 
-def test_number_ack_uses_shared_tracker_and_rejects_unavailable_state() -> None:
+def test_number_ack_waits_through_transient_unavailable_state() -> None:
     async def run() -> None:
         client = FakeClient(acknowledge_numbers=False)
         session = make_session([client])
@@ -502,9 +502,11 @@ def test_number_ack_uses_shared_tracker_and_rejects_unavailable_state() -> None:
         assert client.on_state is not None
 
         client.on_state(NumberState(4, 0.0, missing_state=True))
+        await asyncio.sleep(0)
+        assert not pending.done()
 
-        with pytest.raises(StateUnavailableError, match="unavailable"):
-            await pending
+        client.on_state(NumberState(4, 0.0))
+        assert (await pending).state == 0.0
 
     asyncio.run(run())
 
@@ -701,6 +703,175 @@ def test_offset_table_snapshot_reads_full_fresh_dump_outside_public_log_ring() -
         }
         assert len(session.log_lines) <= 2
         assert client.log_unsubscribed == 2
+
+    asyncio.run(run())
+
+
+def test_offset_table_snapshot_qualifies_missing_stage_from_the_same_healthy_dump() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        pending = asyncio.create_task(
+            session.async_offset_table_snapshot(
+                {"meter_main1"},
+                offset_stage=2,
+                require_communication=True,
+                timeout=0.02,
+            )
+        )
+        await asyncio.sleep(0)
+        assert client.on_log is not None
+        client.on_log(
+            SimpleNamespace(
+                message=(
+                    "ATM90E32:\nCS Pin: GPIO5\nUpdate Interval: 5s\n"
+                    "[CALIBRATION][meter_main1] Restored offset calibration from memory\n"
+                    "[CALIBRATION][meter_main1] | Phase | offset_voltage | offset_current |\n"
+                    "[CALIBRATION][meter_main1] | A | -10 | 30 |\n"
+                    "[CALIBRATION][meter_main1] | B | 0 | 0 |\n"
+                    "[CALIBRATION][meter_main1] | C | 11 | -31 |"
+                )
+            )
+        )
+
+        assert await pending == {"meter_main1": None}
+        await session.async_shutdown()
+
+    asyncio.run(run())
+
+
+def test_offset_table_snapshot_scopes_communication_to_selected_cs_pins() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        pending = asyncio.create_task(
+            session.async_offset_table_snapshot(
+                {"meter_main1"},
+                offset_stage=1,
+                require_communication=True,
+                expected_cs_pins={5},
+                timeout=0.02,
+            )
+        )
+        await asyncio.sleep(0)
+        assert client.on_log is not None
+        client.on_log(
+            SimpleNamespace(
+                message=(
+                    "ATM90E32:\nCS Pin: GPIO5\nUpdate Interval: 5s\n"
+                    "ATM90E32:\nCS Pin: GPIO16\nCommunication failed\n"
+                    "Update Interval: 5s"
+                )
+            )
+        )
+        assert await pending == {"meter_main1": None}
+        await session.async_shutdown()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("message", "error"),
+    (
+        (
+            (
+                "ATM90E32:\nCS Pin: GPIO5\nUpdate Interval: 5s\n"
+                "ATM90E32:\nCommunication failed\nUpdate Interval: 5s"
+            ),
+            MeterCommunicationError,
+        ),
+        (
+            "ATM90E32:\nCommunication failed\nUpdate Interval: 5s",
+            MeterCommunicationError,
+        ),
+    ),
+)
+def test_scoped_offset_communication_fails_closed_for_target_or_unattributed_failure(
+    message: str, error: type[Exception]
+) -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        pending = asyncio.create_task(
+            session.async_offset_table_snapshot(
+                {"meter_main1"},
+                offset_stage=1,
+                require_communication=True,
+                expected_cs_pins={5},
+                timeout=0.02,
+            )
+        )
+        await asyncio.sleep(0)
+        assert client.on_log is not None
+        client.on_log(SimpleNamespace(message=message))
+        with pytest.raises(error):
+            await pending
+        await session.async_shutdown()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("message", "error"),
+    (
+        ("", TimeoutError),
+        ("ATM90E32:\nCS Pin: GPIO5\nCommunication failed", MeterCommunicationError),
+        ("ATM90E32:\nCS Pin: GPIO5", TimeoutError),
+    ),
+)
+def test_offset_table_snapshot_never_qualifies_empty_failed_or_truncated_dump(
+    message: str, error: type[Exception]
+) -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        pending = asyncio.create_task(
+            session.async_offset_table_snapshot(
+                {"meter_main1"},
+                offset_stage=1,
+                require_communication=True,
+                timeout=0.02,
+            )
+        )
+        await asyncio.sleep(0)
+        if message:
+            assert client.on_log is not None
+            client.on_log(SimpleNamespace(message=message))
+        with pytest.raises(error):
+            await pending
+        await session.async_shutdown()
+
+    asyncio.run(run())
+
+
+def test_offset_configuration_selection_reads_exact_fresh_dump() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        pending = asyncio.create_task(
+            session.async_offset_configuration_selection(
+                {"meter_main1", "meter_main2"}, timeout=0.2
+            )
+        )
+        await asyncio.sleep(0)
+        assert client.on_log is not None
+        message = (
+            "[I][atm90e32:1010] [CALIBRATION][meter_main1] "
+            "Power & Voltage/Current offset calibration is disabled. Using config file values.\n"
+            "[I][atm90e32:1011] [CALIBRATION][meter_main2] "
+            "Power & Voltage/Current offset calibration is disabled. Using config file values."
+        )
+        client.on_log(
+            SimpleNamespace(message=message)
+        )
+
+        assert client.dump_configs[-1] is True
+        assert await pending == {"meter_main1": 1, "meter_main2": 1}
 
     asyncio.run(run())
 
@@ -1265,6 +1436,33 @@ def test_meter_communication_checks_fresh_complete_dump_despite_log_eviction(
             await pending
         assert client.dump_configs[-1] is None
         assert len(session.log_lines) <= 2
+        await session.async_shutdown()
+
+    asyncio.run(run())
+
+
+def test_meter_communication_scope_ignores_unselected_failed_chip() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        pending = asyncio.create_task(
+            session.async_check_meter_communication(
+                1, expected_cs_pins={5}, timeout=0.1
+            )
+        )
+        await asyncio.sleep(0)
+        assert client.on_log is not None
+        client.on_log(
+            SimpleNamespace(
+                message=(
+                    "ATM90E32:\nCS Pin: GPIO5\nUpdate Interval: 5s\n"
+                    "ATM90E32:\nCS Pin: GPIO16\nCommunication failed\n"
+                    "Update Interval: 5s"
+                )
+            )
+        )
+        await pending
         await session.async_shutdown()
 
     asyncio.run(run())

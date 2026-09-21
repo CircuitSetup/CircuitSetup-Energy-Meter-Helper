@@ -14,6 +14,8 @@ from .models import VOLTAGE_REFERENCE_ID_RE, MeterTopology
 
 LineFrequencyHz = Literal[50, 60]
 UpdateIntervalSeconds = Literal[1, 2, 5, 10, 30, 60]
+MAX_VOLTAGE_REFERENCES = 14
+MAX_AGGREGATES = 32
 
 
 class ElectricalSystem(StrEnum):
@@ -139,6 +141,7 @@ class AutomaticTotalSettings:
     candidate_id: str
     enabled: bool
     outputs: TotalOutputSettings
+    name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,6 +252,8 @@ def validate_meter_configuration(
     refs = meter.voltage_references
     if not refs or len({r.reference_id for r in refs}) != len(refs):
         raise ValueError("voltage references must be uniquely identified")
+    if len(refs) > MAX_VOLTAGE_REFERENCES:
+        raise ValueError("too many voltage references")
     all_groups: list[str] = []
     for ref in refs:
         if VOLTAGE_REFERENCE_ID_RE.fullmatch(ref.reference_id) is None:
@@ -324,6 +329,8 @@ def validate_meter_configuration(
     if set(by_channel) != set(range(1, topology.ct_count + 1)):
         raise ValueError("channels must cover topology exactly")
 
+    if len(request.aggregates) > MAX_AGGREGATES:
+        raise ValueError("too many aggregates")
     if not isinstance(request.default_totals, DefaultTotalsSettings):
         raise ValueError("default totals are invalid")  # noqa: TRY004
     _total_outputs(request.default_totals.overall, "overall total output")
@@ -350,6 +357,8 @@ def validate_meter_configuration(
             raise ValueError("automatic totals must have unique IDs and boolean enabled")
         candidate_ids.add(automatic.candidate_id)
         _total_outputs(automatic.outputs, "automatic total output")
+        if automatic.name is not None:
+            _text(automatic.name, "automatic total name")
 
     aggregate_ids = {a.aggregate_id for a in request.aggregates}
     if len(aggregate_ids) != len(request.aggregates):

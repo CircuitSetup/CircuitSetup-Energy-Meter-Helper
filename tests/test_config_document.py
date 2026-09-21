@@ -7,6 +7,7 @@ import pytest
 from custom_components.circuitsetup_energy_meter_helper.config_document import (
     ESPHomeConfigDocument,
     ESPHomeConfigParseError,
+    _DocumentParser,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "device_builder"
@@ -24,6 +25,7 @@ def test_extracts_project_substitutions_and_mapping_packages() -> None:
     assert doc.substitutions["ct12_name"].value == "CT12"
     assert doc.substitutions["current_cal_ct12"].value == "27518"
     assert "Software/ESPHome/meter_sensors/6chan_addon1.yaml" in doc.package_files
+
     assert doc.dashboard_import is not None
     assert doc.dashboard_import.endswith("6-channel-energy-meter-1-addon.yaml@master")
 
@@ -40,6 +42,17 @@ def test_extracts_project_substitutions_and_mapping_packages() -> None:
     ].startswith("github://")
 
 
+def test_extracts_literal_calibration_enable_substitutions() -> None:
+    doc = ESPHomeConfigDocument.parse(
+        "substitutions:\n"
+        "  offset_calibration: \"false\"\n"
+        "  gain_calibration: true\n"
+    )
+
+    assert doc.substitutions["offset_calibration"].value == "false"
+    assert doc.substitutions["gain_calibration"].value == "true"
+
+
 def test_extracts_list_package_form() -> None:
     doc = ESPHomeConfigDocument.parse(fixture("three_addons_two_voltages.yaml"))
 
@@ -50,6 +63,54 @@ def test_extracts_list_package_form() -> None:
         "Software/ESPHome/meter_sensors/6chan_addon3.yaml",
     )
     assert doc.substitutions["ct24_name"].value == "Workshop #4"
+
+
+@pytest.mark.parametrize("line_ending", ("\n", "\r\n"))
+def test_ignores_prose_comments_in_package_file_lists(
+    line_ending: str,
+) -> None:
+    content = line_ending.join(
+        (
+            "packages:",
+            "  meter:",
+            "    url: https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter",
+            "    ref: master",
+            "    files:",
+            "      # - Keep custom notes here",
+            "      #- Software/ESPHome/meter_sensors/6chan_addon1.yaml",
+            "      - Software/ESPHome/meter_sensors/main.yaml",
+        )
+    )
+
+    document = ESPHomeConfigDocument.parse(content)
+
+    assert tuple(reference.path for reference in document.package_references) == (
+        "Software/ESPHome/meter_sensors/6chan_addon1.yaml",
+        "Software/ESPHome/meter_sensors/main.yaml",
+    )
+    assert not document.package_references[0].active
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    (
+        (
+            "https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter",
+            "CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter",
+        ),
+        (
+            "https://github.com/CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter.git/",
+            "CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter",
+        ),
+        ("github://owner/repo", "owner/repo"),
+        ("http://github.com/owner/repo", None),
+        ("https://github.com/owner/repo/tree/main", None),
+    ),
+)
+def test_package_source_url_requires_an_exact_supported_form(
+    value: str, expected: str | None
+) -> None:
+    assert _DocumentParser._repository_from_url(value) == expected
 
 
 def test_extracts_indented_dashboard_import_url() -> None:

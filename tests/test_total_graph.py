@@ -54,6 +54,25 @@ def test_server_candidate_accepts_explicit_off_settings(role: CircuitRole) -> No
     assert not plan_total_graph(configured, topology(0)).ordered_nodes
 
 
+def test_automatic_total_name_overrides_the_inherited_candidate_name() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        validate_meter_configuration,
+    )
+
+    original = request()
+    configured = replace(original, channels=tuple(
+        replace(channel, role=CircuitRole.GRID) if channel.channel <= 2 else channel
+        for channel in original.channels
+    ))
+    candidate = automatic_total_candidates(configured)[0]
+    configured = replace(configured, automatic_totals=(AutomaticTotalSettings(
+        candidate.candidate_id, True, candidate.recommended_outputs, "Dryer",
+    ),))
+    validate_meter_configuration(configured, topology(0))
+    resolved = resolve_automatic_totals(automatic_total_candidates(configured), configured.automatic_totals)
+    assert resolved[0].candidate.name == "Dryer"
+
+
 def native_source(source_id: str) -> NativeTotalSource:
     return NativeTotalSource("native_total", source_id)
 

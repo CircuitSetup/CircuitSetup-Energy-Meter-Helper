@@ -10,10 +10,17 @@ from custom_components.circuitsetup_energy_meter_helper.diagnostics import (
     build_diagnostics_snapshot,
     capture_diagnostics_snapshot,
 )
+from custom_components.circuitsetup_energy_meter_helper.log_parser import (
+    MeterCommunicationError,
+)
 from custom_components.circuitsetup_energy_meter_helper.meter_inventory import (
     VoltageReferenceMismatchError,
 )
 from custom_components.circuitsetup_energy_meter_helper.websocket_api import ApiFailure
+from custom_components.circuitsetup_energy_meter_helper.workflow import (
+    OffsetChipIdentityUnavailable,
+    OffsetDiagnosticsIncomplete,
+)
 
 
 def test_snapshot_is_allowlisted_and_deeply_immutable() -> None:
@@ -115,6 +122,21 @@ def test_tracker_records_only_bounded_public_result_state() -> None:
     assert snapshot["error_codes"] == ["operation_failed"]
     snapshot["topology"]["ct_count"] = 0
     assert build_diagnostics_snapshot(entry=SimpleNamespace(version=2), runtime={"diagnostics": tracker}, integration_version="0.1.0")["topology"]["ct_count"] == 12
+
+
+def test_tracker_records_offset_diagnostic_error_classes() -> None:
+    tracker = DiagnosticsTracker()
+    tracker.record_error(MeterCommunicationError((16,)))
+    tracker.record_error(OffsetDiagnosticsIncomplete())
+    tracker.record_error(OffsetChipIdentityUnavailable())
+
+    assert capture_diagnostics_snapshot(
+        entry=SimpleNamespace(version=1), runtime={"diagnostics": tracker}, integration_version="0.1.0"
+    ).public()["error_codes"] == [
+        "meter_communication_failed",
+        "offset_diagnostics_incomplete",
+        "offset_chip_identity_unavailable",
+    ]
 
 
 def test_captured_internal_snapshot_is_deeply_frozen_and_stable() -> None:

@@ -29,7 +29,7 @@ describe("meterSettingsStep", () => {
     expect(options.querySelector("#voltage-assignment-help")?.textContent).toContain("click Apply to save");
     expect(options.querySelector("#voltage-assignment-help")?.textContent).toContain("Compile and Install");
     expect(options.querySelector('[aria-label="Reporting interval"]')).toBeNull();
-    expect(root.querySelector(".package-options")?.textContent).toContain("used with the CircuitSetup Energy Analyzer");
+    expect(root.querySelector(".package-options")?.textContent).toContain("reactive power, apparent power, and power factor");
   });
 
   it("moves a voltage group atomically and requires multi-reference acknowledgement", () => {
@@ -65,12 +65,29 @@ describe("meterSettingsStep", () => {
     expect(root.textContent).toContain("1–5 seconds: high traffic.");
   });
 
+  it("keeps advanced voltage fields in top-aligned columns", () => {
+    const root = document.createElement("div");
+    render(meterSettingsStep({ ...draft, electrical_system: "custom", voltage_references: [{
+      ...draft.voltage_references[0]!, transformer_model_id: "custom",
+    }] }, catalog, true, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined), root);
+    const card = root.querySelector<HTMLElement>(".voltage-reference-card")!;
+    expect(card.querySelectorAll(".voltage-reference-column")).toHaveLength(2);
+    expect([...card.querySelectorAll(".voltage-reference-column:first-child label")].map((label) => label.textContent?.trim().split(" ")[0]))
+      .toEqual(["Label", "Nominal", "Custom"]);
+    expect(card.querySelector(".voltage-phase-column")?.querySelector("label")?.textContent).toContain("Phase label");
+  });
+
   it("shows the reporting default and derives voltage for fixed profiles", () => {
     const root = document.createElement("div");
     const standard = { ...draft, update_interval_s: 10 as const };
     render(meterSettingsStep(standard, catalog, true, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined), root);
     expect(root.textContent).toContain("Reporting interval (default: 10 seconds)");
     expect(root.textContent).not.toContain("10 seconds: standard");
+    expect(root.textContent).toContain("Nominal voltage: 120 V");
+    expect(root.querySelector('[aria-label="main nominal voltage"]')).toBeNull();
+
+    render(meterSettingsStep({ ...standard, electrical_system: "single_phase_230" }, catalog, true, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined), root);
+    expect(root.textContent).toContain("Nominal voltage: 230 V");
     expect(root.querySelector('[aria-label="main nominal voltage"]')).toBeNull();
 
     render(meterSettingsStep({ ...standard, electrical_system: "custom" }, catalog, true, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined), root);

@@ -91,10 +91,35 @@ class OffsetControlBinding:
 
 
 @dataclass(frozen=True, slots=True)
+class OffsetRunControlBinding:
+    run_offset: BoundEntity
+    run_power_offset: BoundEntity
+
+    @property
+    def entities(self) -> tuple[BoundEntity, BoundEntity]:
+        return self.run_offset, self.run_power_offset
+
+
+type OffsetControl = OffsetControlBinding | OffsetRunControlBinding
+
+
+@dataclass(frozen=True, slots=True)
 class OffsetControlCapability:
     status: OffsetControlStatus
-    controls: tuple[OffsetControlBinding, ...] = ()
+    controls: tuple[OffsetControl, ...] = ()
     repair_reason: str | None = None
+    run_controls: tuple[OffsetRunControlBinding, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.controls and not self.run_controls:
+            object.__setattr__(
+                self,
+                "run_controls",
+                tuple(
+                    OffsetRunControlBinding(item.run_offset, item.run_power_offset)
+                    for item in self.controls
+                ),
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,11 +180,13 @@ class MeterBinding:
             raise EntityBindingError("one native entity serves multiple semantic roles")
         capability = self.offset_capability
         if capability.status is OffsetControlStatus.AVAILABLE:
-            if len(capability.controls) != len(self.groups):
+            if len(capability.run_controls) != len(self.groups):
+                raise EntityBindingError("offset run controls do not cover every group")
+            if capability.controls and len(capability.controls) != len(self.groups):
                 raise EntityBindingError("offset controls do not cover every group")
             if capability.repair_reason is not None:
                 raise EntityBindingError("available offset controls cannot need repair")
-        elif capability.controls:
+        elif capability.controls or capability.run_controls:
             raise EntityBindingError("unavailable offset controls cannot be bound")
         elif (
             capability.status is OffsetControlStatus.INVALID
@@ -259,17 +286,25 @@ def bind_native_meter(
                 ),
                 *(f"CT{channel} Amps" for channel in range(first_channel, first_channel + 3)),
             )
-            offset_controls = (
-                binding.offset_capability.controls[board * 2 + group_index].entities
-                if binding.offset_capability.status is OffsetControlStatus.AVAILABLE
-                else ()
-            )
+            offset_controls: tuple[BoundEntity, ...] = ()
+            if binding.offset_capability.status is OffsetControlStatus.AVAILABLE:
+                control_index = board * 2 + group_index
+                offset_controls = (
+                    binding.offset_capability.controls[control_index].entities
+                    if binding.offset_capability.controls
+                    else binding.offset_capability.run_controls[control_index].entities
+                )
             offset_names = (
                 (
                     f"1. Run {group_name} Offset Cal",
                     f"z1. Clear {group_name} Offset Cal",
                     f"2. Run {group_name} Power Offset Cal",
                     f"z2. Clear {group_name} Power Offset Cal",
+                )
+                if len(offset_controls) == 4
+                else (
+                    f"1. Run {group_name} Offset Cal",
+                    f"2. Run {group_name} Power Offset Cal",
                 )
                 if offset_controls
                 else ()
@@ -575,12 +610,14 @@ def bind_meter(
                 )
             )
 
-    offset_controls: list[OffsetControlBinding] = []
+    offset_controls: list[OffsetControl] = []
+    run_controls: list[OffsetRunControlBinding] = []
     offset_errors: list[str] = []
+    clear_errors: list[str] = []
     found_offset_control = False
     for group in groups:
-        controls: list[BoundEntity | None] = []
         offset_group_name = _group_name_for(group.key, substitutions)
+        resolved: dict[str, BoundEntity | None] = {}
         for role, name, terms in (
             ("run_offset", f"1. Run {offset_group_name} Offset Cal", (group.key, "run", "offset")),
             ("restore_offset", f"z1. Clear {offset_group_name} Offset Cal", (group.key, "clear", "offset")),
@@ -588,21 +625,33 @@ def bind_meter(
             ("restore_power_offset", f"z2. Clear {offset_group_name} Power Offset Cal", (group.key, "clear", "power", "offset")),
         ):
             control, error = resolve_optional(_spec(f"{group.key}.{role}", "button", name, "", terms))
-            controls.append(control)
+            resolved[role] = control
             found_offset_control = found_offset_control or control is not None or error is not None
             if error is not None:
-                offset_errors.append(error)
-        if any(control is None for control in controls):
-            if any(control is not None for control in controls):
-                offset_errors.append(f"offset controls are partial for {group.key}")
+                (offset_errors if role.startswith("run_") else clear_errors).append(error)
+        run_offset = resolved["run_offset"]
+        run_power_offset = resolved["run_power_offset"]
+        if run_offset is None or run_power_offset is None:
+            if any(control is not None for control in resolved.values()):
+                offset_errors.append(f"offset run controls are partial for {group.key}")
             continue
-        run_offset, restore_offset, run_power_offset, restore_power_offset = controls
         assert (
             run_offset is not None
-            and restore_offset is not None
             and run_power_offset is not None
-            and restore_power_offset is not None
         )
+        run_bound = OffsetRunControlBinding(run_offset, run_power_offset)
+        if any(
+            control.descriptor.device_id != group.run_gain.descriptor.device_id
+            for control in run_bound.entities
+        ):
+            offset_errors.append(f"offset run controls are cross-device for {group.key}")
+            continue
+        run_controls.append(run_bound)
+        restore_offset = resolved["restore_offset"]
+        restore_power_offset = resolved["restore_power_offset"]
+        if restore_offset is None or restore_power_offset is None:
+            offset_controls.append(run_bound)
+            continue
         bound_controls = OffsetControlBinding(
             run_offset, restore_offset, run_power_offset, restore_power_offset
         )
@@ -616,16 +665,18 @@ def bind_meter(
 
     if not found_offset_control:
         offset_capability = OffsetControlCapability(OffsetControlStatus.UNAVAILABLE)
-    elif offset_errors or len(offset_controls) != len(groups):
+    elif offset_errors or clear_errors or len(run_controls) != len(groups):
         offset_capability = OffsetControlCapability(
             OffsetControlStatus.INVALID,
-            repair_reason=offset_errors[0]
-            if offset_errors
-            else "offset controls are incomplete",
+            repair_reason=(offset_errors or clear_errors)[0]
+            if offset_errors or clear_errors
+            else "offset run controls are incomplete",
         )
     else:
         offset_capability = OffsetControlCapability(
-            OffsetControlStatus.AVAILABLE, tuple(offset_controls)
+            OffsetControlStatus.AVAILABLE,
+            tuple(offset_controls),
+            run_controls=tuple(run_controls),
         )
 
     return MeterBinding(

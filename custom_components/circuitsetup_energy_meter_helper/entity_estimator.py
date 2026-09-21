@@ -26,6 +26,7 @@ from .meter_inventory import (
     _source_native_visibility,
 )
 from .models import MeterTopology
+from .package_contract import SUPPORTED_PACKAGE_CONTRACTS
 from .total_graph import native_total_sources, plan_total_graph
 
 
@@ -148,9 +149,11 @@ def estimate_configuration_impact(
         if not channel.enabled:
             continue
         enabled += 1
-        numeric += 2 + (
-            4 if configuration.power_quality[(channel.channel - 1) // 6] else 0
-        )
+        numeric += 2
+        if configuration.power_quality[(channel.channel - 1) // 6]:
+            numeric += SUPPORTED_PACKAGE_CONTRACTS[
+                "power_quality"
+            ].numeric_phase_metric_count()
         text += int(configuration.status_fields[(channel.channel - 1) // 6])
     external, internal = _source_owned_total_evidence(
         configuration, topology, document, replacements

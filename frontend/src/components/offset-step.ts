@@ -25,7 +25,7 @@ export function offsetStep(
   reconnect: () => void,
   skip: () => void,
   back: () => void,
-  continueToVoltage: () => void,
+  continueOffset: () => void,
   stock: { preparation: OffsetPreparationStatus | null; backupAcknowledged: boolean; setBackup: (value: boolean) => void; prepare: () => void } | null = null,
 ): TemplateResult {
   const capability = session?.offset_capability;
@@ -34,10 +34,17 @@ export function offsetStep(
     || session?.offset_disposition === "partial" && session.state === "applied_pending_restart_verification";
   const stageTwoReady = boards.length > 0 && boards.every((item) => item.stages[0]?.state === "completed");
   const stageState = boards[board]?.stages[stage - 1]?.state ?? "not_started";
+  const boardCount = topology?.board_count ?? boards.length;
+  const continueLabel = finalized ? "Continue to Voltage"
+    : board + 1 < boardCount ? `Continue to Add-on ${board + 1}`
+      : stage === 1 ? "Continue to Stage 2" : "Continue to Voltage";
+  const canContinue = finalized || stageState === "completed";
   const preparation = stock?.preparation;
+  const nativePreparation = Boolean(stock && (preparation?.mode ?? "native") === "native");
   const selectedInstances = groupKeys(board).map((id) => id.replace("main_", "meter_main"));
   const matching = preparation?.stage === stage && preparation.targets.length > 0 && preparation.targets.every((id) => selectedInstances.includes(id));
   const attempted = Boolean(matching && preparation?.attempted.length);
+  const nativeReview = nativePreparation || Boolean(preparation && (!preparation.installed || !preparation.action_ready || attempted));
   const recovery = Boolean(result?.retry_allowed) || stageState === "partial" || stageState === "indeterminate" || attempted && stageState !== "completed";
   const actionReady = !stock || Boolean(matching && preparation?.action_ready && !attempted);
   const unavailable = capability?.status !== "available";
@@ -76,14 +83,14 @@ export function offsetStep(
           <h2>Optional offset calibration · Stage ${stage} · ${boardLabel(board)}</h2>
           <p>Offset calibration is optional and requires changing the power and wiring state as described below. ${stock ? "Captured values remain pending until reviewed configuration installation and selection are confirmed." : "Offset values remain stored in meter flash."}</p>
           ${stock ? html`<section class="measurement-evidence" aria-label="Offset preparation backup">
-            <h3>Backup and preparation</h3>
-            <p>${preparation?.backup_available ? "Private backup retained; captured results are preserved." : "A private backup is required before installing the selected zero baseline."}</p>
-            <p>Preparation requires exact saved/effective per-chip tables for Stage ${stage}. Missing evidence is unavailable, not zero. Saved-source labels alone do not authorize calibration.</p>
-            ${matching && preparation?.installed ? html`<p>${preparation.action_ready ? "Preparation installed in this backend owner." : "Preparation was installed, but this backend owner has not confirmed its receipt. Review and install a fresh preparation for unfinished chips; retained values are not lost."}</p>` : nothing}
-            <label class="check-row"><input type="checkbox" .checked=${stock.backupAcknowledged} @change=${(event: Event) => stock.setBackup((event.target as HTMLInputElement).checked)}> I acknowledge the private backup and reviewed zero-baseline installation.</label>
+            <h3>${nativeReview ? "Native offset readiness" : "Why preparation is required"}</h3>
+            <p>${nativeReview ? "The helper uses the meter's native ATM90E32 offset controls; no firmware or zero-offset YAML is installed." : "Before calibration, the helper temporarily installs zero offsets for the selected chips so existing corrections do not affect the new measurements."}</p>
+            <p>The helper saves both offset stages for the selected chips in a private recovery backup. It uses fresh meter tables when available; a missing first-use table may use the current Device Builder YAML. This is not flash readback, and unknown values stay blocked.</p>
+            ${matching && preparation?.installed ? html`<p>${preparation.action_ready ? "Preparation installed in this backend owner." : nativeReview ? "This historical preparation is not authorized by this backend owner. Review native offset readiness again; retained values are not lost." : "Preparation was installed, but this backend owner has not confirmed its receipt. Review the preparation for unfinished chips; retained values are not lost."}</p>` : nothing}
+            <label class="check-row"><input type="checkbox" .checked=${stock.backupAcknowledged} @change=${(event: Event) => stock.setBackup((event.target as HTMLInputElement).checked)}> I understand that this step creates a private backup and ${nativeReview ? "uses the meter's native offset controls; no firmware is installed" : "installs a temporary zero-offset configuration"}.</label>
             <button class="secondary" data-action="prepare-offset" ?disabled=${busy || !stock.backupAcknowledged || stageState === "completed" || recovery && !retryConfirmed}
-              @click=${stock.prepare}>${recovery ? "Review unfinished-chip preparation" : "Review offset preparation"}</button>
-            ${attempted ? html`<p>This receipt was already attempted. Retry requires a new reviewed installation for only unfinished chips; completed values, including zeros, are retained.</p>` : nothing}
+              @click=${stock.prepare}>${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Loading offset preparation…` : recovery ? (nativeReview ? "Review unfinished-chip readiness" : "Review unfinished-chip preparation") : (nativeReview ? "Review native offset readiness" : "Review offset preparation")}</button>
+            ${attempted ? html`<p>${nativeReview ? "This run was already attempted. Review unfinished-chip readiness again before retrying; completed values, including zeros, are retained." : "This historical preparation was already attempted. Review the historical preparation again before retrying; completed values, including zeros, are retained."}</p>` : nothing}
           </section>` : nothing}
           <div class="warning-band"><strong>Warning:</strong> An open-circuit current-output CT on a live conductor can be hazardous. De-energize conductors before unplugging any CT.</div>
           ${stage === 1 ? html`
@@ -97,11 +104,11 @@ export function offsetStep(
           </label>
           <div class="offset-actions">
             <button class="secondary" data-action="check-offset" ?disabled=${busy || !acknowledged || stageState === "completed"} @click=${check}>
-              ${busy ? "Checking measured readiness…" : "Check measured readiness"}
+              ${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Checking measured readiness…` : "Check measured readiness"}
             </button>
             <button class="primary" data-action="calibrate-offset"
               ?disabled=${busy || !actionReady || !acknowledged || !readiness?.ready || stageState === "completed" || !stock && recovery && !retryConfirmed}
-              @click=${calibrate}>${result?.retry_allowed ? "Retry unfinished chip" : `Run Stage ${stage} calibration`}</button>
+              @click=${calibrate}>${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Running Stage ${stage} calibration…` : result?.retry_allowed ? "Retry unfinished chip" : `Run Stage ${stage} calibration`}</button>
           </div>
           ${readiness ? html`
             <section class="measurement-evidence" aria-label="Offset readiness evidence">
@@ -149,7 +156,7 @@ export function offsetStep(
       <footer class="action-footer offset-footer">
         <button class="secondary" ?disabled=${busy} @click=${back}>Back</button>
         <button class="secondary" data-action="skip-offset" ?disabled=${busy || finalized} @click=${skip}>Skip offset calibration</button>
-        <button class="primary" ?disabled=${busy || !finalized} @click=${continueToVoltage}>Continue</button>
+        <button class="primary" ?disabled=${busy || !canContinue} @click=${continueOffset}>${continueLabel}</button>
       </footer>
     </section>
   `;

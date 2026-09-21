@@ -81,6 +81,60 @@ def test_ci_runs_firmware_tests_without_compiling_every_meter() -> None:
     assert "esphome\", \"compile" not in workflow
 
 
+def test_firmware_filter_only_matches_yaml_configuration_changes() -> None:
+    workflow = (WORKFLOW_DIR / "ci.yml").read_text()
+    pattern = re.search(r"'([\^].*\$)'; then", workflow)
+    assert pattern is not None
+    matches = re.compile(pattern[1], re.MULTILINE)
+    component = "custom_components/circuitsetup_energy_meter_helper/"
+    for path in (
+        component + "config_mutator.py",
+        component + "package_contract.py",
+        component + "meter_config_mutator.py",
+        component + "total_graph.py",
+        component + "voltage_gains.py",
+        component + "templates/meter.yaml",
+        "tests/fixtures/device_builder/meter.yml",
+        "scripts/generate_esphome_validation_configs.py",
+        "scripts/verify_firmware_contract.py",
+    ):
+        assert matches.search(path), path
+    unrelated = (
+        "frontend/src/panel.ts",
+        component + "frontend/circuitsetup-energy-meter-helper-panel.js",
+        component + "websocket_api.py",
+        component + "workflow.py",
+        component + "store.py",
+        "tests/test_firmware_contract.py",
+        ".github/workflows/ci.yml",
+        "pyproject.toml",
+        "README.md",
+    )
+    assert not matches.search("\n".join(unrelated))
+    assert matches.search("\n".join((*unrelated, component + "config_blocks.py")))
+    # A renamed generator must still be detected through its deleted old path.
+    assert "git diff --no-renames --name-only" in workflow
+    assert "if: needs.changes.outputs.firmware == 'true'" in workflow
+
+
+def test_ci_firmware_filter_uses_the_full_pr_range_and_push_predecessor() -> None:
+    workflow = (WORKFLOW_DIR / "ci.yml").read_text()
+
+    assert "PR_ACTION:" not in workflow
+    assert "PR_BEFORE_SHA:" not in workflow
+    assert (
+        'if [[ "$EVENT_NAME" == "pull_request" ]]; then\n'
+        '            base="$PR_BASE_SHA"\n'
+        '            head="$PR_HEAD_SHA"\n'
+        '          else\n'
+        '            base="$PUSH_BEFORE_SHA"\n'
+        '            head="$PUSH_SHA"\n'
+        '          fi'
+    ) in workflow
+    assert 'git diff --no-renames --name-only "$base" "$head"' in workflow
+    assert 'git show --format= --name-only "$head"' in workflow
+
+
 def test_release_runs_firmware_tests_without_compiling_every_meter() -> None:
     workflow = (WORKFLOW_DIR / "release.yml").read_text()
 

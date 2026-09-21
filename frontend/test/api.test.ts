@@ -26,6 +26,40 @@ class FakeHass implements HomeAssistant {
   }
 }
 
+it.each([33, 128])("lists all %i ESPHome entries through bounded pages", async (count) => {
+  const entries = Array.from({ length: count }, (_, index) => ({
+    entry_id: `device-${String(index).padStart(3, "0")}`, title: `Device ${index}`,
+    project_name: null, project_version: null, compatibility: ["project_label_missing"],
+  }));
+  const hass = new FakeHass();
+  hass.callWS = async <T>(message: Record<string, unknown>) => {
+    hass.messages.push(message);
+    return entries.filter((entry) => entry.entry_id > String(message.after_entry_id ?? "")).slice(0, 32) as T;
+  };
+  expect(await new HelperApi(hass, "helper").listExistingMeters()).toEqual(entries);
+  expect(hass.messages).toHaveLength(Math.floor(count / 32) + 1);
+});
+
+it("rejects a repeated discovery page instead of looping indefinitely", async () => {
+  const hass = new FakeHass();
+  hass.responses.list_existing_meters = Array.from({ length: 32 }, (_, index) => ({
+    entry_id: `device-${String(index).padStart(3, "0")}`, title: `Device ${index}`,
+    project_name: null, project_version: null, compatibility: [],
+  }));
+  await expect(new HelperApi(hass, "helper").listExistingMeters()).rejects.toThrow();
+});
+
+it("scopes offset reconnects and closes a completed session", async () => {
+  const hass = new FakeHass();
+  const api = new HelperApi(hass, "entry-1");
+  hass.responses.reconnect_session = { session_id: "session-1", device_id: "meter-1", state: "ready", safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
+  await api.reconnectSession("session-1", 1, 2);
+  expect(hass.messages.at(-1)).toMatchObject({ board_index: 1, stage: 2 });
+  hass.responses.close_session = { session_id: "session-1", closed: true };
+  await api.closeSession("session-1");
+  expect(hass.messages.at(-1)).toMatchObject({ session_id: "session-1" });
+});
+
 const device = {
   entry_id: "meter-1", title: "Meter", project_name: "circuitsetup.6c-energy-meter",
   project_version: "2026.8.0", importable: true, configuration: null,
@@ -203,16 +237,24 @@ describe("HelperApi", () => {
   it("validates exact stock status and nested normal review boundaries", async () => {
     const hass = new FakeHass(); const api = new HelperApi(hass, "entry-1");
     const status = { backup_available: true, operation_id: "4".repeat(32), stage: 1,
-      targets: ["meter_main1", "meter_main2"], installed: true, cancelled: false, action_ready: false,
+      targets: ["meter_main1", "meter_main2"], mode: "legacy", installed: true, cancelled: false, action_ready: false,
       attempted: ["meter_main1"], completed: [["meter_main1", 1]] };
     hass.responses.get_offset_preparation = status;
     await expect(api.getOffsetPreparation("3".repeat(32))).resolves.toEqual(status);
+    const native = { ...status, mode: "native", installed: false, action_ready: true, attempted: [], completed: [] };
+    hass.responses.get_offset_preparation = native;
+    await expect(api.getOffsetPreparation("3".repeat(32))).resolves.toEqual(native);
     hass.responses.preview_offset_preparation = { operation_id: status.operation_id, stage: 1,
-      targets: status.targets, backup_available: true, transaction: { ...transaction, purpose: "offset_preparation",
+      targets: status.targets, backup_available: true, mode: "legacy", transaction: { ...transaction, purpose: "offset_preparation",
         changes: [{ key: "meter.calibrated_offsets", old_value: "existing", new_value: "zero" }] } };
     await expect(api.previewOffsetPreparation("3".repeat(32), 0, 1, true)).resolves.toMatchObject({ transaction: { purpose: "offset_preparation" } });
     expect(hass.messages.at(-1)).toEqual({ type: "circuitsetup_energy_meter_helper/preview_offset_preparation", entry_id: "entry-1",
       session_id: "3".repeat(32), board_index: 0, stage: 1, backup_acknowledged: true });
+    await expect(api.previewOffsetPreparation("3".repeat(32), 0, 1, true)).resolves.toMatchObject({ transaction: { purpose: "offset_preparation" } });
+    expect(hass.messages.at(-1)).not.toHaveProperty("first_calibration_confirmed");
+    hass.responses.preview_offset_preparation = { operation_id: native.operation_id, stage: 1,
+      targets: native.targets, backup_available: true, mode: "native", transaction: null };
+    await expect(api.previewOffsetPreparation("3".repeat(32), 0, 1, true)).resolves.toMatchObject({ mode: "native", transaction: null });
     for (const invalid of [{ ...status, action_ready: true, installed: false }, { ...status, stage: true },
       { ...status, operation_id: "bad" }, { ...status, targets: ["meter_main1", "meter_main1"] }, { ...status, private_binding: {} }]) {
       hass.responses.get_offset_preparation = invalid;
@@ -1006,6 +1048,16 @@ describe("HelperApi", () => {
     }
     expect(() => HelperApi.assertPublicPayload({ detail: "ordinary safe whitespace" })).not.toThrow();
     expect(() => HelperApi.assertPublicPayload({ redacted_diff: "- old\n+ new" })).not.toThrow();
+    expect(() => HelperApi.assertPublicPayload({ redacted_diff:
+      "-  password: [redacted]\n   ssid: [redacted]\n-    Authorization: [redacted]\n+    Cookie: [redacted]\n-  source: [redacted]" })).not.toThrow();
+    for (const unsafe of [
+      "-  password: visible",
+      "-  ssid: HomeNetwork",
+      "-    Authorization: BearerVisible",
+      "-    Cookie: session=visible",
+      "-  source: https://alice:visible@example.invalid/repo",
+      "-  password: [redacted]\npass\nword=visible",
+    ]) expect(() => HelperApi.assertPublicPayload({ redacted_diff: unsafe })).toThrow("unsafe string");
     for (const key of ["safe\tkey", "api\tkey", "safe\nkey", "x".repeat(257)]) {
       expect(() => HelperApi.assertPublicPayload({ evidence: [{ [key]: "value" }] })).toThrow();
     }
@@ -1124,11 +1176,16 @@ describe("HelperApi", () => {
       changes: [
         { key: "package.main.power_quality", old_value: "disabled", new_value: "enabled" },
         { key: "package.addon6.status_fields", old_value: "enabled", new_value: "disabled" },
+        { key: "calibration.offset_calibration", old_value: "false", new_value: "true" },
       ],
     };
 
     await expect(api.previewCtConfig("meter-1", "plan-1", "a".repeat(64), [])).resolves.toMatchObject({
-      changes: [{ key: "package.main.power_quality" }, { key: "package.addon6.status_fields" }],
+      changes: [
+        { key: "package.main.power_quality" },
+        { key: "package.addon6.status_fields" },
+        { key: "calibration.offset_calibration" },
+      ],
     });
     hass.responses.preview_ct_config = {
       ...transaction,

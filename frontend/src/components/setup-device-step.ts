@@ -1,5 +1,6 @@
-import { html, type TemplateResult } from "lit";
-import type { ConnectionType, SetupSnapshot } from "../types";
+import { html, nothing, type TemplateResult } from "lit";
+import type { ConnectionType, ExistingDeviceCandidate, ExistingMeterInspection, SetupSnapshot } from "../types";
+import { existingMeterInspection } from "./existing-configuration-step";
 
 const CONNECTIONS: Array<[Exclude<ConnectionType, "unknown">, string]> = [
   ["wifi", "Wi-Fi"],
@@ -20,6 +21,12 @@ export function setupDeviceStep(
   discoverOnly = false,
   firmwareCatalog: TemplateResult = html``,
   importFailedDeviceId: string | null = null,
+  existingCandidates: ExistingDeviceCandidate[] = [],
+  inspection: ExistingMeterInspection | null = null,
+  findExisting: () => void = () => undefined,
+  inspectExisting: (deviceId: string) => void = () => undefined,
+  adoptInspected: (deviceId: string) => void = () => undefined,
+  existingSearchComplete = false,
 ): TemplateResult {
   return html`
     <section class="step-content setup-step" aria-labelledby="step-heading">
@@ -44,8 +51,10 @@ export function setupDeviceStep(
           `)}
         </div>
       </section>` : html``}
+      ${existingMeterInspection(existingCandidates, inspection, busyAction, findExisting, inspectExisting, adoptInspected, existingSearchComplete)}
       ${discoverOnly ? "" : html`<hr />
       <h2>Set up a new meter</h2>
+      <p class="info-band">ESPHome Device Builder must be installed and running in Home Assistant before you can set up a new meter. <a href="https://esphome.io/install/" target="_blank" rel="noreferrer noopener">See how to install it in Home Assistant</a>.</p>
       <fieldset class="choice-field">
         <legend>Add-on boards</legend>
         <p>Select how many add-on boards are attached to your energy meter.</p>
@@ -84,16 +93,17 @@ export function setupDeviceStep(
       <section class="next-steps" aria-labelledby="next-steps-heading">
         <h2 id="next-steps-heading">What happens next</h2>
         <ol>
-          <li>Install the selected firmware and select <strong>Next</strong> in ESP Web Tools.</li>
-          <li>Select <strong>Add to Home Assistant</strong> and approve the discovered ESPHome device.</li>
-          <li>Return here. The helper will import it into ESPHome Builder and continue.</li>
+          <li>After the firmware is installed, click <strong>Next</strong>.</li>
+          <li>If you are using Wi-Fi, enter your Wi-Fi credentials.</li>
+          <li>Select <strong>Add to Home Assistant</strong>, then approve the discovered ESPHome device in <strong>ESPHome Device Builder</strong>.</li>
+          <li>Return here. The helper will import your meter so you can customize its settings.</li>
         </ol>
       </section>
       <p class="info-band">${connection === "wifi"
         ? "Use a USB data cable. ESP Web Tools asks for your Wi-Fi network and password and sends them directly to your meter. This helper does not store or send those credentials to Home Assistant."
         : "Use a USB data cable, connect Ethernet and power, then wait for an address from DHCP."}</p>
       `}
-      <button class="rescan" data-action="rescan" ?disabled=${Boolean(busyAction)} @click=${rescan}>${busyAction === "rescan" ? "Rescanning…" : "Rescan for device"}</button>
+      ${discoverOnly ? nothing : html`<button class="rescan" data-action="rescan" ?disabled=${Boolean(busyAction)} @click=${rescan}>${busyAction === "rescan" ? "Rescanning…" : "Rescan for device"}</button>`}
     </section>
   `;
 }

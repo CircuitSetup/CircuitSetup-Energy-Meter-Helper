@@ -49,6 +49,11 @@ _POWER_OFFSET_COMPARE_ROW_RE = re.compile(
     r"(?P<flash_reactive>[+-]?\d+)\s*\|\s*$"
 )
 _SIGNED_ROW_LIKE_RE = re.compile(r"\|\s*[A-Za-z]\s*\|\s*[+-]?\d+")
+_OFFSET_FALLBACK_TERM = "No stored offset calibrations found"
+_POWER_OFFSET_FALLBACK_TERMS = (
+    "No stored power offset calibrations found",
+    "No stored power offsets found",
+)
 _OFFSET_READBACK_RE = re.compile(r"Offset readback failed for Phase (?P<phase>[ABC]):")
 _POWER_OFFSET_READBACK_RE = re.compile(
     r"Power offset readback failed for Phase (?P<phase>[ABC]):"
@@ -101,6 +106,7 @@ class MeterCommunicationParser:
     def __init__(self) -> None:
         self.checked_cs_pins: set[int] = set()
         self.failed_cs_pins: set[int] = set()
+        self.unattributed_failure = False
         self.failed = False
         self._active = False
         self._pin: int | None = None
@@ -122,6 +128,8 @@ class MeterCommunicationParser:
                 self.failed = True
                 if self._pin is not None:
                     self.failed_cs_pins.add(self._pin)
+                else:
+                    self.unattributed_failure = True
         elif self._active and payload.casefold().startswith("update interval:"):
             if self._pin is not None:
                 self.checked_cs_pins.add(self._pin)
@@ -241,7 +249,12 @@ class OffsetTableSnapshot:
     instance_id: str
     offset_stage: Literal[1, 2]
     phase_values: tuple[tuple[int, int], tuple[int, int], tuple[int, int]]
-    reported_state: Literal["restored", "mismatch", "configuration"]
+    reported_state: Literal[
+        "restored",
+        "mismatch",
+        "configuration",
+        "first_calibration_configuration",
+    ]
     register_verified: bool
     config_differs_from_flash: bool
 
@@ -885,6 +898,7 @@ def parse_restore(
         "Offset calibration restore verified.",
         "Power offset calibration restore verified.",
         "No stored offset calibrations found",
+        "No stored power offset calibrations found",
         "No stored power offsets found",
         "offset restore failed verification",
         "Offset calibration restore failed verification",
@@ -1043,10 +1057,28 @@ def parse_offset_table_snapshot(
         if power
         else "|Phase|offset_voltage|offset_current|"
     )
-    fallback = (
-        "No stored power offsets found"
+    other_positive_header = (
+        "Restored offset calibration from memory"
         if power
-        else "No stored offset calibrations found"
+        else "Restored power offset calibration from memory"
+    )
+    other_mismatch_header = (
+        "Offset mismatch: using flash values"
+        if power
+        else "Power offset mismatch: using flash values"
+    )
+    other_columns = (
+        "|Phase|offset_voltage|offset_current|"
+        if power
+        else "|Phase|offset_active_power|offset_reactive_power|"
+    )
+    other_verified_term = (
+        "Offset calibration restore verified."
+        if power
+        else "Power offset calibration restore verified."
+    )
+    fallback_terms = (
+        _POWER_OFFSET_FALLBACK_TERMS if power else (_OFFSET_FALLBACK_TERM,)
     )
     failure_terms = (
         (
@@ -1074,10 +1106,6 @@ def parse_offset_table_snapshot(
     )
     if any("SPI read mismatch" in item.line for item in matching):
         raise LogEvidenceError(f"{kind} snapshot observed SPI read mismatch")
-    row_pattern = _POWER_OFFSET_ROW_RE if power else _OFFSET_ROW_RE
-    comparison_row_pattern = (
-        _POWER_OFFSET_COMPARE_ROW_RE if power else _OFFSET_COMPARE_ROW_RE
-    )
     verified_term = (
         "Power offset calibration restore verified."
         if power
@@ -1089,11 +1117,15 @@ def parse_offset_table_snapshot(
             positive_header in item.line
             or mismatch_header in item.line
             or columns in normalized
-            or row_pattern.search(item.line) is not None
-            or comparison_row_pattern.search(item.line) is not None
             or verified_term in item.line
-            or fallback in item.line
+            or any(term in item.line for term in fallback_terms)
             or any(term in item.line for term in failure_terms)
+            # Validate tags on either stage's rows without making them selected
+            # stage evidence; the table category still comes from its header.
+            or _OFFSET_ROW_RE.search(item.line) is not None
+            or _POWER_OFFSET_ROW_RE.search(item.line) is not None
+            or _OFFSET_COMPARE_ROW_RE.search(item.line) is not None
+            or _POWER_OFFSET_COMPARE_ROW_RE.search(item.line) is not None
         )
         if not relevant:
             continue
@@ -1112,21 +1144,50 @@ def parse_offset_table_snapshot(
             positive_header in item.line
             or mismatch_header in item.line
             or columns in re.sub(r"\s+", "", item.line)
+            or verified_term in item.line
             for item in instance_lines
         )
-        has_fallback = any(fallback in item.line for item in instance_lines)
+        has_fallback = any(
+            any(term in item.line for term in fallback_terms)
+            for item in instance_lines
+        )
+        has_positive = any(positive_header in item.line for item in instance_lines)
+        has_mismatch = any(mismatch_header in item.line for item in instance_lines)
+        has_verified = any(verified_term in item.line for item in instance_lines)
+        has_failure = any(
+            any(term in item.line for term in failure_terms)
+            for item in instance_lines
+        )
+        has_other_stage_table = any(
+            other_positive_header in item.line
+            or other_mismatch_header in item.line
+            or other_columns in re.sub(r"\s+", "", item.line)
+            or other_verified_term in item.line
+            for item in instance_lines
+        )
+        has_orphan_rows = any(
+            pattern.search(item.line) is not None
+            for item in instance_lines
+            for pattern in (
+                _OFFSET_ROW_RE,
+                _POWER_OFFSET_ROW_RE,
+                _OFFSET_COMPARE_ROW_RE,
+                _POWER_OFFSET_COMPARE_ROW_RE,
+            )
+        )
+        if has_fallback and (
+            has_positive or has_mismatch or has_verified or has_failure
+        ):
+            raise LogEvidenceError(f"{instance_id}: {kind} snapshot is contradictory")
         if not has_table_evidence:
-            if any(
-                any(term in item.line for term in failure_terms)
-                for item in instance_lines
-            ):
+            if has_failure:
                 raise LogEvidenceError(f"{instance_id}: {kind} snapshot restore failed")
+            if has_orphan_rows and not has_other_stage_table:
+                raise LogEvidenceError(f"{instance_id}: {kind} snapshot table is orphaned")
             # A stock dump can omit this table entirely. A reported fallback is
             # still unavailable here, never a manufactured all-zero table.
             snapshots[instance_id] = None
             continue
-        if has_fallback:
-            raise LogEvidenceError(f"{instance_id}: {kind} snapshot is contradictory")
         rows, verified, differs = _restore_offset_category(
             instance_lines,
             expected=True,
@@ -1365,6 +1426,8 @@ def _offset_log_category(
         or "Power offset readback" in payload
         or "Power offset mismatch" in payload
         or "power offset calibration" in payload
+        or "No stored power offset calibrations found" in payload
+        or "No stored power offsets found" in payload
     ):
         return "power_offset"
     if (
@@ -1373,6 +1436,7 @@ def _offset_log_category(
         or "Offset calibration" in payload
         or "Offset readback" in payload
         or "Offset mismatch" in payload
+        or "No stored offset calibrations found" in payload
     ):
         return "offset"
     return None
@@ -1419,10 +1483,8 @@ def _restore_offset_category(
         if power
         else "Offset calibration restore verified."
     )
-    fallback_term = (
-        "No stored power offsets found"
-        if power
-        else "No stored offset calibrations found"
+    fallback_terms = (
+        _POWER_OFFSET_FALLBACK_TERMS if power else (_OFFSET_FALLBACK_TERM,)
     )
     failure_terms = (
         (
@@ -1444,13 +1506,14 @@ def _restore_offset_category(
         positive_header in item.line
         or mismatch_header in item.line
         or verified_term in item.line
-        or fallback_term in item.line
+        or any(term in item.line for term in fallback_terms)
         or any(term in item.line for term in failure_terms)
         for item in lines
     )
     failed = any(any(term in item.line for term in failure_terms) for item in lines)
     fell_back = any(
-        fallback_term in item.line or disabled in item.line for item in lines
+        any(term in item.line for term in fallback_terms) or disabled in item.line
+        for item in lines
     )
     if not expected and (failed or fell_back):
         return None, False, False
@@ -1474,8 +1537,31 @@ def _restore_offset_category(
         raise LogEvidenceError(
             f"{instance_id}: {kind} restore verification is missing or duplicate"
         )
-    positive_block = _signed_table(lines, positive_header, columns, comparison=False)
-    mismatch_block = _signed_table(lines, mismatch_header, columns, comparison=True)
+    other_positive_header = (
+        "Restored offset calibration from memory"
+        if power
+        else "Restored power offset calibration from memory"
+    )
+    other_mismatch_header = (
+        "Offset mismatch: using flash values"
+        if power
+        else "Power offset mismatch: using flash values"
+    )
+    stop_markers = (other_positive_header, other_mismatch_header)
+    positive_block = _signed_table(
+        lines,
+        positive_header,
+        columns,
+        comparison=False,
+        stop_markers=stop_markers,
+    )
+    mismatch_block = _signed_table(
+        lines,
+        mismatch_header,
+        columns,
+        comparison=True,
+        stop_markers=stop_markers,
+    )
     if positive_block is not None and mismatch_block is not None:
         raise LogEvidenceError(f"{instance_id}: {kind} restore tables are ambiguous")
     if positive_block is not None:
@@ -1509,6 +1595,7 @@ def _signed_table(
     columns: str,
     *,
     comparison: bool,
+    stop_markers: tuple[str, ...] = (),
 ) -> list[CalibrationLogLine] | None:
     headers = [index for index, item in enumerate(lines) if header in item.line]
     if not headers:
@@ -1517,7 +1604,7 @@ def _signed_table(
         raise LogEvidenceError(f"duplicate signed table header: {header}")
     block: list[CalibrationLogLine] = []
     for item in lines[headers[0] + 1 :]:
-        if "====" in item.line:
+        if "====" in item.line or any(marker in item.line for marker in stop_markers):
             break
         block.append(item)
     normalized = [re.sub(r"\s+", "", item.line) for item in block]
