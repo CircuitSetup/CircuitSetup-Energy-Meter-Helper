@@ -17,11 +17,11 @@ export function restartStep(
     : hasOffsets ? "Unavailable; offset calibration remains saved in flash" : "Unavailable in runtime-only mode";
   return html`
     <section class="step-content" aria-labelledby="step-heading">
-      <p>Restart verification checks the exact meter identity, topology, restored references, gains, voltage/current offsets, power offsets, and entity bindings.</p>
+      <p>Restart verification checks meter identity, topology, references, gains, offsets, and entity bindings.</p>
       <div class="status-band" role="status">${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Restarting and verifying…` : state || "Ready for restart verification"}</div>
       ${result ? html`<dl class="status-list"><div><dt>Verification</dt><dd>${result.verification_id}</dd></div><div><dt>Authority</dt><dd>${result.source_authority.replaceAll("_", " ")}</dd></div><div><dt>Connection generation</dt><dd>${result.connection_generation}</dd></div><div><dt>Source handoff</dt><dd>${handoffStatus}</dd></div></dl>` : ""}
-      ${state === "cancelled" ? html`<div class="recovery-panel"><strong>Session cancelled</strong><p>Cleanup completed without claiming restart verification.</p></div>` : ""}
-      ${recovery ? html`<div class="recovery-panel"><strong>Recovery required</strong><p>Reconnect to the meter and inspect live session evidence before retrying. Use rollback only when the current transaction makes it available.</p>${rollbackAvailable ? html`<button class="danger" data-action="rollback" @click=${rollback}>Review rollback</button>` : ""}</div>` : ""}
+      ${state === "cancelled" ? html`<div class="recovery-panel"><strong>Session cancelled</strong><p>Cleanup completed; restart verification was not claimed.</p></div>` : ""}
+      ${recovery ? html`<div class="recovery-panel"><strong>Recovery required</strong><p>Reconnect and inspect live session evidence before retrying. Use rollback only when available.</p>${rollbackAvailable ? html`<button class="danger" data-action="rollback" @click=${rollback}>Review rollback</button>` : ""}</div>` : ""}
       <footer class="action-footer"><button class="secondary" @click=${back} ?disabled=${busy}>Back</button><button class="primary" @click=${restart} ?disabled=${busy || state === "cancelled" || Boolean(result)}>${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Restarting and verifying…` : state.includes("failed") ? "Retry restart verification" : "Restart and verify"}</button></footer>
     </section>
   `;

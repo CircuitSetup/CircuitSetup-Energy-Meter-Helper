@@ -29,8 +29,8 @@ it("renders one shared conditional visibility note before the main-only card con
   expect(note!.compareDocumentPosition(card!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(container.textContent).toContain("Overall meter total (all monitored channels)");
   expect(container.textContent).toContain("all monitored channels");
-  expect(container.textContent).toContain("Watts is hidden from Home Assistant when off");
-  expect(container.textContent).not.toContain("Native source visibility is unconfirmed");
+  expect(container.textContent).toContain("Off Watts stays hidden in Home Assistant");
+  expect(container.textContent).not.toContain("Native visibility is unconfirmed");
   expect(container.textContent).not.toContain("Main Board total");
   expect([...container.querySelectorAll<HTMLInputElement>("input")].map((input) => input.getAttribute("aria-label"))).toEqual([
     "Overall meter total Watts", "Overall meter total Amps", "Overall meter total kWh",
@@ -74,7 +74,7 @@ it("distinguishes ready inventory from pending and invalid graph previews", () =
   mount();
   expect(container.textContent).not.toContain("Updating total graph");
   mount(meterResponse(), true, true, "pending");
-  expect(container.textContent).toContain("Updating total graph");
+  expect(container.textContent).toContain("Total graph updating");
   mount(meterResponse(), true, true, "invalid");
   expect(container.textContent).toContain("Total graph unavailable");
 });
@@ -94,8 +94,8 @@ it("patches only the selected board, keeps mixed output switches, and warns when
   response.totals.migration.native_visibility_resolved = false;
   const { update } = mount(response);
 
-  expect(container.textContent).toContain("Native source visibility is unconfirmed");
-  expect([...container.querySelectorAll(".info-band")].filter((element) => element.textContent?.includes("Native source visibility is unconfirmed"))).toHaveLength(1);
+  expect(container.textContent).toContain("Native visibility is unconfirmed");
+  expect([...container.querySelectorAll(".info-band")].filter((element) => element.textContent?.includes("Native visibility is unconfirmed"))).toHaveLength(1);
   expect(container.querySelectorAll(".native-total-status")).toHaveLength(1);
   expect(container.querySelectorAll(".native-total-status li")).toHaveLength(3);
   expect(container.querySelectorAll(".default-total-card .native-total-status")).toHaveLength(0);

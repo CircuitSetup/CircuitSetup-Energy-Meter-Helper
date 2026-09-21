@@ -79,7 +79,7 @@ export function ctInventoryStep(
             @click=${() => setBoard(index)}>${index === 0 ? "Main Board" : `Add-on ${index}`}</button>
         `)}
       </div>
-      <p>Choose the CT model and confirm each circuit. The helper selects the smallest safe reporting range automatically.</p>
+      <p>Choose a CT model for each circuit. Reporting range is set automatically.</p>
       <div id="board-panel" role="tabpanel" aria-labelledby=${`board-tab-${board}`}>
       <div class="ct-table" role="table" aria-rowcount=${inventory.channels.length + 1}>
         <div class="ct-header" role="row" aria-rowindex="1">

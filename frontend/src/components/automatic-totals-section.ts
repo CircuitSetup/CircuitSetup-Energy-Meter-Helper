@@ -24,8 +24,8 @@ export function automaticTotalsSection(
   const ambiguousRoles = automaticRoleLabels.filter(([role]) => configuration.channels.filter((channel) => channel.enabled && channel.role === role && !pairedChannels.has(channel.channel)).length > 2);
   return html`<section class="automatic-totals" aria-labelledby="automatic-totals-heading">
     <h2 id="automatic-totals-heading">Suggested circuit totals</h2>
-    <p>Suggestions update as you classify and name CTs. Matching phase names such as Dryer L1 and Dryer L2 can identify a two-pole circuit; select the suggested total to add it.</p>
-    ${ambiguousRoles.map(([, label]) => html`<p class="info-band" role="status">Multiple ${label} CTs cannot be paired automatically. Create the totals under Advanced totals.</p>`)}
+    <p>Suggestions update as CTs are named and classified. Matching phase names (for example, Dryer L1/L2) can identify a two-pole circuit. Select a suggestion to add it.</p>
+    ${ambiguousRoles.map(([, label]) => html`<p class="info-band" role="status">Multiple ${label} CTs cannot be paired automatically. Create them in Advanced totals.</p>`)}
     ${totals.automatic_totals.length ? totals.automatic_totals.map((resolved) => {
       const saved = configuration.automatic_totals.find((item) => item.candidate_id === resolved.candidate.candidate_id);
       const current = saved ?? { candidate_id: resolved.candidate.candidate_id, enabled: resolved.enabled, outputs: resolved.outputs };
@@ -59,13 +59,13 @@ export function automaticTotalsSection(
         <label class="automatic-total-name">Name <input aria-label=${`${resolved.candidate.candidate_id} suggested total name`} maxlength="64" required .value=${live(currentName)} ?disabled=${!writable}
           @input=${(event: Event) => patch(resolved.candidate.candidate_id, current, { name: (event.target as HTMLInputElement).value })} /></label>
         ${savedSensorIds
-          ? html`<p class="aggregate-id">Existing sensor IDs are preserved; see the reviewed configuration for the exact firmware IDs.</p>`
+          ? html`<p class="aggregate-id">Existing sensor IDs are preserved; see Configuration review for exact IDs.</p>`
           : html`<p class="aggregate-id">Proposed sensor IDs: <code>${sensorIds.length ? sensorIds.join(", ") : currentName.trim() ? "none until an output is selected" : "enter a name first"}</code></p>`}
         <p>Sources: ${sources}</p><p>Formula: ${sourceFormula(resolved.candidate.sources, totals, configuration.aggregates)} · ${resolved.candidate.role.replaceAll("_", " ")} · ${resolved.candidate.measurement_method.replaceAll("_", " ")}</p>
         ${parents.length ? html`<p>Feeds into: ${parents.map((parent) => parent.name).join(" and ")}</p>` : ""}
         <label class="automatic-total-control"><input type="checkbox" role="switch" aria-label=${`Create ${currentName} total`} .checked=${current.enabled} ?disabled=${!writable} @change=${changeEnabled} />Create this total</label>
         <div class="automatic-total-controls">${control("watts", "Watts")}${control("amps", "Amps")}${control("kwh", "kWh", resolved.candidate.energy_mode === "none")}</div>
       </fieldset>`;
-    }) : html`<p class="info-band" role="status">No server-suggested totals are available for this circuit configuration.</p>`}
+    }) : html`<p class="info-band" role="status">No server suggestions are available for this circuit configuration.</p>`}
   </section>`;
 }

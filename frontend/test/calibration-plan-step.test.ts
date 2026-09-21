@@ -33,9 +33,9 @@ describe("calibrationPlanStep", () => {
     for (const copy of [
       "connected to Home Assistant",
       "ESPHome source editing is unavailable",
-      "Circuit names, CT models, roles, multipliers, entities, and totals cannot be changed",
+      "This helper cannot change circuit names, CT models, roles, multipliers, entities, or totals",
       "saved in meter flash",
-      "Installing firmware later may replace",
+      "later firmware install may replace",
       "ESPHome Device Builder",
       "reporting multiplier",
     ]) expect(root.textContent).toContain(copy);

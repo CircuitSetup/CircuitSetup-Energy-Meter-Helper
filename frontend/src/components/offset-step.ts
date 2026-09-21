@@ -58,7 +58,7 @@ export function offsetStep(
         <div class="warning-band" role="status">
           <strong>Offset calibration is ${capability?.status === "invalid" ? "not safely available" : "not available on this firmware"}.</strong>
           ${capability?.status === "invalid" ? html`<p>Repair reason: ${capability.repair_reason}</p>` : nothing}
-          <p>Skip preserves the offset values already saved in flash. No clear control is invoked.</p>
+          <p>Skip keeps offset values saved in flash. It does not clear them.</p>
         </div>
       ` : html`
         <ol class="offset-stage-stepper" aria-label="Offset calibration stages">
@@ -81,24 +81,24 @@ export function offsetStep(
         </div>
         <div id="offset-board-panel" role="tabpanel" aria-labelledby=${`offset-board-tab-${board}`}>
           <h2>Optional offset calibration · Stage ${stage} · ${boardLabel(board)}</h2>
-          <p>Offset calibration is optional and requires changing the power and wiring state as described below. ${stock ? "Captured values remain pending until reviewed configuration installation and selection are confirmed." : "Offset values remain stored in meter flash."}</p>
+          <p>Offset calibration is optional and requires the power and wiring changes below. ${stock ? "Captured values stay pending until reviewed configuration is installed and selected." : "Offset values stay in meter flash."}</p>
           ${stock ? html`<section class="measurement-evidence" aria-label="Offset preparation backup">
             <h3>${nativeReview ? "Native offset readiness" : "Why preparation is required"}</h3>
-            <p>${nativeReview ? "The helper uses the meter's native ATM90E32 offset controls; no firmware or zero-offset YAML is installed." : "Before calibration, the helper temporarily installs zero offsets for the selected chips so existing corrections do not affect the new measurements."}</p>
-            <p>The helper saves both offset stages for the selected chips in a private recovery backup. It uses fresh meter tables when available; a missing first-use table may use the current Device Builder YAML. This is not flash readback, and unknown values stay blocked.</p>
+            <p>${nativeReview ? "Uses the meter's native ATM90E32 offset controls; installs no firmware or zero-offset YAML." : "Temporarily installs zero offsets for selected chips so existing corrections do not affect measurements."}</p>
+            <p>Saves both stages for selected chips in a private recovery backup. Uses fresh meter tables when available; a missing first-use table may use current Device Builder YAML. This is not flash readback; unknown values stay blocked.</p>
             ${matching && preparation?.installed ? html`<p>${preparation.action_ready ? "Preparation installed in this backend owner." : nativeReview ? "This historical preparation is not authorized by this backend owner. Review native offset readiness again; retained values are not lost." : "Preparation was installed, but this backend owner has not confirmed its receipt. Review the preparation for unfinished chips; retained values are not lost."}</p>` : nothing}
             <label class="check-row"><input type="checkbox" .checked=${stock.backupAcknowledged} @change=${(event: Event) => stock.setBackup((event.target as HTMLInputElement).checked)}> I understand that this step creates a private backup and ${nativeReview ? "uses the meter's native offset controls; no firmware is installed" : "installs a temporary zero-offset configuration"}.</label>
             <button class="secondary" data-action="prepare-offset" ?disabled=${busy || !stock.backupAcknowledged || stageState === "completed" || recovery && !retryConfirmed}
               @click=${stock.prepare}>${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Loading offset preparation…` : recovery ? (nativeReview ? "Review unfinished-chip readiness" : "Review unfinished-chip preparation") : (nativeReview ? "Review native offset readiness" : "Review offset preparation")}</button>
-            ${attempted ? html`<p>${nativeReview ? "This run was already attempted. Review unfinished-chip readiness again before retrying; completed values, including zeros, are retained." : "This historical preparation was already attempted. Review the historical preparation again before retrying; completed values, including zeros, are retained."}</p>` : nothing}
+            ${attempted ? html`<p>${nativeReview ? "Run already attempted. Review unfinished-chip readiness before retrying; completed values, including zeros, stay retained." : "Historical preparation already attempted. Review it before retrying; completed values, including zeros, stay retained."}</p>` : nothing}
           </section>` : nothing}
-          <div class="warning-band"><strong>Warning:</strong> An open-circuit current-output CT on a live conductor can be hazardous. De-energize conductors before unplugging any CT.</div>
+          <div class="warning-band"><strong>Warning:</strong> An open-circuit CT on a live conductor can be hazardous. De-energize before unplugging any CT.</div>
           ${stage === 1 ? html`
-            <p>First, de-energize all conductors. Then unplug the voltage transformer/AC voltage input and CT inputs, power the meter from USB only, then check that every voltage/current phase reads near zero.</p>
+            <p>De-energize all conductors. Unplug the voltage transformer/AC input and CT inputs. Power the meter from USB only. Check every voltage/current phase is near zero.</p>
           ` : html`
-            <p>Power down before rewiring, keep CT inputs unplugged and CTs off current-carrying conductors, connect/enclose/energize only the voltage reference, then check that voltage is present on both chips and every current phase reads near zero.</p>
+            <p>Power down before rewiring. Keep CT inputs unplugged and CTs off conductors. Connect, enclose, and energize only the voltage reference. Check voltage on both chips and near-zero current on every phase.</p>
           `}
-          <p>Measurements cannot prove that a transformer or CT is physically unplugged. Physical acknowledgement never substitutes for measured readiness.</p>
+          <p>Measurements cannot prove a transformer or CT is unplugged. Physical acknowledgement never replaces measured readiness.</p>
           <label class="check-row"><input type="checkbox" .checked=${acknowledged} @change=${(event: Event) => setAcknowledged((event.target as HTMLInputElement).checked)}>
             ${stage === 1 ? "I completed the USB-only, de-energized preparation." : "I powered down for rewiring and safely enclosed and energized only the voltage reference."}
           </label>

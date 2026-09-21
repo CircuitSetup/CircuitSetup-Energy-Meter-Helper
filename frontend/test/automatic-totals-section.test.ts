@@ -104,7 +104,7 @@ it("warns about ambiguous eligible roles without guessing a candidate", () => {
   const response = meterResponse(); response.configuration.channels.slice(0, 3).forEach((channel) => { channel.role = "subpanel"; });
   container = document.createElement("div"); document.body.append(container);
   render(automaticTotalsSection(response.configuration, response.totals, true, vi.fn()), container);
-  expect(container.textContent).toContain("Multiple Subpanel CTs cannot be paired automatically. Create the totals under Advanced totals.");
+  expect(container.textContent).toContain("Multiple Subpanel CTs cannot be paired automatically. Create them in Advanced totals.");
   expect(container.querySelector('[role="switch"]')).toBeNull();
   expect(response.totals.automatic_candidates).toEqual([]);
 });

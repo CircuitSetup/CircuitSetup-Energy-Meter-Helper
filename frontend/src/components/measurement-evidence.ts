@@ -29,7 +29,7 @@ export function calibrationSourceEvidence(
     <h3>Active gain source</h3>
     ${sources.length ? html`<table><thead><tr><th>Chip</th><th>Active gain source</th><th>${target} calibrated this session</th></tr></thead><tbody>
       ${sources.map(([instance, source]) => html`<tr><td>${instance}</td><td>${source === "flash" ? "Saved flash" : source === "configuration" ? "Configuration" : "Unknown"}</td><td>${completedInstanceIds.has(instance) ? "Yes" : "No"}</td></tr>`)}
-    </tbody></table><p>ATM90E32 stores voltage and current gains in one table. The active source does not mean this calibration step was completed.</p>` : html`<p>Calibration source is not available.</p>`}
+    </tbody></table><p>ATM90E32 stores voltage and current gains together. Active source does not mean this step completed.</p>` : html`<p>Calibration source is not available.</p>`}
   </section>`;
 }
 

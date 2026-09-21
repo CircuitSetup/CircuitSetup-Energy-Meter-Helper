@@ -36,7 +36,7 @@ const button = (label: string, index = 0) => [...host.querySelectorAll<HTMLButto
 
 it("lists individual pending links without changing the direct CT formulas on load", () => {
   const state = mount(legacy());
-  expect(host.textContent).toContain("Existing totals continue using their direct CT formulas.");
+  expect(host.textContent).toContain("Existing totals use direct CT formulas.");
   expect(host.querySelectorAll("fieldset legend")).toHaveLength(2);
   expect(state.update).not.toHaveBeenCalled();
   expect(state.meter().configuration.aggregates[1]!.sources).toEqual([ct(2)]);
@@ -139,7 +139,7 @@ it("summarizes server counts and legacy ownership, not the number of requested o
   render(summaryStep(meter.topology, null, null, new Map(), new Map(), null, true, null, () => {}, () => {}, meter, meter.configuration_impact), host);
   expect(host.textContent).toContain("8 public total entities; 4 internal total sensors");
   expect(host.textContent).toContain("Legacy read-only totals");
-  expect(host.textContent).toContain("unsupported external custom energy");
+  expect(host.textContent).toContain("Unsupported external custom energy");
 });
 
 it("labels unresolved installed native visibility as incomplete in summary", () => {
@@ -157,7 +157,7 @@ it.each(["legacy_editable", "runtime_only"] as const)("keeps separate source evi
   expect(host.querySelector("#summary-totals-heading")?.textContent ?? null).toBe(mode === "legacy_editable" ? "Legacy read-only totals" : null);
   expect(host.textContent).not.toContain("Installed electrical profile");
   if (mode === "legacy_editable") {
-    expect(host.textContent).toContain("Authoritative source snapshot");
+    expect(host.textContent).toContain("Source snapshot:");
     expect(host.textContent).toContain("11 public total entities");
   }
 });

@@ -34,17 +34,17 @@ export function defaultTotalsSection(
   const visibilityUnresolved = !totals.migration.native_visibility_resolved;
   return html`<section class="default-totals" aria-labelledby="default-totals-heading">
     <h2 id="default-totals-heading">Default meter totals</h2>
-    ${custom.map((source) => html`<p class="info-band" role="status">${source.label} uses a custom formula. Edit recognized circuits under Advanced totals; other formulas require ESPHome Device Builder.</p>`)}
-    ${visibilityUnresolved ? html`<p class="info-band" role="status">Native source visibility is unconfirmed; these controls show requested outputs, not confirmed installed publications.</p>` : nothing}
-    ${graphState === "pending" ? html`<p class="info-band" role="status">Updating total graph; current native cards remain available.</p>` : graphState === "invalid" ? html`<p class="warning-band" role="status">Total graph unavailable; native cards show saved draft status and not current dependency results.</p>` : nothing}
+    ${custom.map((source) => html`<p class="info-band" role="status">${source.label} uses a custom formula. Edit recognized circuits in Advanced totals. Other formulas require ESPHome Device Builder.</p>`)}
+    ${visibilityUnresolved ? html`<p class="info-band" role="status">Native visibility is unconfirmed; controls show requested outputs, not installed publications.</p>` : nothing}
+    ${graphState === "pending" ? html`<p class="info-band" role="status">Total graph updating; native cards remain available.</p>` : graphState === "invalid" ? html`<p class="warning-band" role="status">Total graph unavailable; native cards show saved draft status, not current dependencies.</p>` : nothing}
     <p>Watts and Amps control Home Assistant visibility. kWh adds or removes the energy sensor.</p>
     <ul class="native-total-status" role="status">
-      <li>Watts is hidden from Home Assistant when off and retained internally when needed by Overall meter total, enabled kWh, or other totals.</li>
-      <li>Amps is hidden from Home Assistant when off and retained internally when needed by Overall meter total or other totals.</li>
-      <li>kWh is checked when an energy sensor exists, including a hidden sensor. Turning it off removes that energy sensor.</li>
+      <li>Off Watts stays hidden in Home Assistant but remains internal when needed by Overall meter total, enabled kWh, or other totals.</li>
+      <li>Off Amps stays hidden in Home Assistant but remains internal when needed by Overall meter total or other totals.</li>
+      <li>kWh is checked when an energy sensor exists, including hidden sensors. Turning it off removes that sensor.</li>
     </ul>
     ${overall ? html`<fieldset class="default-total-card"><legend>Overall meter total (all monitored channels)</legend>
-      <p>${boardFormula || "All monitored channels"}. Downstream circuit CTs can double-count the service mains, so this native total is not relabeled Mains.</p>
+      <p>${boardFormula || "All monitored channels"}. Circuit CTs can double-count service mains, so this native total is not relabeled Mains.</p>
       <p>Covers: ${boardRanges || range(overall.leaf_channels)}.</p>
       <div class="default-total-controls">
         ${control("Overall meter total Watts", configuration.default_totals.overall.watts, (watts) => patch({ ...configuration.default_totals.overall, watts }), existingConfiguration?.default_totals.overall.watts)}

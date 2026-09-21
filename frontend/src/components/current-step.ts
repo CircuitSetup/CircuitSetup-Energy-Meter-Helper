@@ -49,14 +49,14 @@ export function currentStep(
           aria-pressed=${value === first} @click=${() => select(value)}>Group ${board * 2 + offset + 1}</button>`; })}
       </div>
       <h2>Calibrate CT${first}–CT${first + 2}</h2>
-      <p>Blank entries keep the existing gains. Select a reference only for channels you want to calibrate.</p>
+      <p>Leave blank to keep existing gains. Select references only for channels to calibrate.</p>
       ${calibrationSourceEvidence(session, sourceIds, "Current", completedInstanceIds)}
       <div class="reference-block">
         ${channels.map((value) => html`<label>CT${value} · ${inventory?.channels.find((item) => item.channel === value)?.name ?? "Unnamed circuit"} reference (A)
           <input data-current-reference=${value} aria-label=${`CT${value} reference`} type="number" min="0.01" step="0.01"
             .value=${references.has(value) ? String(references.get(value)) : ""}
             @input=${(event: Event) => { const input = event.target as HTMLInputElement; setReference(value, input.value === "" ? null : Number(input.value)); }} /></label>`)}
-      ${multiplierRequired ? html`<label>Reporting multiplier <select data-role="reporting-multiplier" required @change=${(event: Event) => { const value = Number((event.target as HTMLSelectElement).value); setReportingMultiplier(value || null); }}><option value="" ?selected=${reportingMultiplier === null}>Choose multiplier</option>${[1, 2, 4, 8].map((value) => html`<option value=${value} ?selected=${reportingMultiplier === value}>${value}</option>`)}</select></label><p>ESPHome source editing is unavailable, so the multiplier cannot be read from authoritative configuration. Choose it explicitly.</p>` : ""}
+      ${multiplierRequired ? html`<label>Reporting multiplier <select data-role="reporting-multiplier" required @change=${(event: Event) => { const value = Number((event.target as HTMLSelectElement).value); setReportingMultiplier(value || null); }}><option value="" ?selected=${reportingMultiplier === null}>Choose multiplier</option>${[1, 2, 4, 8].map((value) => html`<option value=${value} ?selected=${reportingMultiplier === value}>${value}</option>`)}</select></label><p>ESPHome source editing is unavailable, so the multiplier cannot be read from authoritative config. Choose it.</p>` : ""}
       </div>
       <div class="calibration-actions"><button class="secondary" @click=${check} ?disabled=${busy || !referenceReady}>${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Loading live current data…` : "Check stability"}</button>
         <button class="primary" @click=${calibrate} ?disabled=${busy || !referenceReady || !stability?.stable || (result?.iteration ?? 0) >= 3 || Boolean(result && !result.retry_allowed && result.iteration > 0)}>${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Calibrating current…` : result?.retry_allowed ? "Retry current calibration" : "Calibrate current"}</button></div>

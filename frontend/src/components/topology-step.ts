@@ -19,7 +19,7 @@ export function topologyStep(topology: MeterTopology, projectVersion: string | n
   const mismatch = forceMismatch || topologyMismatch(topology);
   return html`
     <section class="step-content" aria-labelledby="step-heading">
-      <p class="info-band">Detected ${topology.board_count} boards with ${topology.ct_count} CTs on a ${topology.connection_type} connection. ${mismatch ? "The detected hardware does not agree." : "The detected hardware agrees."}</p>
+      <p class="info-band">Detected ${topology.board_count} boards and ${topology.ct_count} CTs on ${topology.connection_type}. ${mismatch ? "Hardware evidence conflicts." : "Hardware evidence agrees."}</p>
       <details>
         <summary>Technical details</summary>
         <dl>
@@ -37,13 +37,13 @@ export function topologyStep(topology: MeterTopology, projectVersion: string | n
       ${mismatch ? html`
         <div class="error-panel" role="alert" tabindex="-1">
           <strong>Topology mismatch</strong>
-          <span>Configuration and runtime evidence disagree. Resolve the mismatch before continuing.</span>
+          <span>Configuration and runtime evidence disagree. Resolve it before continuing.</span>
         </div>
-      ` : html`<div class="success-band" role="status">All topology evidence agrees.</div>`}
+      ` : html`<div class="success-band" role="status">Topology evidence agrees.</div>`}
       ${!mismatch && calibrationPreparation?.state === "available_to_prepare" ? html`
         <div class="info-band" role="status">
-          <strong>Calibration controls are missing from this firmware configuration.</strong>
-          <span>Review the official calibration package and its literal enable flags before installing.</span>
+          <strong>Firmware lacks calibration controls.</strong>
+          <span>Review the official calibration package and literal enable flags before installing.</span>
           <button class="secondary" data-action="prepare-calibration" ?disabled=${busy} @click=${prepareCalibration}>
             ${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Preparing calibration controls…` : "Prepare reviewed official calibration controls"}
           </button>

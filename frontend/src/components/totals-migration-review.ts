@@ -16,7 +16,7 @@ export function totalsEditable(meter: MeterConfiguration, capability: "native_to
 
 export function legacyTotalsNotice(capabilities: MeterConfigurationCapabilities): TemplateResult {
   return html`${capabilities.reason_codes.includes("legacy_custom_totals_unmanaged") || capabilities.reason_codes.includes("legacy_generic_totals_unmanaged")
-    ? html`<p class="warning-band">Arbitrary unmanaged custom totals remain outside helper control. Recognized existing Watts/Amps/kWh remain unchanged until edited. After adoption, editing a supported total creates replacement helper entities and new kWh counters; its original sensors are retained internally. Unresolved native default totals remain read-only. Preserved unsupported external custom energy remains unchanged and outside the computed entity count. Review these changes before saving.</p>` : nothing}`;
+    ? html`<p class="warning-band">Unmanaged custom totals stay outside helper control. Recognized Watts/Amps/kWh stay unchanged until edited. Adoption creates replacement helper entities and new kWh counters; original sensors stay internal. Unresolved native defaults remain read-only. Unsupported external custom energy stays unchanged and outside the computed entity count. Review before saving.</p>` : nothing}`;
 }
 
 export function totalsMigrationReview(meter: MeterConfiguration, update: (configuration: MeterConfigurationRequest) => void,
@@ -31,25 +31,25 @@ export function totalsMigrationReview(meter: MeterConfiguration, update: (config
   return html`
     ${adoptionRequired ? html`<section class="totals-migration" aria-labelledby="totals-adoption-heading">
       <h2 id="totals-adoption-heading">Legacy read-only totals</h2>
-      <p>Detected totals are read-only until explicit adoption. Opening this page does not change their formulas, visibility or ownership. Supported source totals can be adopted independently of unresolved native defaults.</p>
+      <p>Detected totals stay read-only until adopted. Opening this page changes no formulas, visibility, or ownership. Supported source totals can be adopted independently of unresolved native defaults.</p>
       ${canAdoptTotals(meter) && !readOnly ? html`<button class="secondary" ?disabled=${intent.adopt_managed_totals}
         @click=${() => { if (canAdoptTotals(meter) && !intent.adopt_managed_totals) update({ ...configuration, totals_change_intent: { ...intent, adopt_managed_totals: true } }); }}>Adopt managed totals</button>`
-        : !canAdoptTotals(meter) ? html`<p role="status">Adoption requires authoritative editable YAML, confirmed native visibility and supported contract.</p>` : nothing}
-      ${intent.adopt_managed_totals ? html`<p role="status">Adoption selected; awaiting successful commit. Review the exact native visibility overrides and helper blocks before Save and validate.</p>
-        ${fresh && preview ? html`<h3>Requested visibility changes versus firmware defaults</h3><p>These are requested outputs, not the source-aware overrides to be added. Review the exact source-aware YAML diff in Configuration review.</p><ul>${preview.graph.native_visibility.map((item) => {
+        : !canAdoptTotals(meter) ? html`<p role="status">Adoption requires authoritative editable YAML, confirmed native visibility, and supported contract.</p>` : nothing}
+      ${intent.adopt_managed_totals ? html`<p role="status">Adoption selected; awaiting commit. Review native visibility overrides and helper blocks before Save and validate.</p>
+        ${fresh && preview ? html`<h3>Requested visibility changes versus firmware defaults</h3><p>These are requested outputs, not source-aware overrides. Review the source-aware YAML diff in Configuration review.</p><ul>${preview.graph.native_visibility.map((item) => {
           const native = totals.native_sources.find((source) => source.power_id === item.sensor_id || source.current_id === item.sensor_id || source.existing_energy_id === item.sensor_id);
           const output = native?.power_id === item.sensor_id ? "Watts" : native?.current_id === item.sensor_id ? "Amps" : "kWh";
           return html`<li>${native?.label ?? "Native total"} ${output}: ${item.internal ? "internal dependency" : "public output"}</li>`;
         })}</ul><h3>Requested helper totals</h3><ul>${preview.graph.ordered_nodes.map((node) => html`<li>${node.aggregate.name}: ${[node.power_required ? "Watts" : "", node.current_required ? "Amps" : "", node.energy_required ? "kWh" : ""].filter(Boolean).join(", ")}</li>`)}
           ${totals.native_sources.filter((source) => source.source_id !== "overall").map((source, index) => source.existing_energy_id === null && configuration.default_totals.boards.find((board) => board.board_index === index)?.outputs.kwh
             ? html`<li>${source.label}: kWh</li>` : nothing)}</ul>`
-          : html`<p role="status">Current validated total preview is required to list requested visibility and helper blocks.</p>`}
+          : html`<p role="status">A validated total preview is required to list requested visibility and helper blocks.</p>`}
         ` : nothing}
     </section>` : nothing}
     ${legacyTotalsNotice(capabilities)}
     ${totals.migration.legacy_parent_links.length ? html`<section class="totals-migration" aria-labelledby="legacy-parent-heading">
       <h2 id="legacy-parent-heading">Legacy relationship migration</h2>
-      <p>Existing totals continue using their direct CT formulas. Old parent links were metadata only; review each proposed relationship separately.</p>
+      <p>Existing totals use direct CT formulas. Old parent links were metadata only; review each relationship separately.</p>
       ${totals.migration.legacy_parent_links.map((link, index) => {
         const decision = intent.legacy_parent_decisions.find((item) => item.child_id === link.child_id && item.proposed_parent_id === link.proposed_parent_id);
         let aggregates = configuration.aggregates;

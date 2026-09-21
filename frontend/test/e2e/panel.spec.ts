@@ -543,7 +543,7 @@ async function openInventory(page: Page, url = "/test/harness.html"): Promise<vo
   await page.locator('[data-action="rescan"]').click();
   await page.locator('[data-action="configure-device"]').first().click();
   await expect(page.getByRole("heading", { name: "Setup Device", exact: true })).toBeVisible();
-  await expect(page.getByText(/Detected .* CTs on a .* connection/)).toBeVisible();
+  await expect(page.getByText(/Detected .* boards and .* CTs on .*\./)).toBeVisible();
   await page.locator('[data-action="continue"]').click();
   await expect(page.getByRole("heading", { name: "Meter Settings", exact: true })).toBeVisible();
   const preparation = page.getByLabel("Multi-reference preparation acknowledgement");
@@ -569,7 +569,7 @@ test("native board totals feed an advanced parent without raw CT selection", asy
   await expect(page.getByLabel("Whole building aggregate", { exact: true })).toContainText("Main Board total + Add-on 1 total");
   await expect(page.getByLabel("Whole building aggregate", { exact: true })).toContainText("CT1–CT12");
   await expect(page.getByLabel("Whole building: CT1", { exact: true })).toBeDisabled();
-  await expect(page.locator(".default-totals")).toContainText("Watts is hidden from Home Assistant when off");
+  await expect(page.locator(".default-totals")).toContainText("Off Watts stays hidden in Home Assistant");
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
   const state = await fixture.state();
@@ -608,7 +608,7 @@ for (const name of ["main-only", "one-addon"] as const) test(`totals defaults an
   await page.getByRole("switch", { name: "Overall meter total Watts", exact: true }).press("Space");
   await expect(page.getByRole("switch", { name: "Overall meter total Watts", exact: true })).not.toBeChecked();
   await expect(page.getByRole("switch", { name: "Overall meter total kWh", exact: true })).toBeChecked();
-  await expect(page.locator(".default-totals")).toContainText("Watts is hidden from Home Assistant when off");
+  await expect(page.locator(".default-totals")).toContainText("Off Watts stays hidden in Home Assistant");
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
   expect((await fixture.state()).proposed_content).toContain("internal: true");
@@ -717,7 +717,7 @@ test("source-only legacy and runtime-only Summary do not claim verified managed 
     if (name === "source-only") {
       await expect(page.locator("#summary-totals-heading")).toHaveText("Legacy read-only totals");
       await expect(page.getByRole("article", { name: "Overall meter total", exact: true })).toContainText("Read-only source YAML");
-      await expect(page.locator(".step-content")).toContainText("not been adopted or verified as installed");
+      await expect(page.locator(".step-content")).toContainText("were not adopted or verified as installed");
     } else {
       await expect(page.locator(".total-summary")).toHaveCount(0);
       await expect(page.locator(".step-content")).toContainText("no authoritative configuration was available");
@@ -1026,7 +1026,7 @@ async function reachCurrent(page: Page, channel: number): Promise<void> {
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Offset", exact: true })).toBeVisible();
   const offsetCopy = await page.locator(".offset-step").textContent() ?? "";
-  expect(offsetCopy.indexOf("open-circuit current-output CT")).toBeLessThan(offsetCopy.indexOf("unplug the voltage transformer"));
+  expect(offsetCopy.indexOf("open-circuit CT")).toBeLessThan(offsetCopy.indexOf("Unplug the voltage transformer"));
   await expect(page.getByRole("button", { name: "Run Stage 1 calibration" })).toBeDisabled();
   await page.getByRole("button", { name: "Skip offset calibration" }).click();
   await page.getByRole("button", { name: "Continue to Voltage", exact: true }).click();
@@ -1052,7 +1052,7 @@ test("native mocked HA websocket covers automatic onboarding after rescan discov
   await expect(page.getByText("Device added to Home Assistant. Importing into ESPHome Builder…")).toBeVisible();
   await expect(page.getByText("Meter imported into ESPHome Builder.")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Setup Device", exact: true })).toBeVisible();
-  await expect(page.getByText(/Detected .* CTs on a .* connection/)).toBeVisible();
+  await expect(page.getByText(/Detected .* boards and .* CTs on .*\./)).toBeVisible();
 
   expect(frames[0]).toEqual({ type: "auth", access_token: "playwright-token" });
   const intents = frames.filter((frame) => frame.type.endsWith("/set_installer_intent"));
@@ -1185,7 +1185,7 @@ test("inline provisioning resolves selected manifests without popup, navigation,
     return order.slice(1).every((element, index) => Boolean(order[index] && element &&
       order[index].compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING));
   })).toBe(true);
-  await expect(page.locator('esp-web-install-button [slot="unsupported"]')).toContainText("supported Chromium browser");
+  await expect(page.locator('esp-web-install-button [slot="unsupported"]')).toContainText("Chromium with Web Serial");
   await expect(page.locator('esp-web-install-button [slot="not-allowed"]')).toContainText("HTTPS or localhost");
 
   await page.locator('[name="addon-count"][value="1"]').locator("..").click();
@@ -1358,7 +1358,7 @@ test("package choices appear only after the first meter configuration load", asy
   await page.goto("/test/harness.html");
   await page.locator('[data-action="rescan"]').click();
   await page.locator('[data-action="configure-device"]').first().click();
-  await expect(page.getByText(/Detected .* CTs on a .* connection/)).toBeVisible();
+  await expect(page.getByText(/Detected .* boards and .* CTs on .*\./)).toBeVisible();
   await expect(page.locator('[data-feature="status_fields"]')).toHaveCount(0);
   await page.locator('[data-action="continue"]').click();
   await expect(page.getByRole("heading", { name: "Meter Settings", exact: true })).toBeVisible();
@@ -1588,7 +1588,7 @@ test("three voltage references cover each three-phase board exactly once and cal
   await page.getByLabel("Line frequency").selectOption("50");
   await page.locator('[data-section="advanced-voltage-options"] summary').click();
   await expect(page.locator(".voltage-reference-card")).toHaveCount(3);
-  await expect(page.locator('[data-section="advanced-voltage-options"]')).toContainText("Selecting a reference updates the draft immediately");
+  await expect(page.locator('[data-section="advanced-voltage-options"]')).toContainText("Changes update the draft");
   await expect(page.locator('[data-section="advanced-meter-settings"]')).not.toContainText("Voltage group assignment");
   const cards = await page.locator(".voltage-reference-cards").boundingBox();
   const assignment = await page.getByRole("heading", { name: "Voltage group assignment" }).boundingBox();
@@ -1889,7 +1889,7 @@ test("restart handoff can be kept in flash before any YAML preview", async ({ pa
   expect(operations(frames)).not.toContain("preview_calibrated_gains");
   await page.getByRole("button", { name: "Keep calibration in meter flash" }).click();
   await expect(page.getByRole("heading", { name: "Setup complete", exact: true })).toBeVisible();
-  await expect(page.getByText("Calibration is stored in meter flash. Installing firmware may replace it.").first()).toBeVisible();
+  await expect(page.getByText("Calibration is in meter flash; later firmware installs may replace it.").first()).toBeVisible();
   expect(operations(frames)).not.toContain("preview_calibrated_gains");
   expect(operations(frames)).not.toContain("clear_calibration_flash");
 });
@@ -1920,7 +1920,7 @@ test("journey 3: runtime-only full calibration keeps verified offsets in flash",
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await page.getByRole("button", { name: "Restart and verify" }).click();
   await expect(page.getByRole("heading", { name: "Setup complete", exact: true })).toBeVisible();
-  await expect(page.getByText("Offset calibration remains stored in meter flash by design.").first()).toBeVisible();
+  await expect(page.getByText("Offsets remain in meter flash.").first()).toBeVisible();
   expect(operations(frames).filter((operation) => operation === "calibrate_offset")).toHaveLength(2);
   expect(operations(frames)).not.toContain("preview_calibrated_gains");
 });
@@ -1982,7 +1982,7 @@ test("topology Continue waits for authoritative configuration classification", a
   await page.goto("/test/harness.html");
   await page.locator('[data-action="rescan"]').click();
   await page.locator('[data-action="configure-device"]').first().click();
-  await expect(page.getByText(/Detected 1 boards with 6 CTs/)).toBeVisible();
+  await expect(page.getByText(/Detected 1 boards and 6 CTs on .*\./)).toBeVisible();
   await expect(page.locator('[data-action="continue"]')).toBeDisabled();
   await expect(page.locator('[data-action="continue"]')).toBeEnabled();
   await page.locator('[data-action="continue"]').click();
@@ -2004,7 +2004,7 @@ test("journey 5: legacy calibrate-only never previews configuration", async ({ p
   await expect(page.getByRole("heading", { name: "Save verified calibration" })).toBeVisible();
   await installVerifiedGains(page);
   await expect(page.getByRole("heading", { name: "Review complete", exact: true })).toBeVisible();
-  await expect(page.getByText("Calibration gains were saved; the remaining legacy configuration was not migrated.").first()).toBeVisible();
+  await expect(page.getByText("Calibration gains saved; legacy configuration was not migrated.").first()).toBeVisible();
   expectLatestSourceBinding(frames, "preview_calibrated_gains");
   for (const operation of ["apply_ct_config", "compile_ct_config", "install_ct_config", "clear_calibration_flash"])
     expectLatestSourceBinding(frames, operation);
@@ -2017,7 +2017,7 @@ test("journey 6: runtime-only skips every source configuration command", async (
   await openMeter(page);
   await expect(page.getByRole("heading", { name: "Choose calibration" })).toBeVisible();
   await expect(page.getByText("ESPHome source editing is unavailable.")).toBeVisible();
-  await expect(page.getByText(/Circuit names, CT models, roles, multipliers, entities, and totals cannot be changed/)).toBeVisible();
+  await expect(page.getByText(/This helper cannot change circuit names, CT models, roles, multipliers, entities, or totals/)).toBeVisible();
   expect(mutations(frames)).toEqual([]);
   const classifiedAt = frames.length;
   await page.getByLabel(/Standard calibration/).click();
@@ -2025,7 +2025,7 @@ test("journey 6: runtime-only skips every source configuration command", async (
   await calibrateVoltageToRestart(page);
   await page.getByRole("button", { name: "Restart and verify" }).click();
   await expect(page.getByRole("heading", { name: "Setup complete", exact: true })).toBeVisible();
-  await expect(page.getByText("Calibration is stored in meter flash. Installing firmware may replace it.").first()).toBeVisible();
+  await expect(page.getByText("Calibration is in meter flash; later firmware installs may replace it.").first()).toBeVisible();
   const afterClassification = operations(frames.slice(classifiedAt));
   expect(afterClassification).not.toContain("get_meter_configuration");
   expect(afterClassification.filter((operation) => ["preview_meter_configuration", "preview_ct_config", "set_ha_labels",

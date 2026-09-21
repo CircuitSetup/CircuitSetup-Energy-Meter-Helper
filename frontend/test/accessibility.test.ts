@@ -365,7 +365,7 @@ describe("guided calibration copy", () => {
     expect(voltage.querySelector<HTMLInputElement>("input")?.getAttribute("aria-label")).toContain("(V)");
     expect(root.querySelector<HTMLInputElement>("[data-current-reference=\"1\"]")?.closest("label")?.textContent)
       .toContain("CT1 · Kitchen range reference (A)");
-    expect(root.textContent).toContain("Blank entries keep the existing gains.");
+    expect(root.textContent).toContain("Leave blank to keep existing gains.");
   });
 
   it("explains runtime-only multiplier selection", () => {

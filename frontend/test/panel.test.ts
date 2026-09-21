@@ -37,11 +37,11 @@ it("shows affected SPI pins and hardware troubleshooting without allowing Contin
   expect(warning?.textContent).toContain("GPIO0, GPIO16");
   expect(warning?.textContent).toContain("SPI");
   expect(warning?.textContent).toContain("Power down");
-  expect(warning?.textContent).toContain("correct ESP32");
-  expect(warning?.textContent).toContain("default CS-pin assignments");
+  expect(warning?.textContent).toContain("Confirm the ESP32 model");
+  expect(warning?.textContent).toContain("board/connection defaults");
   expect(warning?.textContent).toContain("known-good ESP32");
-  expect(warning?.textContent).toContain("update the configuration to match");
-  expect(warning?.textContent).toContain("stays with the same add-on");
+  expect(warning?.textContent).toContain("update the configuration before rebuilding");
+  expect(warning?.textContent).toContain("stays with the add-on");
   expect(host.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(true);
   expect(warning?.textContent).toContain("without another upload");
   [...host.querySelectorAll("button")].find((button) => button.textContent === "Retry verification")?.click();
@@ -82,7 +82,7 @@ it("uses normal explicit install controls for stock preparation without flash cl
   const status = { transaction_id: "1".repeat(32), purpose: "offset_preparation", state: "verified", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
   render(buildInstallStep("offset_preparation", status, noop, noop, noop, noop, noop, noop), host);
   expect(host.textContent).toContain("Install offset preparation");
-  expect(host.textContent).toContain("does not run calibration");
+  expect(host.textContent).toContain("It does not calibrate.");
   expect(host.textContent).not.toContain("Retry clearing");
   render(buildInstallStep("offset_finalization", { ...status, purpose: "offset_finalization" }, noop, noop, noop, noop, noop, noop), host);
   expect(host.textContent).toContain("Install captured offsets");
@@ -118,7 +118,7 @@ it("reports that the meter is rebooting while startup is verified", () => {
   const noop = () => undefined;
   render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop, null, null, false, false, "install"), host);
 
-  expect(host.textContent).toContain("Meter is rebooting. Waiting for startup verification.");
+  expect(host.textContent).toContain("Meter rebooting; waiting for startup verification.");
   expect(host.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(true);
 });
 
@@ -255,10 +255,10 @@ describe("explicit totals adoption and migration transactions", () => {
     const confirmation = panel.shadowRoot!.querySelector<HTMLInputElement>('[aria-label="I reviewed used/unused channels and circuit roles"]')!;
     expect(proceed.disabled).toBe(true);
     expect(confirmation.compareDocumentPosition(proceed) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(text(panel)).toContain("Review and confirm the used/unused channels and circuit roles below to enable Continue.");
+    expect(text(panel)).toContain("Review and confirm used/unused channels and circuit roles to enable Continue.");
     confirmation.click(); await tick(); await panel.updateComplete;
     expect(proceed.disabled).toBe(false);
-    expect(text(panel)).not.toContain("Review and confirm the used/unused channels and circuit roles below to enable Continue.");
+    expect(text(panel)).not.toContain("Review and confirm used/unused channels and circuit roles to enable Continue.");
     proceed.click(); await tick(); await panel.updateComplete;
     expect(calls.some((message) => String(message.type).endsWith("/preview_meter_configuration"))).toBe(true);
   });
@@ -282,8 +282,8 @@ describe("explicit totals adoption and migration transactions", () => {
     await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector("#summary-totals-heading")?.textContent).toBe("Legacy read-only totals");
     expect(panel.shadowRoot?.querySelector(".step-content")?.textContent).toContain("7 public total entities; 2 internal total sensors");
-    expect(panel.shadowRoot?.querySelector(".step-content")?.textContent).toContain("Authoritative source snapshot");
-    expect(panel.shadowRoot?.querySelector(".step-content")?.textContent).toContain("unsupported external custom energy");
+    expect(panel.shadowRoot?.querySelector(".step-content")?.textContent).toContain("Source snapshot:");
+    expect(panel.shadowRoot?.querySelector(".step-content")?.textContent).toContain("Unsupported external custom energy");
     expect(panel.shadowRoot?.querySelector(".summary-list")?.textContent).toContain("ESPHome configuration was left untouched.");
     expect(panel.shadowRoot?.querySelector(".summary-list")?.textContent).not.toContain("Installed electrical profile");
     expect((panel as unknown as { verifiedMeterConfiguration: unknown }).verifiedMeterConfiguration).toBeNull();
@@ -926,16 +926,16 @@ describe("meter configuration review and summary", () => {
   });
 
   it.each([
-    ["helper YAML", { configurationMode: "helper_managed", legacyChoice: null, completedWithoutChanges: false, restart: { source_authority: "configuration" }, verifiedConfiguration: true }, "Configuration and calibration are installed in ESPHome.", []],
+    ["helper YAML", { configurationMode: "helper_managed", legacyChoice: null, completedWithoutChanges: false, restart: { source_authority: "configuration" }, verifiedConfiguration: true }, "Configuration and calibration installed in ESPHome.", []],
     ["helper unchanged", { configurationMode: "helper_managed", legacyChoice: null, completedWithoutChanges: true, configurationInstalled: false, restart: null, verifiedConfiguration: true }, "Existing calibration was kept unchanged.", []],
     ["new install with calibration kept", { configurationMode: "helper_managed", legacyChoice: null, completedWithoutChanges: true, configurationInstalled: true, restart: null, verifiedConfiguration: true }, "Existing calibration was kept unchanged.", []],
     ["runtime unchanged", { configurationMode: "runtime_only", legacyChoice: null, completedWithoutChanges: true, restart: null, verifiedConfiguration: false }, "Existing calibration was kept unchanged.", []],
     ["legacy unchanged", { configurationMode: "legacy_editable", legacyChoice: "calibrate_only", completedWithoutChanges: true, restart: null, verifiedConfiguration: false }, "Existing calibration was kept unchanged.", []],
-    ["legacy migration", { configurationMode: "helper_managed", legacyChoice: "manage_with_helper", completedWithoutChanges: false, restart: { source_authority: "configuration" }, verifiedConfiguration: true, unmanagedLegacyItems: ["legacy_generic_totals_unmanaged"] }, "Configuration and calibration are installed in ESPHome.", ["Unmanaged legacy items: legacy_generic_totals_unmanaged."]],
-    ["legacy handoff", { configurationMode: "legacy_editable", legacyChoice: "calibrate_only", completedWithoutChanges: false, restart: { source_authority: "configuration" }, verifiedConfiguration: false }, "Calibration gains were saved; the remaining legacy configuration was not migrated.", []],
-    ["legacy flash", { configurationMode: "legacy_editable", legacyChoice: "calibrate_only", completedWithoutChanges: false, restart: { source_authority: "saved_flash" }, verifiedConfiguration: false }, "ESPHome configuration was left untouched.", ["Calibration is stored in meter flash. Installing firmware may replace it."]],
-    ["runtime only", { configurationMode: "runtime_only", legacyChoice: null, completedWithoutChanges: false, restart: { source_authority: "saved_flash" }, verifiedConfiguration: false }, "Calibration is stored in meter flash. Installing firmware may replace it.", ["Calibration is stored in meter flash. Installing firmware may replace it."]],
-    ["offset", { configurationMode: "helper_managed", legacyChoice: null, completedWithoutChanges: false, restart: { source_authority: "saved_flash", offset_groups: [{}] }, verifiedConfiguration: true }, "Offset calibration remains stored in meter flash by design.", ["Offset calibration remains stored in meter flash by design."]],
+    ["legacy migration", { configurationMode: "helper_managed", legacyChoice: "manage_with_helper", completedWithoutChanges: false, restart: { source_authority: "configuration" }, verifiedConfiguration: true, unmanagedLegacyItems: ["legacy_generic_totals_unmanaged"] }, "Configuration and calibration installed in ESPHome.", ["Unmanaged legacy items: legacy_generic_totals_unmanaged."]],
+    ["legacy handoff", { configurationMode: "legacy_editable", legacyChoice: "calibrate_only", completedWithoutChanges: false, restart: { source_authority: "configuration" }, verifiedConfiguration: false }, "Calibration gains saved; legacy configuration was not migrated.", []],
+    ["legacy flash", { configurationMode: "legacy_editable", legacyChoice: "calibrate_only", completedWithoutChanges: false, restart: { source_authority: "saved_flash" }, verifiedConfiguration: false }, "ESPHome configuration was left untouched.", ["Calibration is in meter flash; later firmware installs may replace it."]],
+    ["runtime only", { configurationMode: "runtime_only", legacyChoice: null, completedWithoutChanges: false, restart: { source_authority: "saved_flash" }, verifiedConfiguration: false }, "Calibration is in meter flash; later firmware installs may replace it.", ["Calibration is in meter flash; later firmware installs may replace it."]],
+    ["offset", { configurationMode: "helper_managed", legacyChoice: null, completedWithoutChanges: false, restart: { source_authority: "saved_flash", offset_groups: [{}] }, verifiedConfiguration: true }, "Offsets remain in meter flash.", ["Offsets remain in meter flash."]],
   ] as const)("derives the %s completion outcome", (_name, input, calibration, warnings) => {
     const outcome = summaryOutcome(input);
 
@@ -1106,7 +1106,7 @@ describe("ESP Web Tools installer", () => {
     expect(root.textContent).toContain("6chan_energy_meter_main_board · ESPHome 2026.8.0");
     expect(root.textContent).not.toContain("https://");
     expect(installer?.querySelector<HTMLButtonElement>('[slot="activate"]')?.getAttribute("aria-label")).toBe("Install firmware");
-    expect(installer?.querySelector('[slot="unsupported"]')?.textContent).toContain("supported Chromium browser");
+    expect(installer?.querySelector('[slot="unsupported"]')?.textContent).toContain("Chromium with Web Serial");
     expect(installer?.querySelector('[slot="not-allowed"]')?.textContent).toContain("HTTPS or localhost");
   });
 
@@ -1222,8 +1222,8 @@ describe("CircuitSetup panel", () => {
     render(meterSettingsStep(response.configuration.meter as MeterSettingsDraft, response.voltage_transformer_catalog, false,
       () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined), root);
 
-    expect(root.textContent).toContain("must match the meter's physical voltage wiring");
-    expect(root.textContent).toContain("main-board voltage reference applies to every board");
+    expect(root.textContent).toContain("Match this voltage-reference setup to the meter's physical wiring");
+    expect(root.textContent).toContain("main-board reference applies to every board");
   });
 
   it("keeps circuit controls in each board row and voltage references read only", async () => {
@@ -1318,7 +1318,7 @@ describe("CircuitSetup panel", () => {
     const root = document.createElement("div");
     render(ctInventoryStep(response as unknown as CtInventory, 0, new Map(), () => undefined, () => undefined, () => undefined, () => undefined, false, false, configuration, () => undefined, () => undefined, false, "unmanaged_total_present"), root);
     expect(root.textContent).toContain("Aggregate editing unavailable");
-    expect(root.textContent).toContain("Upgrade the meter configuration before editing aggregate totals.");
+    expect(root.textContent).toContain("Upgrade the meter configuration before editing.");
     expect(root.textContent).not.toContain("unmanaged_total_present");
     expect(root.textContent).toContain("Main service");
     expect(root.querySelector<HTMLFieldSetElement>('[aria-label="Main service aggregate"]')?.disabled).toBe(true);
@@ -1391,8 +1391,8 @@ describe("CircuitSetup panel", () => {
     expect(aggregate?.textContent).toContain("CT1 · Kitchen");
     expect(aggregate?.textContent).toContain("CT7 · Garage");
     expect(aggregate?.querySelector('[aria-label="house-load aggregate channels"]')).toBeNull();
-    expect(aggregate?.textContent).toContain("platform: total_daily_energy");
-    expect(aggregate?.textContent).toContain("Two CT Sum adds exactly two CTs");
+    expect(aggregate?.textContent).toContain("ESPHome's total_daily_energy");
+    expect(aggregate?.textContent).toContain("Two CT Sum uses exactly two CTs");
 
     const channelName = panel.shadowRoot?.querySelector<HTMLInputElement>('[aria-label="CT1 name"]');
     if (!channelName) throw new Error("CT1 name control missing");
@@ -2132,19 +2132,19 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector('[name="line-frequency"]')).toBeNull();
     expect(text(panel)).toContain("Add-on address jumper settings");
     expect(text(panel)).toContain("Install firmware");
-    expect(text(panel)).toContain("ESPHome Device Builder must be installed and running in Home Assistant");
+    expect(text(panel)).toContain("Install and run ESPHome Device Builder in Home Assistant");
     expect(panel.shadowRoot?.querySelector<HTMLAnchorElement>('a[href="https://esphome.io/install/"]')?.textContent).toContain("See how to install it in Home Assistant");
     expect(Array.from(panel.shadowRoot?.querySelectorAll(".firmware-steps li") ?? [], (item) => item.textContent?.trim())).toEqual([
-      "Connect the ESP32 you will use for your energy meter to your computer with a USB cable.",
+      "Connect the ESP32 to your computer with a USB cable.",
       "Click Install firmware, select the ESP32's CP2102 USB to UART, then click Connect.",
-      "Select Install CircuitSetup 6 Channel Energy Meter when ESP Web Tools asks for the firmware.",
-      "Before clicking Install, hold down the right IO0 (or BOOT) button on the ESP32.",
+      "Select Install CircuitSetup 6 Channel Energy Meter in ESP Web Tools.",
+      "Before clicking Install, hold the ESP32's right IO0 (or BOOT) button.",
     ]);
     expect(Array.from(panel.shadowRoot?.querySelectorAll(".next-steps li") ?? [], (item) => item.textContent?.trim())).toEqual([
-      "After the firmware is installed, click Next.",
-      "If you are using Wi-Fi, enter your Wi-Fi credentials.",
-      "Select Add to Home Assistant, then approve the discovered ESPHome device in ESPHome Device Builder.",
-      "Return here. The helper will import your meter so you can customize its settings.",
+      "After firmware installs, click Next.",
+      "For Wi-Fi, enter your credentials.",
+      "Select Add to Home Assistant, then approve the ESPHome device in ESPHome Device Builder.",
+      "Return here to import the meter and customize its settings.",
     ]);
     expect(text(panel)).toContain("Rescan for device");
     expect(text(panel)).toContain("USB data cable");
@@ -2535,7 +2535,7 @@ describe("CircuitSetup panel", () => {
 
     expect(operations.indexOf("adopt_device")).toBeGreaterThan(operations.indexOf("setup_status"));
     expect(operations.indexOf("get_topology")).toBeGreaterThan(operations.indexOf("adopt_device"));
-    expect(text(panel)).toContain("The detected hardware agrees");
+    expect(text(panel)).toContain("Hardware evidence agrees.");
     expect(text(panel)).not.toContain("The selected device changed or is no longer available");
   });
 
@@ -2560,7 +2560,7 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
 
     expect(Array.from(panel.shadowRoot?.querySelectorAll(".next-steps li") ?? [], (item) => item.textContent?.trim())).toHaveLength(4);
-    expect(text(panel)).toContain("connect Ethernet and power, then wait for an address from DHCP");
+    expect(text(panel)).toContain("connect Ethernet and power, then wait for a DHCP address");
     expect(text(panel)).not.toContain("ESP Web Tools asks for your Wi-Fi network and password");
     const handoff = panel.shadowRoot?.querySelector(".setup-step > p.info-band:last-of-type")?.textContent ?? "";
     expect(handoff).not.toMatch(/wi-fi|password|credential/i);
@@ -2838,10 +2838,10 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
 
     const copy = text(panel);
-    expect(copy.indexOf("open-circuit current-output CT")).toBeLessThan(copy.indexOf("unplug the voltage transformer"));
-    expect(copy).toContain("de-energize all conductors");
-    expect(copy).toContain("power the meter from USB only");
-    expect(copy).toContain("check that every voltage/current phase reads near zero");
+    expect(copy.indexOf("open-circuit CT")).toBeLessThan(copy.indexOf("Unplug the voltage transformer"));
+    expect(copy).toContain("De-energize all conductors");
+    expect(copy).toContain("Power the meter from USB only");
+    expect(copy).toContain("Check every voltage/current phase is near zero");
     expect(copy).toContain("Measurements cannot prove");
     expect(copy).not.toContain("never had offset calibration applied");
     expect(panel.shadowRoot?.querySelectorAll("[data-offset-board]")).toHaveLength(7);
@@ -3003,9 +3003,9 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-offset-stage='2']")?.disabled).toBe(false);
     panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-offset-stage='2']")?.click();
     await panel.updateComplete;
-    expect(text(panel)).toContain("Power down before rewiring, keep CT inputs unplugged and CTs off current-carrying conductors");
-    expect(text(panel)).toContain("connect/enclose/energize only the voltage reference");
-    expect(text(panel)).toContain("check that voltage is present on both chips and every current phase reads near zero");
+    expect(text(panel)).toContain("Power down before rewiring. Keep CT inputs unplugged and CTs off conductors.");
+    expect(text(panel)).toContain("Connect, enclose, and energize only the voltage reference.");
+    expect(text(panel)).toContain("Check voltage on both chips and near-zero current on every phase.");
   });
 
   it("restores a server-skipped Offset step with only Back and Continue enabled", async () => {
@@ -3420,7 +3420,7 @@ describe("CircuitSetup panel", () => {
     const state = panel as unknown as { selectedDeviceId: string | null; topology: unknown };
     expect(state.selectedDeviceId).toBe("meter-1");
     expect(state.topology).toBe(topology);
-    expect(text(panel)).toContain("The detected hardware agrees");
+    expect(text(panel)).toContain("Hardware evidence agrees.");
   });
 
   it("keeps the current Setup Device selection when Rescan returns the same compatible device", async () => {
@@ -4168,8 +4168,8 @@ describe("CircuitSetup panel", () => {
     await tick(); await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
     const summary = panel.shadowRoot?.querySelector<HTMLElement>(".step-content > .info-band");
-    expect(summary?.textContent).toContain("Detected 1 boards with 6 CTs on a wifi connection");
-    expect(summary?.textContent).toContain("The detected hardware agrees");
+    expect(summary?.textContent).toContain("Detected 1 boards and 6 CTs on wifi.");
+    expect(summary?.textContent).toContain("Hardware evidence agrees.");
     expect(summary?.textContent).not.toContain(device.project_name);
     const details = panel.shadowRoot?.querySelector<HTMLDetailsElement>(".step-content > details");
     expect(details?.open).toBe(false);
@@ -4339,6 +4339,8 @@ describe("CircuitSetup panel", () => {
     const cssText = panelStyles.cssText;
     expect(cssText).toContain("font-family: var(--ha-font-family-body, Roboto, Noto, sans-serif)");
     expect(cssText).toContain("font-size: var(--ha-font-size-m, 14px)");
+    expect(cssText).toContain("font-size: var(--ha-font-size-s, 13px)");
+    expect(cssText).toContain("line-height: var(--ha-line-height-condensed, 1.3)");
     expect(cssText).toContain("--accent: var(--primary-color, #00639b)");
     expect(cssText).toContain("--surface: var(--ha-card-background, var(--card-background-color, #fff))");
     expect(cssText).toContain("--border: var(--divider-color, #e0e0e0)");
@@ -4929,7 +4931,7 @@ describe("CircuitSetup panel", () => {
     await state.restart(); await panel.updateComplete;
 
     expect((state.session as { state: string }).state).toBe("restart_failed");
-    expect(text(panel)).toContain("Reconnect to the meter");
+    expect(text(panel)).toContain("Reconnect and inspect live session evidence");
     expect(text(panel)).not.toContain("private backend detail");
     expect(panel.shadowRoot?.querySelector("[data-action=rollback]")).toBeNull();
 
@@ -5032,7 +5034,7 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).toContain("Errors0 records (unreported)");
     expect(text(panel)).toContain("Warnings0 records (unreported)");
     expect(text(panel)).toContain("ESPHome rejected the config (code 2)");
-    expect(text(panel)).toContain("original config was restored");
+    expect(text(panel)).toContain("Original config restored");
   });
 
   it("renders scoped samples, calibration, build, and restart authority without fabricating Summary", async () => {
@@ -5163,7 +5165,7 @@ describe("CircuitSetup panel", () => {
 
     panel.showState("summary"); await panel.updateComplete;
 
-    expect(text(panel)).toContain("Offset calibration remains stored in meter flash by design");
+    expect(text(panel)).toContain("Offsets remain in meter flash.");
     expect(text(panel)).not.toContain("flash values cleared");
     expect(panel.shadowRoot?.querySelector("[data-action=save-calibration]")).toBeNull();
   });
@@ -5272,6 +5274,16 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).toContain(build.transaction_id);
     expect(text(panel)).toContain(build.source_sha256);
     expect(text(panel)).toContain("firmware_compiled");
+  });
+
+  it("uses concise CT setup guidance", () => {
+    const root = document.createElement("div");
+    const noop = () => undefined;
+    render(ctInventoryStep({ plan_id: "plan", source_sha256: "a".repeat(64), channels: [],
+      catalog: { presets: [], source_repository: "repo", source_ref: "ref", schema_version: 1 } },
+      0, new Map(), noop, noop, noop, noop), root);
+
+    expect(root.textContent).toContain("Choose a CT model for each circuit. Reporting range is set automatically.");
   });
 
   it("guards handoff preview reentry and ignores a late preview after keeping flash", async () => {

@@ -92,7 +92,7 @@ it("allows independent reports to reuse a CT and warns against adding them", () 
   const state = mount([total("a", "Report A", [ct(1)]), total("b", "Report B")]);
   input("Report B: CT1")?.click();
   expect(state.configuration().aggregates[1]!.sources).toEqual([ct(1)]);
-  expect(card("Report B")?.textContent).toContain("This total overlaps another report. They are valid independently but must not be added together.");
+  expect(card("Report B")?.textContent).toContain("This total overlaps another report. Keep them separate; do not add them together.");
 });
 
 it("clears and disables kWh for Energy behavior None", () => {
