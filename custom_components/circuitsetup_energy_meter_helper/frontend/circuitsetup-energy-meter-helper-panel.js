@@ -1948,7 +1948,7 @@ function configReview(status, configuration = null, impact = null, totals = null
   return b`
     <section class="review-region" aria-labelledby="review-heading">
       <h2 id="review-heading">Review changes</h2>
-      <p class="warning-band">Firmware configuration changes can alter Home Assistant rename/entity-key bindings. Review every change before Apply.</p>
+      <p class="warning-band">Firmware changes can alter Home Assistant entity names and keys. Review every change before Apply.</p>
       ${configuration ? b`
         <h3>Meter</h3>
         <dl class="status-list"><div><dt>Electrical profile</dt><dd>${configuration.meter.electrical_system.replaceAll("_", " ")} · ${configuration.meter.line_frequency_hz} Hz</dd></div><div><dt>Reporting interval</dt><dd>${configuration.meter.update_interval_s} seconds</dd></div><div><dt>Friendly name</dt><dd>${configuration.meter.friendly_name}</dd></div></dl>
@@ -1991,7 +1991,7 @@ function totalsEditable(meter, capability) {
   return meter.capabilities.configuration_authoritative && (capability !== "native_totals_writable" || meter.totals.migration.native_visibility_resolved) && (meter.capabilities[capability] || meter.configuration.totals_change_intent?.adopt_managed_totals === true && canAdoptTotals(meter));
 }
 function legacyTotalsNotice(capabilities) {
-  return b`${capabilities.reason_codes.includes("legacy_custom_totals_unmanaged") || capabilities.reason_codes.includes("legacy_generic_totals_unmanaged") ? b`<p class="warning-band">Arbitrary unmanaged custom totals remain outside helper control. Recognized existing Watts/Amps/kWh remain unchanged until edited. After adoption, editing a supported total creates replacement helper entities and new kWh counters; its original sensors are retained internally. Unresolved native default totals remain read-only. Preserved unsupported external custom energy remains unchanged and outside the computed entity count. Review these changes before saving.</p>` : A}`;
+  return b`${capabilities.reason_codes.includes("legacy_custom_totals_unmanaged") || capabilities.reason_codes.includes("legacy_generic_totals_unmanaged") ? b`<p class="warning-band">Unmanaged custom totals stay outside helper control. Recognized Watts/Amps/kWh stay unchanged until edited. Adoption creates replacement helper entities and new kWh counters; original sensors stay internal. Unresolved native defaults remain read-only. Unsupported external custom energy stays unchanged and outside the computed entity count. Review before saving.</p>` : A}`;
 }
 function totalsMigrationReview(meter, update, preview = null, fresh = true, readOnly = false) {
   const { configuration, totals, capabilities } = meter;
@@ -2003,24 +2003,24 @@ function totalsMigrationReview(meter, update, preview = null, fresh = true, read
   return b`
     ${adoptionRequired ? b`<section class="totals-migration" aria-labelledby="totals-adoption-heading">
       <h2 id="totals-adoption-heading">Legacy read-only totals</h2>
-      <p>Detected totals are read-only until explicit adoption. Opening this page does not change their formulas, visibility or ownership. Supported source totals can be adopted independently of unresolved native defaults.</p>
+      <p>Detected totals stay read-only until adopted. Opening this page changes no formulas, visibility, or ownership. Supported source totals can be adopted independently of unresolved native defaults.</p>
       ${canAdoptTotals(meter) && !readOnly ? b`<button class="secondary" ?disabled=${intent.adopt_managed_totals}
         @click=${() => {
     if (canAdoptTotals(meter) && !intent.adopt_managed_totals) update({ ...configuration, totals_change_intent: { ...intent, adopt_managed_totals: true } });
-  }}>Adopt managed totals</button>` : !canAdoptTotals(meter) ? b`<p role="status">Adoption requires authoritative editable YAML, confirmed native visibility and supported contract.</p>` : A}
-      ${intent.adopt_managed_totals ? b`<p role="status">Adoption selected; awaiting successful commit. Review the exact native visibility overrides and helper blocks before Save and validate.</p>
-        ${fresh && preview ? b`<h3>Requested visibility changes versus firmware defaults</h3><p>These are requested outputs, not the source-aware overrides to be added. Review the exact source-aware YAML diff in Configuration review.</p><ul>${preview.graph.native_visibility.map((item) => {
+  }}>Adopt managed totals</button>` : !canAdoptTotals(meter) ? b`<p role="status">Adoption requires authoritative editable YAML, confirmed native visibility, and supported contract.</p>` : A}
+      ${intent.adopt_managed_totals ? b`<p role="status">Adoption selected; awaiting commit. Review native visibility overrides and helper blocks before Save and validate.</p>
+        ${fresh && preview ? b`<h3>Requested visibility changes versus firmware defaults</h3><p>These are requested outputs, not source-aware overrides. Review the source-aware YAML diff in Configuration review.</p><ul>${preview.graph.native_visibility.map((item) => {
     const native = totals.native_sources.find((source) => source.power_id === item.sensor_id || source.current_id === item.sensor_id || source.existing_energy_id === item.sensor_id);
     const output = native?.power_id === item.sensor_id ? "Watts" : native?.current_id === item.sensor_id ? "Amps" : "kWh";
     return b`<li>${native?.label ?? "Native total"} ${output}: ${item.internal ? "internal dependency" : "public output"}</li>`;
   })}</ul><h3>Requested helper totals</h3><ul>${preview.graph.ordered_nodes.map((node) => b`<li>${node.aggregate.name}: ${[node.power_required ? "Watts" : "", node.current_required ? "Amps" : "", node.energy_required ? "kWh" : ""].filter(Boolean).join(", ")}</li>`)}
-          ${totals.native_sources.filter((source) => source.source_id !== "overall").map((source, index) => source.existing_energy_id === null && configuration.default_totals.boards.find((board) => board.board_index === index)?.outputs.kwh ? b`<li>${source.label}: kWh</li>` : A)}</ul>` : b`<p role="status">Current validated total preview is required to list requested visibility and helper blocks.</p>`}
+          ${totals.native_sources.filter((source) => source.source_id !== "overall").map((source, index) => source.existing_energy_id === null && configuration.default_totals.boards.find((board) => board.board_index === index)?.outputs.kwh ? b`<li>${source.label}: kWh</li>` : A)}</ul>` : b`<p role="status">A validated total preview is required to list requested visibility and helper blocks.</p>`}
         ` : A}
     </section>` : A}
     ${legacyTotalsNotice(capabilities)}
     ${totals.migration.legacy_parent_links.length ? b`<section class="totals-migration" aria-labelledby="legacy-parent-heading">
       <h2 id="legacy-parent-heading">Legacy relationship migration</h2>
-      <p>Existing totals continue using their direct CT formulas. Old parent links were metadata only; review each proposed relationship separately.</p>
+      <p>Existing totals use direct CT formulas. Old parent links were metadata only; review each relationship separately.</p>
       ${totals.migration.legacy_parent_links.map((link, index) => {
     const decision = intent.legacy_parent_decisions.find((item) => item.child_id === link.child_id && item.proposed_parent_id === link.proposed_parent_id);
     let aggregates = configuration.aggregates;
@@ -2055,7 +2055,7 @@ function totalsMigrationReview(meter, update, preview = null, fresh = true, read
 function buildInstallStep(purpose, status, apply, compile, install, rollback, back, continueFlow, configuration = null, impact = null, reviewBackBusy = false, correctionPending = false, pendingAction = "", legacyMigration = false, meterInventory = null, totalPreview = null) {
   if (!status) return b`
     <section class="step-content" aria-labelledby="step-heading">
-      <div class="recovery-panel" role="status"><strong>No active review</strong><p>Return to the previous step and review the current configuration before continuing.</p></div>
+      <div class="recovery-panel" role="status"><strong>No active review</strong><p>Return to the previous step to review the current configuration.</p></div>
       <footer class="action-footer"><button class="secondary" @click=${back}>Back</button></footer>
     </section>
   `;
@@ -2076,36 +2076,36 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
   return b`
     <section class="step-content" aria-labelledby="step-heading">
       <h2>${labels.heading}</h2>
-      ${purpose === "offset_preparation" ? b`<p>This installs a reviewed zero baseline for only the unfinished chips. Installation does not run calibration. Return to the same board and stage, acknowledge physical preparation again, and check measured readiness before explicit Run.</p>` : ""}
-      ${purpose === "offset_finalization" ? b`<p>Captured signed offsets, including zeros, are installed with native offset restore disabled. Confirm configuration selection after installation; this is not register readback and does not clear saved gain calibration.</p>` : ""}
+      ${purpose === "offset_preparation" ? b`<p>Installs a reviewed zero baseline for unfinished chips only. It does not calibrate. Return to the same board and stage, repeat physical preparation, then check readiness before Run.</p>` : ""}
+      ${purpose === "offset_finalization" ? b`<p>Installs captured signed offsets, including zeros, with native restore disabled. Confirm configuration selection after install. This is not register readback and does not clear gain calibration.</p>` : ""}
       ${configReview(status, configuration, impact, meterInventory?.totals)}
       ${meterInventory ? totalsMigrationReview(meterInventory, () => void 0, totalPreview, impact !== null, true) : ""}
       ${state === "failed" || retryableInstall ? b`
         <div class="recovery-panel" role="status">
           <strong>${communicationFailure ? "Meter chip communication failed" : failureMessage ?? "Build or install needs attention"}</strong>
-          ${communicationFailure ? b`<p>The ESP32 reconnected, but reported that it could not establish SPI communication with
+          ${communicationFailure ? b`<p>The ESP32 reconnected but could not establish SPI communication with
             ${failedPins.length ? "the meter chip(s) on CS pin(s) " + failedPins.map((pin) => "GPIO" + pin).join(", ") : "one or more meter chips (CS pin unavailable)"}.
-            This is the connection between the ESP32 and the meter chip, not a Wi-Fi or Home Assistant connection problem.</p>
+            This is an ESP32–meter-chip link, not a Wi-Fi or Home Assistant problem.</p>
             <ol>
-              <li>Power down the meter and ESP32 before touching boards or changing jumpers. Do not touch exposed mains wiring.</li>
-              <li>Confirm the correct ESP32 model for your meter board and firmware is installed. Check its orientation, make sure both header rows are fully seated and aligned, and look for bent pins or poor contact.</li>
-              <li>If an add-on board is affected, check its CS jumpers: each jumper must be in the correct position and make firm contact. Match the default CS-pin assignments for your board and connection type, or the explicit overrides in your configuration. Main-board CS pins should also match the configuration.</li>
-              <li>If the ESP32 model, seating, and CS assignments are correct, try another known-good ESP32 with the correct firmware.</li>
-              <li>If an add-on still fails, move its CS jumper to a different unused, supported CS pin and update the configuration to match before rebuilding and installing. A fault that follows the GPIO points to the ESP32 pin or its connection; a fault that stays with the same add-on on a known-good GPIO points to that add-on board or meter chip.</li>
+              <li>Power down the meter and ESP32 before touching boards or jumpers. Do not touch exposed mains wiring.</li>
+              <li>Confirm the ESP32 model and firmware. Check orientation, seated and aligned header rows, bent pins, and contact.</li>
+              <li>For an affected add-on, check CS jumpers for position and contact. Match board/connection defaults or configuration overrides. Check main-board CS pins too.</li>
+              <li>If the model, seating, and CS assignments are correct, try a known-good ESP32 with the correct firmware.</li>
+              <li>If an add-on still fails, move its CS jumper to an unused supported pin and update the configuration before rebuilding and installing. A fault that follows the GPIO points to the ESP32 or link; one that stays with the add-on points to that board or meter chip.</li>
             </ol>
-            <p>After correcting the hardware or configuration, power up and use Retry verification. This checks the installed firmware again without another upload.</p>
-            <p>Use Back to keep this saved configuration and edit it; rollback is optional.</p>
+            <p>Fix the hardware or configuration, power up, and Retry verification. It rechecks installed firmware without another upload.</p>
+            <p>Back keeps this saved configuration for editing; rollback is optional.</p>
           ` : b`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
           ${status?.rollback_available ? b`<button class="danger" @click=${rollback} ?disabled=${busy}>${pendingAction === "rollback" ? "Rolling back…" : "Rollback"}</button>` : ""}
         </div>
       ` : ""}
-      ${validationFailed ? b`<div class="recovery-panel" role="status"><strong>ESPHome rejected the config (code ${status?.validation_detail?.code ?? "unavailable"})</strong><p>The original config was restored. Review the config changes and open ESPHome Device Builder logs for the exact validation error.</p></div>` : ""}
+      ${validationFailed ? b`<div class="recovery-panel" role="status"><strong>ESPHome rejected the config (code ${status?.validation_detail?.code ?? "unavailable"})</strong><p>Original config restored. Review the changes and open ESPHome Device Builder logs for the validation error.</p></div>` : ""}
       ${status?.failure ? b`<div class="recovery-panel" role="status">
         ${failureMessage ? b`<p>${failureMessage}</p>` : b`<p>Open ESPHome Device Builder details for the failed operation.</p>`}
         ${status.failure.context.map(([key, value]) => b`<p>${key === "secret_name" ? "Required secret" : key === "component" ? "Component" : key === "field" ? "Option" : "Package"}: <code>${value}</code></p>`)}
       </div>` : ""}
       ${waitingForStartup ? b`<div class="job-progress" role="status" aria-live="polite">
-        <span>Meter is rebooting. Waiting for startup verification.</span>
+        <span>Meter rebooting; waiting for startup verification.</span>
         <progress max="100" aria-label="Waiting for meter startup"></progress>
       </div>` : ""}
       <div class="confirmation-actions">
@@ -2132,14 +2132,14 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
 function calibrationPlanStep(selected, choose, back, runtimeOnly, busy) {
   return b`<section class="step-content" aria-labelledby="calibration-plan-heading" aria-busy=${busy ? "true" : "false"}>
     <h2 id="calibration-plan-heading">Choose calibration</h2>
-    <p>Calibration values stay in meter flash until a verified ESPHome handoff is available.</p>
+    <p>Verified calibration stays in meter flash until an ESPHome handoff.</p>
     ${runtimeOnly ? b`<section class="info-band" aria-label="Runtime-only capabilities">
-      <strong>The meter is connected to Home Assistant.</strong>
+      <strong>Meter connected to Home Assistant.</strong>
       <p>ESPHome source editing is unavailable.</p>
-      <p>Circuit names, CT models, roles, multipliers, entities, and totals cannot be changed by this helper in this mode.</p>
-      <p>Supported calibration is saved in meter flash. Installing firmware later may replace flash-only calibration.</p>
-      <p>Importing the meter into ESPHome Device Builder, when available, is the path to editable configuration.</p>
-      <p>Current calibration requires confirmation of the reporting multiplier because no authoritative CT inventory is available.</p>
+      <p>This helper cannot change circuit names, CT models, roles, multipliers, entities, or totals in this mode.</p>
+      <p>Calibration is saved in meter flash. A later firmware install may replace it.</p>
+      <p>When available, import the meter into ESPHome Device Builder to edit its configuration.</p>
+      <p>Current calibration requires a reporting multiplier because authoritative CT inventory is unavailable.</p>
     </section>` : ""}
     <fieldset class="name-mode" ?disabled=${busy}><legend>Calibration plan</legend>
       <label><input type="radio" name="calibration-plan" .checked=${selected === "keep_existing"} @change=${() => choose("keep_existing")}> Keep existing calibration — no live session or safety acknowledgement.</label>
@@ -2199,7 +2199,7 @@ const moveTab = (event, index) => {
 };
 function confirmTotalOutputRemoval(label, published, enabled) {
   return enabled || !published || window.confirm(
-    `${label} is enabled in the saved meter configuration. Turning it off removes this output after installation and may affect Home Assistant dashboards, automations, or Energy settings. Continue?`
+    `${label} is enabled in the saved meter configuration. Turning it off removes it after installation and may affect Home Assistant dashboards, automations, or Energy settings. Continue?`
   );
 }
 const range = (channels) => channels.length ? `CT${channels[0]}–CT${channels.at(-1)}` : "No CTs";
@@ -2226,17 +2226,17 @@ function defaultTotalsSection(configuration, totals, readable, writable, update,
   const visibilityUnresolved = !totals.migration.native_visibility_resolved;
   return b`<section class="default-totals" aria-labelledby="default-totals-heading">
     <h2 id="default-totals-heading">Default meter totals</h2>
-    ${custom.map((source) => b`<p class="info-band" role="status">${source.label} uses a custom formula. Edit recognized circuits under Advanced totals; other formulas require ESPHome Device Builder.</p>`)}
-    ${visibilityUnresolved ? b`<p class="info-band" role="status">Native source visibility is unconfirmed; these controls show requested outputs, not confirmed installed publications.</p>` : A}
-    ${graphState === "pending" ? b`<p class="info-band" role="status">Updating total graph; current native cards remain available.</p>` : graphState === "invalid" ? b`<p class="warning-band" role="status">Total graph unavailable; native cards show saved draft status and not current dependency results.</p>` : A}
+    ${custom.map((source) => b`<p class="info-band" role="status">${source.label} uses a custom formula. Edit recognized circuits in Advanced totals. Other formulas require ESPHome Device Builder.</p>`)}
+    ${visibilityUnresolved ? b`<p class="info-band" role="status">Native visibility is unconfirmed; controls show requested outputs, not installed publications.</p>` : A}
+    ${graphState === "pending" ? b`<p class="info-band" role="status">Total graph updating; native cards remain available.</p>` : graphState === "invalid" ? b`<p class="warning-band" role="status">Total graph unavailable; native cards show saved draft status, not current dependencies.</p>` : A}
     <p>Watts and Amps control Home Assistant visibility. kWh adds or removes the energy sensor.</p>
     <ul class="native-total-status" role="status">
-      <li>Watts is hidden from Home Assistant when off and retained internally when needed by Overall meter total, enabled kWh, or other totals.</li>
-      <li>Amps is hidden from Home Assistant when off and retained internally when needed by Overall meter total or other totals.</li>
-      <li>kWh is checked when an energy sensor exists, including a hidden sensor. Turning it off removes that energy sensor.</li>
+      <li>Off Watts stays hidden in Home Assistant but remains internal when needed by Overall meter total, enabled kWh, or other totals.</li>
+      <li>Off Amps stays hidden in Home Assistant but remains internal when needed by Overall meter total or other totals.</li>
+      <li>kWh is checked when an energy sensor exists, including hidden sensors. Turning it off removes that sensor.</li>
     </ul>
     ${overall ? b`<fieldset class="default-total-card"><legend>Overall meter total (all monitored channels)</legend>
-      <p>${boardFormula || "All monitored channels"}. Downstream circuit CTs can double-count the service mains, so this native total is not relabeled Mains.</p>
+      <p>${boardFormula || "All monitored channels"}. Circuit CTs can double-count service mains, so this native total is not relabeled Mains.</p>
       <p>Covers: ${boardRanges || range(overall.leaf_channels)}.</p>
       <div class="default-total-controls">
         ${control("Overall meter total Watts", configuration.default_totals.overall.watts, (watts) => patch({ ...configuration.default_totals.overall, watts }), existingConfiguration?.default_totals.overall.watts)}
@@ -2276,8 +2276,8 @@ function automaticTotalsSection(configuration, totals, writable, update, existin
   const ambiguousRoles = automaticRoleLabels.filter(([role]) => configuration.channels.filter((channel) => channel.enabled && channel.role === role && !pairedChannels.has(channel.channel)).length > 2);
   return b`<section class="automatic-totals" aria-labelledby="automatic-totals-heading">
     <h2 id="automatic-totals-heading">Suggested circuit totals</h2>
-    <p>Suggestions update as you classify and name CTs. Matching phase names such as Dryer L1 and Dryer L2 can identify a two-pole circuit; select the suggested total to add it.</p>
-    ${ambiguousRoles.map(([, label]) => b`<p class="info-band" role="status">Multiple ${label} CTs cannot be paired automatically. Create the totals under Advanced totals.</p>`)}
+    <p>Suggestions update as CTs are named and classified. Matching phase names (for example, Dryer L1/L2) can identify a two-pole circuit. Select a suggestion to add it.</p>
+    ${ambiguousRoles.map(([, label]) => b`<p class="info-band" role="status">Multiple ${label} CTs cannot be paired automatically. Create them in Advanced totals.</p>`)}
     ${totals.automatic_totals.length ? totals.automatic_totals.map((resolved) => {
     const saved = configuration.automatic_totals.find((item) => item.candidate_id === resolved.candidate.candidate_id);
     const current = saved ?? { candidate_id: resolved.candidate.candidate_id, enabled: resolved.enabled, outputs: resolved.outputs };
@@ -2318,13 +2318,13 @@ function automaticTotalsSection(configuration, totals, writable, update, existin
         <p class="aggregate-id">Total ID: <code>${resolved.candidate.aggregate_id}</code></p>
         <label class="automatic-total-name">Name <input aria-label=${`${resolved.candidate.candidate_id} suggested total name`} maxlength="64" required .value=${l(currentName)} ?disabled=${!writable}
           @input=${(event) => patch(resolved.candidate.candidate_id, current, { name: event.target.value })} /></label>
-        ${savedSensorIds ? b`<p class="aggregate-id">Existing sensor IDs are preserved; see the reviewed configuration for the exact firmware IDs.</p>` : b`<p class="aggregate-id">Proposed sensor IDs: <code>${sensorIds.length ? sensorIds.join(", ") : currentName.trim() ? "none until an output is selected" : "enter a name first"}</code></p>`}
+        ${savedSensorIds ? b`<p class="aggregate-id">Existing sensor IDs are preserved; see Configuration review for exact IDs.</p>` : b`<p class="aggregate-id">Proposed sensor IDs: <code>${sensorIds.length ? sensorIds.join(", ") : currentName.trim() ? "none until an output is selected" : "enter a name first"}</code></p>`}
         <p>Sources: ${sources}</p><p>Formula: ${sourceFormula(resolved.candidate.sources, totals, configuration.aggregates)} · ${resolved.candidate.role.replaceAll("_", " ")} · ${resolved.candidate.measurement_method.replaceAll("_", " ")}</p>
         ${parents.length ? b`<p>Feeds into: ${parents.map((parent) => parent.name).join(" and ")}</p>` : ""}
         <label class="automatic-total-control"><input type="checkbox" role="switch" aria-label=${`Create ${currentName} total`} .checked=${current.enabled} ?disabled=${!writable} @change=${changeEnabled} />Create this total</label>
         <div class="automatic-total-controls">${control("watts", "Watts")}${control("amps", "Amps")}${control("kwh", "kWh", resolved.candidate.energy_mode === "none")}</div>
       </fieldset>`;
-  }) : b`<p class="info-band" role="status">No server-suggested totals are available for this circuit configuration.</p>`}
+  }) : b`<p class="info-band" role="status">No server suggestions are available for this circuit configuration.</p>`}
   </section>`;
 }
 const methods = ["direct", "two_ct_sum", "one_ct_double_power", "both_conductors_one_ct"];
@@ -2426,10 +2426,10 @@ function advancedTotalsEditor(configuration, drafts, update, writable, reason, t
     }] });
   };
   return b`<section aria-labelledby="advanced-totals-heading"><details class="advanced-totals"><summary id="advanced-totals-heading">Advanced totals</summary>
-    <p>Watts and Amps control Home Assistant visibility. kWh is checked when an energy sensor exists, including a hidden sensor; turning it off removes that sensor.</p>
-    ${!writable ? b`<p class="info-band" role="status">Aggregate editing unavailable: ${reason === "unmanaged_total_present" ? "This meter has legacy unmanaged totals." : "This meter does not expose managed totals."} Upgrade the meter configuration before editing aggregate totals. Existing aggregates remain reviewable.</p>` : A}
-    ${!fresh ? b`<p class="info-band" role="status">Total graph unavailable or updating. You can still edit or remove draft sources; complete the graph before continuing.</p>` : A}
-    ${fresh && catalog.stale_automatic_total_settings.length ? b`<p class="info-band" role="status">${catalog.stale_automatic_total_settings.length} inactive automatic settings are retained for this plan, not included in the active configuration.</p>` : A}
+    <p>Watts and Amps control Home Assistant visibility. kWh controls the energy sensor, including hidden sensors; turning it off removes it.</p>
+    ${!writable ? b`<p class="info-band" role="status">Aggregate editing unavailable: ${reason === "unmanaged_total_present" ? "This meter has legacy unmanaged totals." : "This meter does not expose managed totals."} Upgrade the meter configuration before editing. Existing aggregates remain reviewable.</p>` : A}
+    ${!fresh ? b`<p class="info-band" role="status">Total graph unavailable or updating. Draft sources can still be edited or removed; complete the graph before continuing.</p>` : A}
+    ${fresh && catalog.stale_automatic_total_settings.length ? b`<p class="info-band" role="status">${catalog.stale_automatic_total_settings.length} inactive automatic settings are retained for this plan but are not active.</p>` : A}
     <div class="aggregate-list">${configuration.aggregates.map((aggregate) => {
     let parent = "", problem = "", leaves = [], overlaps = false;
     try {
@@ -2532,7 +2532,7 @@ function advancedTotalsEditor(configuration, drafts, update, writable, reason, t
         return;
       }
       patch(aggregate, { measurement_method: input.value });
-    }}>${methods.map((method) => b`<option value=${method} ?selected=${method === aggregate.measurement_method} ?disabled=${method !== "direct" && aggregate.sources.some((source) => source.kind !== "channel")}>${method === "two_ct_sum" ? "Two CT Sum" : method.replaceAll("_", " ")}</option>`)}</select><small>Two CT Sum adds exactly two CTs. Nested totals use Direct.</small></label>
+    }}>${methods.map((method) => b`<option value=${method} ?selected=${method === aggregate.measurement_method} ?disabled=${method !== "direct" && aggregate.sources.some((source) => source.kind !== "channel")}>${method === "two_ct_sum" ? "Two CT Sum" : method.replaceAll("_", " ")}</option>`)}</select><small>Two CT Sum uses exactly two CTs. Nested totals use Direct.</small></label>
           <label>Energy behavior <select aria-label=${`${aggregate.aggregate_id} aggregate energy`} .value=${aggregate.energy_mode}
             @change=${(event) => {
       const input = event.target;
@@ -2545,7 +2545,7 @@ function advancedTotalsEditor(configuration, drafts, update, writable, reason, t
         return;
       }
       patch(aggregate, { energy_mode: input.value, outputs: { ...aggregate.outputs, kwh: input.value === "none" ? false : aggregate.outputs.kwh } });
-    }}>${energyModes.filter((mode) => mode !== "bidirectional" || hasSolar || aggregate.energy_mode === mode).map((mode) => b`<option value=${mode} ?selected=${mode === aggregate.energy_mode}>${mode[0].toUpperCase()}${mode.slice(1)}</option>`)}</select><small>Import/export totals require an enabled Solar CT. kWh uses ESPHome platform: total_daily_energy, integrating this total's Watts rather than adding child kWh.</small></label>
+    }}>${energyModes.filter((mode) => mode !== "bidirectional" || hasSolar || aggregate.energy_mode === mode).map((mode) => b`<option value=${mode} ?selected=${mode === aggregate.energy_mode}>${mode[0].toUpperCase()}${mode.slice(1)}</option>`)}</select><small>Import/export totals require a Solar CT. kWh uses ESPHome's total_daily_energy from this total's Watts, not child kWh.</small></label>
           <label>Feeds into <select aria-label=${`${aggregate.name} Feeds into`} .value=${parent}
             @change=${(event) => {
       const input = event.target;
@@ -2570,8 +2570,8 @@ function advancedTotalsEditor(configuration, drafts, update, writable, reason, t
         <p class="aggregate-formula">Formula: ${aggregate.sources.length ? aggregate.sources.map(label).join(" + ") : "Select sources"}</p>
         ${fresh && !problem ? b`<p>Coverage: ${coverageLabel(leaves)}</p>` : A}
         ${problem ? b`<p class="warning-band" role="status">${problem} Complete the total before continuing.</p>` : A}
-        ${overlaps ? b`<p class="warning-band" role="note">This total overlaps another report. They are valid independently but must not be added together.</p>` : A}
-        <p>Select CTs or totals, not both. Remove current sources before changing source class.</p>
+        ${overlaps ? b`<p class="warning-band" role="note">This total overlaps another report. Keep them separate; do not add them together.</p>` : A}
+        <p>Select CTs or totals, not both. Remove current sources before switching.</p>
         ${nativeChoices.length ? b`<fieldset class="aggregate-sources"><legend>Native totals</legend><div class="aggregate-source-options">${nativeChoices.map((item) => option({ kind: "native_total", source_id: item.source_id }, item.label))}</div></fieldset>` : A}
         ${existingChoices.length ? b`<fieldset class="aggregate-sources"><legend>Existing totals</legend><div class="aggregate-source-options">${existingChoices.map((item) => option({ kind: "aggregate", aggregate_id: item.aggregate_id }, item.name))}</div></fieldset>` : A}
         <fieldset class="aggregate-sources aggregate-channels"><legend>CTs</legend><div class="aggregate-channel-groups">${Array.from({ length: Math.ceil(configuration.channels.length / 6) }, (_2, board) => {
@@ -2633,7 +2633,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
             @click=${() => setBoard(index)}>${index === 0 ? "Main Board" : `Add-on ${index}`}</button>
         `)}
       </div>
-      <p>Choose the CT model and confirm each circuit. The helper selects the smallest safe reporting range automatically.</p>
+      <p>Choose a CT model for each circuit. Reporting range is set automatically.</p>
       <div id="board-panel" role="tabpanel" aria-labelledby=${`board-tab-${board}`}>
       <div class="ct-table" role="table" aria-rowcount=${inventory.channels.length + 1}>
         <div class="ct-header" role="row" aria-rowindex="1">
@@ -2828,7 +2828,7 @@ function calibrationSourceEvidence(session2, instanceIds, target, completedInsta
     <h3>Active gain source</h3>
     ${sources.length ? b`<table><thead><tr><th>Chip</th><th>Active gain source</th><th>${target} calibrated this session</th></tr></thead><tbody>
       ${sources.map(([instance, source]) => b`<tr><td>${instance}</td><td>${source === "flash" ? "Saved flash" : source === "configuration" ? "Configuration" : "Unknown"}</td><td>${completedInstanceIds.has(instance) ? "Yes" : "No"}</td></tr>`)}
-    </tbody></table><p>ATM90E32 stores voltage and current gains in one table. The active source does not mean this calibration step was completed.</p>` : b`<p>Calibration source is not available.</p>`}
+    </tbody></table><p>ATM90E32 stores voltage and current gains together. Active source does not mean this step completed.</p>` : b`<p>Calibration source is not available.</p>`}
   </section>`;
 }
 function stabilityEvidence(result, labels) {
@@ -2890,7 +2890,7 @@ function currentStep(topology2, inventory, session2, channel, references, report
   })}
       </div>
       <h2>Calibrate CT${first}–CT${first + 2}</h2>
-      <p>Blank entries keep the existing gains. Select a reference only for channels you want to calibrate.</p>
+      <p>Leave blank to keep existing gains. Select references only for channels to calibrate.</p>
       ${calibrationSourceEvidence(session2, sourceIds, "Current", completedInstanceIds)}
       <div class="reference-block">
         ${channels.map((value) => b`<label>CT${value} · ${inventory?.channels.find((item) => item.channel === value)?.name ?? "Unnamed circuit"} reference (A)
@@ -2903,7 +2903,7 @@ function currentStep(topology2, inventory, session2, channel, references, report
       ${multiplierRequired ? b`<label>Reporting multiplier <select data-role="reporting-multiplier" required @change=${(event) => {
     const value = Number(event.target.value);
     setReportingMultiplier(value || null);
-  }}><option value="" ?selected=${reportingMultiplier === null}>Choose multiplier</option>${[1, 2, 4, 8].map((value) => b`<option value=${value} ?selected=${reportingMultiplier === value}>${value}</option>`)}</select></label><p>ESPHome source editing is unavailable, so the multiplier cannot be read from authoritative configuration. Choose it explicitly.</p>` : ""}
+  }}><option value="" ?selected=${reportingMultiplier === null}>Choose multiplier</option>${[1, 2, 4, 8].map((value) => b`<option value=${value} ?selected=${reportingMultiplier === value}>${value}</option>`)}</select></label><p>ESPHome source editing is unavailable, so the multiplier cannot be read from authoritative config. Choose it.</p>` : ""}
       </div>
       <div class="calibration-actions"><button class="secondary" @click=${check} ?disabled=${busy || !referenceReady}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Loading live current data…` : "Check stability"}</button>
         <button class="primary" @click=${calibrate} ?disabled=${busy || !referenceReady || !stability2?.stable || (result?.iteration ?? 0) >= 3 || Boolean(result && !result.retry_allowed && result.iteration > 0)}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Calibrating current…` : result?.retry_allowed ? "Retry current calibration" : "Calibrate current"}</button></div>
@@ -2942,8 +2942,8 @@ function packageOptions(options, change, capabilities = []) {
   };
   return b`<section class="package-options" aria-labelledby="package-options-heading">
     <h2 id="package-options-heading">Optional meter fields</h2>
-    <p>Choose which meter boards include additional firmware measurements.</p>
-    <p>Power quality adds reactive power, apparent power, and power factor for each used CT for the CircuitSetup Energy Analyzer. Status diagnostics remain available through the native API and are disabled by default in Home Assistant.</p>
+    <p>Choose boards for additional firmware measurements.</p>
+    <p>Power quality adds reactive power, apparent power, and power factor for each used CT in CircuitSetup Energy Analyzer. Status diagnostics use the native API and are off by default in Home Assistant.</p>
     <table class="package-options-table">
       <thead><tr><th scope="col">Board</th>${FEATURES.map(([_feature, label]) => b`<th scope="col">${label}</th>`)}</tr></thead>
       <tbody>
@@ -2984,7 +2984,7 @@ const SYSTEMS = [
   ["custom", "Custom"]
 ];
 const INTERVALS = [1, 2, 5, 10, 30, 60];
-const intervalImpact = (interval) => interval <= 5 ? "1–5 seconds: high traffic." : interval === 10 ? null : interval >= 30 ? "30–60 seconds: lower traffic; guided calibration takes longer." : "This interval affects update traffic and guided calibration time.";
+const intervalImpact = (interval) => interval <= 5 ? "1–5 seconds: high traffic." : interval === 10 ? null : interval >= 30 ? "30–60 seconds: lower traffic; calibration takes longer." : "This interval affects traffic and calibration time.";
 function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, setFrequency, setNominalVoltage, setAcknowledged, back, continueToCircuits, boardPackages = null, setBoardPackages = () => void 0, profileConfirmed = true, setProfileConfirmed = () => void 0, mode = "helper_managed", packageCapabilities2 = []) {
   const multiReference = draft.voltage_references.length > 1;
   const primaryReference = draft.voltage_references[0];
@@ -3037,8 +3037,8 @@ function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, set
   return b`
     <section class="step-content meter-settings-step" aria-labelledby="step-heading">
       <h2>Meter settings</h2>
-      <p>Edit the draft here, then continue to Circuits &amp; CTs to review your changes. Apply saves the configuration; Compile and Install send it to the meter.</p>
-      ${mode === "legacy_editable" ? b`<p class="warning-band" role="status">The existing profile identity was not recorded. Confirm it before continuing.</p>` : A}
+      <p>Edit the draft, then review Circuits &amp; CTs. Apply saves; Compile and Install send it to the meter.</p>
+      ${mode === "legacy_editable" ? b`<p class="warning-band" role="status">Existing profile identity is missing. Confirm it before continuing.</p>` : A}
       <div class="meter-settings-grid">
         <label>Friendly name <input aria-label="Friendly name" maxlength="64" .value=${draft.friendly_name}
           @input=${(event) => patch({ friendly_name: event.target.value })} /></label>
@@ -3057,7 +3057,7 @@ function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, set
       </div>
       ${intervalImpact(draft.update_interval_s) ? b`<p class="info-band" role="status">${intervalImpact(draft.update_interval_s)}</p>` : A}
       <h3>Voltage references</h3>
-      <p class="info-band">The configured voltage-reference setup must match the meter's physical voltage wiring. By default, the main-board voltage reference applies to every board.</p>
+      <p class="info-band">Match this voltage-reference setup to the meter's physical wiring. By default, the main-board reference applies to every board.</p>
       <details class="advanced-voltage-options" data-section="advanced-voltage-options"><summary>Advanced voltage options</summary><div class="voltage-options-content"><div class="voltage-reference-cards">${draft.voltage_references.map((reference) => b`
         <section class="voltage-reference-card" aria-label=${`${reference.label} voltage reference`}>
           <div class="voltage-reference-column">
@@ -3075,14 +3075,14 @@ function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, set
           </div>
           <div class="voltage-reference-column voltage-phase-column">
             <label>Phase label <input aria-label=${`${reference.reference_id} phase label`} aria-describedby=${`${reference.reference_id}-phase-help`} maxlength="64" .value=${reference.phase_label}
-              @input=${(event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, phase_label: event.target.value } : item) })} /><small id=${`${reference.reference_id}-phase-help`}>Names the supply phase in the configuration review, for example L1, L2, or A. This label does not change wiring or assign CT groups.</small></label>
+              @input=${(event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, phase_label: event.target.value } : item) })} /><small id=${`${reference.reference_id}-phase-help`}>Names the supply phase in Configuration review, e.g. L1, L2, or A. It does not change wiring or assign CT groups.</small></label>
           </div>
           ${draft.voltage_references.length > 1 ? b`<button class="secondary" aria-label=${`Remove ${reference.reference_id} voltage reference`} @click=${() => removeReference(reference.reference_id)}>Remove reference</button>` : ""}
         </section>`)}
       </div>
-      ${addableGroups.length ? b`<div class="reference-block"><label>Group transferred to new reference <select data-new-reference-group aria-label="Group transferred to new reference" aria-describedby="new-reference-help">${addableGroups.map((group) => b`<option value=${group}>${group}</option>`)}</select></label><p id="new-reference-help">Choose the physical CT group to move, then click Add voltage reference. The new reference copies the current reference's settings and takes over this group in the draft. Match its settings to the separate voltage wiring.</p><button class="secondary" data-action="add-voltage-reference" @click=${addReference}>Add voltage reference</button></div>` : ""}
+      ${addableGroups.length ? b`<div class="reference-block"><label>Group transferred to new reference <select data-new-reference-group aria-label="Group transferred to new reference" aria-describedby="new-reference-help">${addableGroups.map((group) => b`<option value=${group}>${group}</option>`)}</select></label><p id="new-reference-help">Choose the physical CT group, then click Add voltage reference. The new reference copies current settings and takes over the group. Match its settings to the separate voltage wiring.</p><button class="secondary" data-action="add-voltage-reference" @click=${addReference}>Add voltage reference</button></div>` : ""}
       <h3>Voltage group assignment</h3>
-      <p id="voltage-assignment-help">Each group contains three CT channels that share a voltage reference. Selecting a reference updates the draft immediately. If a move would leave a reference empty, you must confirm a group swap. Continue to Circuits &amp; CTs, review the changes, then click Apply to save the configuration. Compile and Install activate the assignments on the meter.</p>
+      <p id="voltage-assignment-help">Each group has three CT channels and one voltage reference. Changes update the draft. Moving the last group requires a confirmed swap. Review in Circuits &amp; CTs, then Apply. Compile and Install activate assignments on the meter.</p>
       <div class="meter-settings-grid">${draft.voltage_references.flatMap((reference) => reference.group_keys).sort().map((group) => b`<label>${group}<select aria-label=${`${group} voltage reference`} aria-describedby="voltage-assignment-help" .value=${draft.voltage_references.find((reference) => reference.group_keys.includes(group))?.reference_id ?? ""}
         @change=${(event) => moveGroup(group, event.target.value, event.target)}>${draft.voltage_references.map((reference) => b`<option value=${reference.reference_id}>${reference.label || reference.reference_id}</option>`)}</select></label>`)}</div>
       ${multiReference ? b`<label class="check-row"><input type="checkbox" aria-label="Multi-reference preparation acknowledgement" .checked=${acknowledged}
@@ -3344,8 +3344,8 @@ const installer = (option, manifestUrl) => b`
   <p class="firmware-summary">${option.productId} · ESPHome ${option.version}</p>
   <esp-web-install-button class="esp-web-installer" .manifest=${manifestUrl}>
     <button slot="activate" aria-label="Install firmware">Install firmware</button>
-    <p slot="unsupported">Use a supported Chromium browser with Web Serial to install firmware.</p>
-    <p slot="not-allowed">Open this helper on HTTPS or localhost to install firmware.</p>
+    <p slot="unsupported">Use Chromium with Web Serial to install firmware.</p>
+    <p slot="not-allowed">Open this helper on HTTPS or localhost.</p>
   </esp-web-install-button>
 `;
 function espWebInstaller(option) {
@@ -3356,7 +3356,7 @@ function espWebInstaller(option) {
     return m(
       loadEspWebTools().then(
         () => installer(option, manifestUrl),
-        () => b`<p role="alert">ESP Web Tools failed to load. Reload Home Assistant and try again.</p>`
+        () => b`<p role="alert">ESP Web Tools failed to load. Reload Home Assistant and retry.</p>`
       ),
       b`<p role="status">Loading installer…</p>`
     );
@@ -3365,17 +3365,17 @@ function espWebInstaller(option) {
   }
 }
 const warningCopy = {
-  electrical_profile_requires_confirmation: "The electrical profile was inferred. Confirm it before applying changes.",
-  legacy_generic_totals_unmanaged: "Existing generic totals will be preserved unless you explicitly choose to replace them.",
-  stored_semantics_stale: "The ESPHome source changed after the last helper save, so the live source was read again.",
-  config_contract_upgrade_required: "This configuration needs a helper contract update for additional editing capabilities. Review any proposed update before applying it."
+  electrical_profile_requires_confirmation: "Electrical profile was inferred. Confirm it before applying changes.",
+  legacy_generic_totals_unmanaged: "Existing generic totals stay unchanged unless you replace them.",
+  stored_semantics_stale: "ESPHome source changed since the last helper save; the live source was read again.",
+  config_contract_upgrade_required: "Configuration needs a helper contract update. Review it before applying."
 };
 function existingConfigurationStep(configuration, metadata, onManage, onCalibrateOnly, onBack) {
   if (!configuration.capabilities.configuration_authoritative || configuration.capabilities.semantic_source !== "legacy_inferred") return b``;
   const warnings = [.../* @__PURE__ */ new Set([...configuration.warnings, ...configuration.capabilities.reason_codes])];
   return b`<section class="existing-configuration" aria-label="Review Existing Setup">
     <p class="info-band"><strong>${warnings.includes("stored_semantics_stale") ? "Configuration changed externally" : "Ready for setup"}</strong></p>
-    <p>This meter already has an ESPHome configuration. Choose whether to manage its configuration with this helper or leave it unchanged.</p>
+    <p>This meter already has an ESPHome configuration. Manage it here or leave it unchanged.</p>
     <dl class="status-list">
       <div><dt>ESPHome configuration</dt><dd>${metadata.configurationFilename}</dd></div>
       <div><dt>Project</dt><dd>${metadata.projectName} · ${metadata.projectVersion}</dd></div>
@@ -3384,11 +3384,11 @@ function existingConfigurationStep(configuration, metadata, onManage, onCalibrat
     <dl class="status-list">
       <div><dt>Read directly</dt><dd>Names, substitutions, current gains, line frequency, reporting interval, package state, and physical topology.</dd></div>
       <div><dt>Inferred or not recorded</dt><dd>Electrical profile, transformer and CT identity, used channels, circuit roles, and aggregate intent.</dd></div>
-      <div><dt>Existing settings</dt><dd>Current gains, reporting multipliers, totals, and unowned YAML are preserved unless your reviewed changes explicitly replace them.</dd></div>
+      <div><dt>Existing settings</dt><dd>Current gains, reporting multipliers, totals, and unowned YAML stay unchanged unless reviewed changes replace them.</dd></div>
     </dl>
     <dl class="status-list">
-      <div><dt>What setup records</dt><dd>The reviewed meter profile, circuit settings, helper-owned totals, and package options become helper-managed.</dd></div>
-      <div><dt>What to confirm</dt><dd>Confirm settings the source cannot establish, such as CT identity and circuit purpose. Existing CT gains can be kept without choosing a replacement model.</dd></div>
+      <div><dt>What setup records</dt><dd>Reviewed meter profile, circuit settings, helper totals, and package options become helper-managed.</dd></div>
+      <div><dt>What to confirm</dt><dd>Confirm settings the source cannot establish, such as CT identity and circuit purpose. Keep existing CT gains without choosing a replacement model.</dd></div>
     </dl>
     ${warnings.length ? b`<div class="warning-band" role="note"><strong>Review notes</strong><ul>${warnings.map((warning) => b`<li>${warningCopy[warning] ?? "Some settings could not be identified from the source and need review."}</li>`)}</ul><details><summary>Technical details</summary><code>${warnings.join(", ")}</code></details></div>` : A}
     <div class="action-footer"><button class="secondary" @click=${onBack}>Back</button><button class="secondary" @click=${onCalibrateOnly}>Keep ESPHome configuration and calibrate only</button><button class="primary" @click=${onManage}>Review and manage with helper</button></div>
@@ -3397,7 +3397,7 @@ function existingConfigurationStep(configuration, metadata, onManage, onCalibrat
 function existingMeterInspection(candidates, inspection, busyAction, find, inspect, adopt, searched = false) {
   return b`<section class="existing-inspection" aria-labelledby="find-existing-heading">
     <h3 id="find-existing-heading">Find another ESPHome meter</h3>
-    <p>This checks one selected ESPHome entry before it can be adopted. It does not install firmware.</p>
+    <p>Checks one selected ESPHome entry before adoption. It does not install firmware.</p>
     <button class="secondary" data-action="find-existing" ?disabled=${Boolean(busyAction)} @click=${find}>
       ${busyAction === "find-existing" ? "Finding meters…" : "Find another ESPHome meter"}
     </button>
@@ -3449,7 +3449,7 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
         <div class="warning-band" role="status">
           <strong>Offset calibration is ${capability?.status === "invalid" ? "not safely available" : "not available on this firmware"}.</strong>
           ${capability?.status === "invalid" ? b`<p>Repair reason: ${capability.repair_reason}</p>` : A}
-          <p>Skip preserves the offset values already saved in flash. No clear control is invoked.</p>
+          <p>Skip keeps offset values saved in flash. It does not clear them.</p>
         </div>
       ` : b`
         <ol class="offset-stage-stepper" aria-label="Offset calibration stages">
@@ -3472,24 +3472,24 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
         </div>
         <div id="offset-board-panel" role="tabpanel" aria-labelledby=${`offset-board-tab-${board}`}>
           <h2>Optional offset calibration · Stage ${stage} · ${boardLabel(board)}</h2>
-          <p>Offset calibration is optional and requires changing the power and wiring state as described below. ${stock ? "Captured values remain pending until reviewed configuration installation and selection are confirmed." : "Offset values remain stored in meter flash."}</p>
+          <p>Offset calibration is optional and requires the power and wiring changes below. ${stock ? "Captured values stay pending until reviewed configuration is installed and selected." : "Offset values stay in meter flash."}</p>
           ${stock ? b`<section class="measurement-evidence" aria-label="Offset preparation backup">
             <h3>${nativeReview ? "Native offset readiness" : "Why preparation is required"}</h3>
-            <p>${nativeReview ? "The helper uses the meter's native ATM90E32 offset controls; no firmware or zero-offset YAML is installed." : "Before calibration, the helper temporarily installs zero offsets for the selected chips so existing corrections do not affect the new measurements."}</p>
-            <p>The helper saves both offset stages for the selected chips in a private recovery backup. It uses fresh meter tables when available; a missing first-use table may use the current Device Builder YAML. This is not flash readback, and unknown values stay blocked.</p>
+            <p>${nativeReview ? "Uses the meter's native ATM90E32 offset controls; installs no firmware or zero-offset YAML." : "Temporarily installs zero offsets for selected chips so existing corrections do not affect measurements."}</p>
+            <p>Saves both stages for selected chips in a private recovery backup. Uses fresh meter tables when available; a missing first-use table may use current Device Builder YAML. This is not flash readback; unknown values stay blocked.</p>
             ${matching && preparation?.installed ? b`<p>${preparation.action_ready ? "Preparation installed in this backend owner." : nativeReview ? "This historical preparation is not authorized by this backend owner. Review native offset readiness again; retained values are not lost." : "Preparation was installed, but this backend owner has not confirmed its receipt. Review the preparation for unfinished chips; retained values are not lost."}</p>` : A}
             <label class="check-row"><input type="checkbox" .checked=${stock.backupAcknowledged} @change=${(event) => stock.setBackup(event.target.checked)}> I understand that this step creates a private backup and ${nativeReview ? "uses the meter's native offset controls; no firmware is installed" : "installs a temporary zero-offset configuration"}.</label>
             <button class="secondary" data-action="prepare-offset" ?disabled=${busy || !stock.backupAcknowledged || stageState === "completed" || recovery && !retryConfirmed}
               @click=${stock.prepare}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Loading offset preparation…` : recovery ? nativeReview ? "Review unfinished-chip readiness" : "Review unfinished-chip preparation" : nativeReview ? "Review native offset readiness" : "Review offset preparation"}</button>
-            ${attempted ? b`<p>${nativeReview ? "This run was already attempted. Review unfinished-chip readiness again before retrying; completed values, including zeros, are retained." : "This historical preparation was already attempted. Review the historical preparation again before retrying; completed values, including zeros, are retained."}</p>` : A}
+            ${attempted ? b`<p>${nativeReview ? "Run already attempted. Review unfinished-chip readiness before retrying; completed values, including zeros, stay retained." : "Historical preparation already attempted. Review it before retrying; completed values, including zeros, stay retained."}</p>` : A}
           </section>` : A}
-          <div class="warning-band"><strong>Warning:</strong> An open-circuit current-output CT on a live conductor can be hazardous. De-energize conductors before unplugging any CT.</div>
+          <div class="warning-band"><strong>Warning:</strong> An open-circuit CT on a live conductor can be hazardous. De-energize before unplugging any CT.</div>
           ${stage === 1 ? b`
-            <p>First, de-energize all conductors. Then unplug the voltage transformer/AC voltage input and CT inputs, power the meter from USB only, then check that every voltage/current phase reads near zero.</p>
+            <p>De-energize all conductors. Unplug the voltage transformer/AC input and CT inputs. Power the meter from USB only. Check every voltage/current phase is near zero.</p>
           ` : b`
-            <p>Power down before rewiring, keep CT inputs unplugged and CTs off current-carrying conductors, connect/enclose/energize only the voltage reference, then check that voltage is present on both chips and every current phase reads near zero.</p>
+            <p>Power down before rewiring. Keep CT inputs unplugged and CTs off conductors. Connect, enclose, and energize only the voltage reference. Check voltage on both chips and near-zero current on every phase.</p>
           `}
-          <p>Measurements cannot prove that a transformer or CT is physically unplugged. Physical acknowledgement never substitutes for measured readiness.</p>
+          <p>Measurements cannot prove a transformer or CT is unplugged. Physical acknowledgement never replaces measured readiness.</p>
           <label class="check-row"><input type="checkbox" .checked=${acknowledged} @change=${(event) => setAcknowledged(event.target.checked)}>
             ${stage === 1 ? "I completed the USB-only, de-energized preparation." : "I powered down for rewiring and safely enclosed and energized only the voltage reference."}
           </label>
@@ -3554,24 +3554,24 @@ function restartStep(state, result, rollbackAvailable, busy, restart2, rollback,
   const handoffStatus = result?.source_handoff_available ? result.config_filename : hasOffsets ? "Unavailable; offset calibration remains saved in flash" : "Unavailable in runtime-only mode";
   return b`
     <section class="step-content" aria-labelledby="step-heading">
-      <p>Restart verification checks the exact meter identity, topology, restored references, gains, voltage/current offsets, power offsets, and entity bindings.</p>
+      <p>Restart verification checks meter identity, topology, references, gains, offsets, and entity bindings.</p>
       <div class="status-band" role="status">${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Restarting and verifying…` : state || "Ready for restart verification"}</div>
       ${result ? b`<dl class="status-list"><div><dt>Verification</dt><dd>${result.verification_id}</dd></div><div><dt>Authority</dt><dd>${result.source_authority.replaceAll("_", " ")}</dd></div><div><dt>Connection generation</dt><dd>${result.connection_generation}</dd></div><div><dt>Source handoff</dt><dd>${handoffStatus}</dd></div></dl>` : ""}
-      ${state === "cancelled" ? b`<div class="recovery-panel"><strong>Session cancelled</strong><p>Cleanup completed without claiming restart verification.</p></div>` : ""}
-      ${recovery ? b`<div class="recovery-panel"><strong>Recovery required</strong><p>Reconnect to the meter and inspect live session evidence before retrying. Use rollback only when the current transaction makes it available.</p>${rollbackAvailable ? b`<button class="danger" data-action="rollback" @click=${rollback}>Review rollback</button>` : ""}</div>` : ""}
+      ${state === "cancelled" ? b`<div class="recovery-panel"><strong>Session cancelled</strong><p>Cleanup completed; restart verification was not claimed.</p></div>` : ""}
+      ${recovery ? b`<div class="recovery-panel"><strong>Recovery required</strong><p>Reconnect and inspect live session evidence before retrying. Use rollback only when available.</p>${rollbackAvailable ? b`<button class="danger" data-action="rollback" @click=${rollback}>Review rollback</button>` : ""}</div>` : ""}
       <footer class="action-footer"><button class="secondary" @click=${back} ?disabled=${busy}>Back</button><button class="primary" @click=${restart2} ?disabled=${busy || state === "cancelled" || Boolean(result)}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Restarting and verifying…` : state.includes("failed") ? "Retry restart verification" : "Restart and verify"}</button></footer>
     </section>
   `;
 }
 function preflightStatus(session2) {
   if (!session2) return b`<p>Starting a calibration session…</p>`;
-  return session2.preflight.issues.length ? b`<div class="error-panel" role="alert" tabindex="-1"><strong>Calibration preflight failed</strong><ul>${session2.preflight.issues.map((issue) => b`<li>${issue.role}: ${issue.detail}</li>`)}</ul></div>` : b`<div class="success-band" role="status">Calibration controls and reference ranges passed preflight.</div>`;
+  return session2.preflight.issues.length ? b`<div class="error-panel" role="alert" tabindex="-1"><strong>Calibration preflight failed</strong><ul>${session2.preflight.issues.map((issue) => b`<li>${issue.role}: ${issue.detail}</li>`)}</ul></div>` : b`<div class="success-band" role="status">Calibration controls and ranges passed preflight.</div>`;
 }
 function safetyStep(session2, acknowledged, setAcknowledged, confirm, cancel, back, busy = false) {
   return b`
     <section class="step-content" aria-labelledby="step-heading">
       ${preflightStatus(session2)}
-      <section class="info-band" aria-label="Calibration roadmap"><strong>What you will do</strong><p>Confirm the safe setup, then calibrate ${session2?.calibration_plan === "full" ? "offsets, voltage, and current" : "voltage and current"}, verify the restart, and review the result.</p></section>
+      <section class="info-band" aria-label="Calibration roadmap"><strong>What you will do</strong><p>Confirm the safe setup, calibrate ${session2?.calibration_plan === "full" ? "offsets, voltage, and current" : "voltage and current"}, verify the restart, then review.</p></section>
       ${session2?.state === "cancelled" ? b`<div class="status-band" role="status">Calibration session cancelled. No restart verification was claimed.</div>` : ""}
       <ul class="safety-list">
         <li>Mains voltage is hazardous.</li>
@@ -3580,10 +3580,10 @@ function safetyStep(session2, acknowledged, setAcknowledged, confirm, cancel, ba
         <li>Do not work inside an energized panel unless qualified.</li>
         <li>The helper cannot electrically verify a burden-jumper change.</li>
       </ul>
-      <p class="warning-band" role="note"><strong>Physical work required:</strong> Follow the wiring and de-energized preparation instructions on each calibration screen. The helper cannot verify changes inside the panel.</p>
+      <p class="warning-band" role="note"><strong>Physical work required:</strong> Follow the wiring and de-energized steps on each calibration screen. The helper cannot verify panel changes.</p>
       <section class="warning-band" aria-labelledby="safety-heading">
         <h2 id="safety-heading">Safety acknowledgement</h2>
-        <p>Confirm the test setup is safe, isolated, and accessible before calibration.</p>
+        <p>Confirm the setup is safe, isolated, and accessible.</p>
         <label class="check-row"><input type="checkbox" .checked=${acknowledged} @change=${(event) => setAcknowledged(event.target.checked)} /> I acknowledge and accept responsibility</label>
       </section>
       <button class="danger" @click=${cancel}>Cancel session</button>
@@ -3605,7 +3605,7 @@ function setupDeviceStep(snapshot, addonCount, connection, setAddon, setConnecti
     <section class="step-content setup-step" aria-labelledby="step-heading">
       ${snapshot?.devices.length ? b`<section aria-labelledby="existing-device-heading">
         <h2 id="existing-device-heading">Existing meters</h2>
-        <p>Select a compatible meter already connected to Home Assistant.</p>
+        <p>Select a compatible meter connected to Home Assistant.</p>
         <div class="meter-list">
           ${snapshot.devices.map((device2) => b`
             <div class="meter-row">
@@ -3613,7 +3613,7 @@ function setupDeviceStep(snapshot, addonCount, connection, setAddon, setConnecti
                 <strong>${device2.title}</strong>
                 <small>${device2.project_name} · ${device2.project_version ?? "version unavailable"}</small>
                 <small class="meter-status">${device2.configuration ? "Managed in ESPHome Device Builder" : device2.importable ? "Import available" : "Calibration only — no editable source."}</small>
-                ${!device2.configuration && !device2.importable ? b`<small>The meter is connected, but ESPHome source editing is unavailable. Calibration remains in meter flash and may be replaced by a future firmware install.</small>` : ""}
+                ${!device2.configuration && !device2.importable ? b`<small>ESPHome source editing is unavailable. Calibration stays in meter flash and may be replaced by a later firmware install.</small>` : ""}
               </div>
               ${device2.importable && !device2.configuration ? b`<button class="primary" data-action="import-device" ?disabled=${Boolean(busyAction)}
                     @click=${() => adopt(device2.entry_id)}>${busyAction === `adopt:${device2.entry_id}` ? "Importing configuration…" : importFailedDeviceId === device2.entry_id ? "Retry import" : "Import configuration"}</button>` : b`<button class="primary" data-action="configure-device" ?disabled=${Boolean(busyAction)}
@@ -3625,10 +3625,10 @@ function setupDeviceStep(snapshot, addonCount, connection, setAddon, setConnecti
       ${existingMeterInspection(existingCandidates, inspection, busyAction, findExisting, inspectExisting, adoptInspected, existingSearchComplete)}
       ${discoverOnly ? "" : b`<hr />
       <h2>Set up a new meter</h2>
-      <p class="info-band">ESPHome Device Builder must be installed and running in Home Assistant before you can set up a new meter. <a href="https://esphome.io/install/" target="_blank" rel="noreferrer noopener">See how to install it in Home Assistant</a>.</p>
+      <p class="info-band">Install and run ESPHome Device Builder in Home Assistant before setting up a new meter. <a href="https://esphome.io/install/" target="_blank" rel="noreferrer noopener">See how to install it in Home Assistant</a>.</p>
       <fieldset class="choice-field">
         <legend>Add-on boards</legend>
-        <p>Select how many add-on boards are attached to your energy meter.</p>
+        <p>Select the number of attached add-on boards.</p>
         <div class="addon-options">
           ${Array.from({ length: 7 }, (_2, value) => b`
             <label class=${value === addonCount ? "selected" : ""}>
@@ -3641,7 +3641,7 @@ function setupDeviceStep(snapshot, addonCount, connection, setAddon, setConnecti
       </fieldset>
       <fieldset class="choice-field">
         <legend>Connection</legend>
-        <p>Choose how your device will connect to your network.</p>
+        <p>Choose the network connection.</p>
         <div class="connection-options">
           ${CONNECTIONS.map(([value, label]) => b`
             <label class=${value === connection ? "selected" : ""}>
@@ -3664,13 +3664,13 @@ function setupDeviceStep(snapshot, addonCount, connection, setAddon, setConnecti
       <section class="next-steps" aria-labelledby="next-steps-heading">
         <h2 id="next-steps-heading">What happens next</h2>
         <ol>
-          <li>After the firmware is installed, click <strong>Next</strong>.</li>
-          <li>If you are using Wi-Fi, enter your Wi-Fi credentials.</li>
-          <li>Select <strong>Add to Home Assistant</strong>, then approve the discovered ESPHome device in <strong>ESPHome Device Builder</strong>.</li>
-          <li>Return here. The helper will import your meter so you can customize its settings.</li>
+          <li>After firmware installs, click <strong>Next</strong>.</li>
+          <li>For Wi-Fi, enter your credentials.</li>
+          <li>Select <strong>Add to Home Assistant</strong>, then approve the ESPHome device in <strong>ESPHome Device Builder</strong>.</li>
+          <li>Return here to import the meter and customize its settings.</li>
         </ol>
       </section>
-      <p class="info-band">${connection === "wifi" ? "Use a USB data cable. ESP Web Tools asks for your Wi-Fi network and password and sends them directly to your meter. This helper does not store or send those credentials to Home Assistant." : "Use a USB data cable, connect Ethernet and power, then wait for an address from DHCP."}</p>
+      <p class="info-band">${connection === "wifi" ? "Use a USB data cable. ESP Web Tools sends Wi-Fi credentials directly to the meter; this helper does not store or send them to Home Assistant." : "Use a USB data cable, connect Ethernet and power, then wait for a DHCP address."}</p>
       `}
       ${discoverOnly ? A : b`<button class="rescan" data-action="rescan" ?disabled=${Boolean(busyAction)} @click=${rescan}>${busyAction === "rescan" ? "Rescanning…" : "Rescan for device"}</button>`}
     </section>
@@ -3706,17 +3706,17 @@ function summaryOutcome(input) {
     heading,
     configurationStatus: input.offsetFinalization.installed ? "Offset configuration installed in ESPHome." : "Offset installation pending.",
     migrationStatus: migrated ? "Migration installed." : null,
-    calibrationStatus: input.offsetFinalization.configuration_selected && input.offsetFinalization.action_ready ? "Offsets are installed and configuration-selected; register readback is not verified." : "Captured offsets are retained; final configuration selection needs confirmation.",
-    authorityMessage: `Offsets: ${input.offsetFinalization.configuration_selected ? "configuration selected" : "pending configuration"}. Gains: ${input.restart?.source_authority.replaceAll("_", " ") ?? "unchanged"}. Offset selection does not clear gain flash.`,
+    calibrationStatus: input.offsetFinalization.configuration_selected && input.offsetFinalization.action_ready ? "Offsets installed and configuration-selected; register readback not verified." : "Captured offsets retained; confirm final configuration selection.",
+    authorityMessage: `Offsets: ${input.offsetFinalization.configuration_selected ? "configuration selected" : "pending configuration"}. Gains: ${input.restart?.source_authority.replaceAll("_", " ") ?? "unchanged"}. Selecting offsets does not clear gain flash.`,
     warnings
   };
-  if (offset) return { heading, configurationStatus: calibrationOnly ? "ESPHome configuration was left untouched." : "Configuration authority is unchanged.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Offset calibration remains stored in meter flash by design.", authorityMessage: "Offset calibration remains stored in meter flash by design.", warnings: [...warnings, "Offset calibration remains stored in meter flash by design."] };
-  if (input.completedWithoutChanges) return { heading, configurationStatus: input.configurationInstalled ? "Configuration installed in ESPHome." : input.configurationMode === "runtime_only" ? "ESPHome source was not changed because no authoritative configuration was available." : calibrationOnly ? "ESPHome configuration was left untouched." : input.verifiedConfiguration ? "Helper-managed configuration was left unchanged." : "Configuration was left unchanged.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Existing calibration was kept unchanged.", authorityMessage: "No restart-verified calibration record was required.", warnings };
-  if (input.configurationMode === "runtime_only") return { heading: "Setup complete", configurationStatus: "ESPHome source was not changed because no authoritative configuration was available.", migrationStatus: null, calibrationStatus: "Calibration is stored in meter flash. Installing firmware may replace it.", authorityMessage: "No authoritative ESPHome source is available.", warnings: [...warnings, "Calibration is stored in meter flash. Installing firmware may replace it."] };
-  if (calibrationOnly && input.restart?.source_authority === "configuration") return { heading, configurationStatus: "ESPHome configuration was left untouched.", migrationStatus: null, calibrationStatus: "Calibration gains were saved; the remaining legacy configuration was not migrated.", authorityMessage: "Calibration gains are installed in ESPHome.", warnings };
-  if (calibrationOnly) return { heading, configurationStatus: "ESPHome configuration was left untouched.", migrationStatus: null, calibrationStatus: "ESPHome configuration was left untouched.", authorityMessage: "Calibration is stored in meter flash.", warnings: [...warnings, "Calibration is stored in meter flash. Installing firmware may replace it."] };
-  if (input.restart?.source_authority === "configuration") return { heading, configurationStatus: "Configuration installed in ESPHome.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Configuration and calibration are installed in ESPHome.", authorityMessage: "Calibration is stored in ESPHome.", warnings };
-  return { heading, configurationStatus: input.verifiedConfiguration ? "Configuration authority is available." : "Configuration authority is unavailable.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Calibration is stored in meter flash. Installing firmware may replace it.", authorityMessage: "Calibration is stored in meter flash.", warnings: [...warnings, "Calibration is stored in meter flash. Installing firmware may replace it."] };
+  if (offset) return { heading, configurationStatus: calibrationOnly ? "ESPHome configuration was left untouched." : "Configuration authority is unchanged.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Offsets remain in meter flash.", authorityMessage: "Offsets remain in meter flash.", warnings: [...warnings, "Offsets remain in meter flash."] };
+  if (input.completedWithoutChanges) return { heading, configurationStatus: input.configurationInstalled ? "Configuration installed in ESPHome." : input.configurationMode === "runtime_only" ? "ESPHome source unchanged; no authoritative configuration was available." : calibrationOnly ? "ESPHome configuration was left untouched." : input.verifiedConfiguration ? "Helper-managed configuration was left unchanged." : "Configuration was left unchanged.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Existing calibration was kept unchanged.", authorityMessage: "No restart-verified calibration record required.", warnings };
+  if (input.configurationMode === "runtime_only") return { heading: "Setup complete", configurationStatus: "ESPHome source unchanged; no authoritative configuration was available.", migrationStatus: null, calibrationStatus: "Calibration is in meter flash; later firmware installs may replace it.", authorityMessage: "No authoritative ESPHome source is available.", warnings: [...warnings, "Calibration is in meter flash; later firmware installs may replace it."] };
+  if (calibrationOnly && input.restart?.source_authority === "configuration") return { heading, configurationStatus: "ESPHome configuration was left untouched.", migrationStatus: null, calibrationStatus: "Calibration gains saved; legacy configuration was not migrated.", authorityMessage: "Calibration gains are installed in ESPHome.", warnings };
+  if (calibrationOnly) return { heading, configurationStatus: "ESPHome configuration was left untouched.", migrationStatus: null, calibrationStatus: "ESPHome configuration was left untouched.", authorityMessage: "Calibration is in meter flash.", warnings: [...warnings, "Calibration is in meter flash; later firmware installs may replace it."] };
+  if (input.restart?.source_authority === "configuration") return { heading, configurationStatus: "Configuration installed in ESPHome.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Configuration and calibration installed in ESPHome.", authorityMessage: "Calibration is stored in ESPHome.", warnings };
+  return { heading, configurationStatus: input.verifiedConfiguration ? "Configuration authority is available." : "Configuration authority is unavailable.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Calibration is in meter flash; later firmware installs may replace it.", authorityMessage: "Calibration is in meter flash.", warnings: [...warnings, "Calibration is in meter flash; later firmware installs may replace it."] };
 }
 function summaryStep(topology2, session2, transaction2, stability2, calibration2, restart2, completedWithoutChanges, projectVersion, saveCalibration, back, meterConfiguration2 = null, impact = null, finish = () => void 0, keepCalibrationInFlash = () => void 0, configurationMode = "helper_managed", legacyChoice = null, configurationInstalled = false, handoffDeclined = false, sourceConfiguration = null, offsetFinalization2 = null, newCycleAcknowledged = false, setNewCycleAcknowledged = () => void 0, newCycle = () => void 0, busy = false) {
   const hasOffsets = Boolean(restart2?.offset_groups?.length || restart2?.power_offset_groups?.length);
@@ -3751,19 +3751,19 @@ function summaryStep(topology2, session2, transaction2, stability2, calibration2
   });
   const boards = (values) => values.flatMap((enabled, board) => enabled ? [board === 0 ? "Main board" : `Add-on ${board}`] : []);
   return b`<section class="step-content" aria-labelledby="step-heading">
-    <div class=${offsetComplete || restart2 || completedWithoutChanges ? "success-band" : "recovery-panel"} role="status">${offsetFinalization2?.backup_available || restart2 || completedWithoutChanges ? outcome.calibrationStatus : b`<strong>Restart verification is not complete</strong><p>Summary remains unverified until the server returns authoritative restart evidence.</p>`}</div>
+    <div class=${offsetComplete || restart2 || completedWithoutChanges ? "success-band" : "recovery-panel"} role="status">${offsetFinalization2?.backup_available || restart2 || completedWithoutChanges ? outcome.calibrationStatus : b`<strong>Restart verification is not complete</strong><p>Summary stays unverified until authoritative restart evidence returns.</p>`}</div>
     ${offsetFinalization2?.backup_available ? b`<section aria-label="Retained offset calibration"><h2>Offset configuration and retained backup</h2>
       <table><thead><tr><th>Chip</th><th>Stage</th><th>ABC values</th><th>Actual prior register verification</th></tr></thead><tbody>${offsetFinalization2.results.map(([id2, stage, table, verified]) => b`<tr><td>${id2}</td><td>${stage}</td><td>${table.map(([a2, b2]) => `${a2}/${b2}`).join(", ")}</td><td>${verified ? "Verified at capture" : "Not verified"}</td></tr>`)}</tbody></table>
-      <p>Backup retention keeps the active operation and one prior finalized operation. Older finalized archives rotate only when you explicitly start a new cycle; opening or reloading never rotates them.</p>
+      <p>Keeps the active operation and one prior finalized operation. Older archives rotate only when you start a new cycle; opening or reloading never rotates them.</p>
       <label class="check-row"><input type="checkbox" .checked=${newCycleAcknowledged} @change=${(event) => setNewCycleAcknowledged(event.target.checked)}> I acknowledge a new offset cycle and backup retention.</label>
       <button class="secondary" ?disabled=${busy || !newCycleAcknowledged || !offsetComplete} @click=${newCycle}>Start new offset cycle</button>
     </section>` : ""}
-    <dl class="summary-list"><div><dt>Meter topology</dt><dd>${topology2?.ct_count ?? "—"} CTs in ${topology2?.group_count ?? "—"} groups</dd></div><div><dt>Project version</dt><dd>${projectVersion ?? "Unavailable"}</dd></div><div><dt>Configuration status</dt><dd>${outcome.configurationStatus}</dd></div>${outcome.migrationStatus ? b`<div><dt>Migration</dt><dd>${outcome.migrationStatus}</dd></div>` : ""}<div><dt>Calibration outcome</dt><dd>${outcome.calibrationStatus}</dd></div><div><dt>Calibration authority</dt><dd>${outcome.authorityMessage}</dd></div>${meterConfiguration2 ? b`<div><dt>Installed electrical profile</dt><dd>${meterConfiguration2.configuration.meter.electrical_system.replaceAll("_", " ")} · ${meterConfiguration2.configuration.meter.line_frequency_hz} Hz</dd></div><div><dt>Voltage references</dt><dd>${meterConfiguration2.configuration.meter.voltage_references.length}</dd></div><div><dt>Used channels</dt><dd>${meterConfiguration2.configuration.channels.filter((channel) => channel.enabled).length}</dd></div><div><dt>Installed package scope</dt><dd>PQ: ${boards(meterConfiguration2.configuration.power_quality).join(", ") || "none"} � reactive power, apparent power, and power factor for used CTs; status: ${boards(meterConfiguration2.configuration.status_fields).join(", ") || "none"} � native API diagnostics disabled by default in Home Assistant</dd></div><div><dt>Reporting and measurements</dt><dd>${meterConfiguration2.configuration.meter.update_interval_s} seconds${impact ? `; ${impact.numeric_entity_count + impact.text_entity_count} Helper-managed measurements, ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec` : ""}</dd></div>` : ""}</dl>
+    <dl class="summary-list"><div><dt>Meter topology</dt><dd>${topology2?.ct_count ?? "—"} CTs in ${topology2?.group_count ?? "—"} groups</dd></div><div><dt>Project version</dt><dd>${projectVersion ?? "Unavailable"}</dd></div><div><dt>Configuration status</dt><dd>${outcome.configurationStatus}</dd></div>${outcome.migrationStatus ? b`<div><dt>Migration</dt><dd>${outcome.migrationStatus}</dd></div>` : ""}<div><dt>Calibration outcome</dt><dd>${outcome.calibrationStatus}</dd></div><div><dt>Calibration authority</dt><dd>${outcome.authorityMessage}</dd></div>${meterConfiguration2 ? b`<div><dt>Installed electrical profile</dt><dd>${meterConfiguration2.configuration.meter.electrical_system.replaceAll("_", " ")} · ${meterConfiguration2.configuration.meter.line_frequency_hz} Hz</dd></div><div><dt>Voltage references</dt><dd>${meterConfiguration2.configuration.meter.voltage_references.length}</dd></div><div><dt>Used channels</dt><dd>${meterConfiguration2.configuration.channels.filter((channel) => channel.enabled).length}</dd></div><div><dt>Installed package scope</dt><dd>PQ: ${boards(meterConfiguration2.configuration.power_quality).join(", ") || "none"} · reactive power, apparent power, and power factor for used CTs; status: ${boards(meterConfiguration2.configuration.status_fields).join(", ") || "none"} · native API diagnostics disabled by default in Home Assistant</dd></div><div><dt>Reporting and measurements</dt><dd>${meterConfiguration2.configuration.meter.update_interval_s} seconds${impact ? `; ${impact.numeric_entity_count + impact.text_entity_count} Helper-managed measurements, ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec` : ""}</dd></div>` : ""}</dl>
     ${totalsEvidence ? b`<section aria-labelledby="summary-totals-heading"><h2 id="summary-totals-heading">${!meterConfiguration2 || totalsEvidence.capabilities.reason_codes.includes("totals_adoption_required") ? "Legacy read-only totals" : "Helper-managed totals"}</h2>
-      ${!meterConfiguration2 ? b`<p>Authoritative source snapshot: these totals have not been adopted or verified as installed by this workflow.</p>` : ""}
+      ${!meterConfiguration2 ? b`<p>Source snapshot: totals were not adopted or verified as installed by this workflow.</p>` : ""}
       ${totalsImpact ? b`<p>${totalsImpact.public_total_entity_count} public total entities; ${totalsImpact.internal_total_sensor_count} internal total sensors; ${totalsImpact.energy_entity_count} public energy entities.</p>` : b`<p>Current total counts are unavailable.</p>`}
       ${!totalsEvidence.totals.migration.native_visibility_resolved ? b`<p>Counts are confirmed but incomplete: native visibility is unresolved.</p>` : ""}
-      <p>Public outputs are exposed to Home Assistant. Internal dependencies remain in firmware for other totals or energy integration.</p>
+      <p>Public outputs go to Home Assistant. Internal dependencies stay in firmware for other totals or energy integration.</p>
       ${displayedTotals.map((total) => b`<article class="total-summary" aria-label=${total.name}>
         <h3>${total.name}</h3>
         <p>${total.ownership === "helper_managed" ? "Helper-managed" : "Read-only source YAML"}</p>
@@ -3791,7 +3791,7 @@ function topologyStep(topology2, projectVersion, back, continueFlow, forceMismat
   const mismatch = forceMismatch || topologyMismatch(topology2);
   return b`
     <section class="step-content" aria-labelledby="step-heading">
-      <p class="info-band">Detected ${topology2.board_count} boards with ${topology2.ct_count} CTs on a ${topology2.connection_type} connection. ${mismatch ? "The detected hardware does not agree." : "The detected hardware agrees."}</p>
+      <p class="info-band">Detected ${topology2.board_count} boards and ${topology2.ct_count} CTs on ${topology2.connection_type}. ${mismatch ? "Hardware evidence conflicts." : "Hardware evidence agrees."}</p>
       <details>
         <summary>Technical details</summary>
         <dl>
@@ -3809,13 +3809,13 @@ function topologyStep(topology2, projectVersion, back, continueFlow, forceMismat
       ${mismatch ? b`
         <div class="error-panel" role="alert" tabindex="-1">
           <strong>Topology mismatch</strong>
-          <span>Configuration and runtime evidence disagree. Resolve the mismatch before continuing.</span>
+          <span>Configuration and runtime evidence disagree. Resolve it before continuing.</span>
         </div>
-      ` : b`<div class="success-band" role="status">All topology evidence agrees.</div>`}
+      ` : b`<div class="success-band" role="status">Topology evidence agrees.</div>`}
       ${!mismatch && calibrationPreparation2?.state === "available_to_prepare" ? b`
         <div class="info-band" role="status">
-          <strong>Calibration controls are missing from this firmware configuration.</strong>
-          <span>Review the official calibration package and its literal enable flags before installing.</span>
+          <strong>Firmware lacks calibration controls.</strong>
+          <span>Review the official calibration package and literal enable flags before installing.</span>
           <button class="secondary" data-action="prepare-calibration" ?disabled=${busy} @click=${prepareCalibration}>
             ${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Preparing calibration controls…` : "Prepare reviewed official calibration controls"}
           </button>
@@ -3961,7 +3961,7 @@ const panelStyles = i$5`
   h1 { margin: 0 0 20px; font-size: var(--ha-font-size-2xl, 24px); line-height: var(--ha-line-height-condensed, 1.2); font-weight: var(--ha-font-weight-normal, 400); }
   h2 { margin: 24px 0 8px; font-size: var(--ha-font-size-xl, 20px); font-weight: var(--ha-font-weight-medium, 500); }
   h3 { font-size: var(--ha-font-size-l, 16px); font-weight: var(--ha-font-weight-medium, 500); }
-  p { color: var(--muted); }
+  p { color: var(--muted); font-size: var(--ha-font-size-s, 13px); line-height: var(--ha-line-height-condensed, 1.3); }
   .step-content { max-width: 1320px; }
   fieldset { border: 0; margin: 0 0 26px; padding: 0; }
   legend { font-size: var(--ha-font-size-xl, 20px); font-weight: var(--ha-font-weight-medium, 500); }
@@ -3980,7 +3980,9 @@ const panelStyles = i$5`
   .connection-options label::before { content: ""; width: 22px; height: 22px; margin-right: 22px; border: 2px solid var(--border); border-radius: 50%; }
   .connection-options .selected { border-color: var(--accent); }
   .connection-options .selected::before { border: 6px solid var(--accent); }
-  .summary-band, .info-band, .success-band, .warning-band, .status-band { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+  .summary-band, .info-band, .success-band, .warning-band, .status-band { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; font-size: var(--ha-font-size-s, 13px); line-height: var(--ha-line-height-condensed, 1.3); }
+  .info-band button, .success-band button, .warning-band button, .status-band button,
+  .info-band label, .success-band label, .warning-band label, .status-band label { font-size: var(--ha-font-size-m, 14px); line-height: var(--ha-line-height-normal, 1.6); }
   .graph-status { min-height: calc(3.2em + 30px); }
   dl { margin: 0; }
   dl div { display: flex; gap: 12px; }
@@ -6973,23 +6975,23 @@ class CircuitSetupPanel extends i$2 {
           this.navigate("calibration-plan");
         },
         this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? b`
-        ${!this.legacyCircuitSemanticsConfirmed ? b`<p class="info-band" role="status">Review and confirm the used/unused channels and circuit roles below to enable Continue.</p>` : A}
+        ${!this.legacyCircuitSemanticsConfirmed ? b`<p class="info-band" role="status">Review and confirm used/unused channels and circuit roles to enable Continue.</p>` : A}
         <label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event) => {
           this.legacyCircuitSemanticsConfirmed = event.target.checked;
           if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration);
           else this.requestUpdate();
         }} />I reviewed used/unused channels and circuit roles.</label>
-        ${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? b`<p class="warning-band" role="status">Existing generic totals are unmanaged and will remain unchanged unless this reviewed migration replaces them.</p>` : A}` : A
+        ${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? b`<p class="warning-band" role="status">Existing generic totals are unmanaged and stay unchanged unless reviewed migration replaces them.</p>` : A}` : A
       )}`;
     }
     if (this.step === "save-calibration" && !this.transaction && this.offsetRecoveryPending()) return b`<section class="step-content" aria-labelledby="offset-final-heading">
       <h2 id="offset-final-heading">Review captured offset configuration</h2>
-      <p>Captured results are retained with the private backup. Both RMS and power tables must be known for every affected chip before disabling native offset restore. Unknown evidence is not zero.</p>
-      ${this.offsetFinalization?.installed ? b`<p>${this.offsetFinalization.action_ready ? "Final configuration is installed. Confirm fresh configuration selection below; installation is not register readback." : "Final configuration was installed, but its receipt is unconfirmed in this backend owner. Retained values are not lost. Review and install the final configuration again, even if unchanged, before confirming selection."}</p>` : A}
+      <p>Captured results stay in private backup. Know both RMS and power tables for every affected chip before disabling native offset restore. Unknown evidence is not zero.</p>
+      ${this.offsetFinalization?.installed ? b`<p>${this.offsetFinalization.action_ready ? "Final configuration installed. Confirm fresh configuration selection; install is not register readback." : "Final configuration installed, but receipt is unconfirmed in this backend owner. Retained values are not lost. Review and install it again, even unchanged, before confirming selection."}</p>` : A}
       ${this.offsetFinalization?.results.length ? b`<table aria-label="Retained offset results"><thead><tr><th>Chip</th><th>Stage</th><th>ABC values</th><th>Actual prior register verification</th></tr></thead><tbody>
         ${this.offsetFinalization.results.map(([id2, stage, table, verified]) => b`<tr><td>${id2}</td><td>${stage}</td><td>${table.map(([a2, b2]) => `${a2}/${b2}`).join(", ")}</td><td>${verified ? "Verified at capture" : "Not verified"}</td></tr>`)}
       </tbody></table>` : A}
-      <p>${this.restartResult ? `Gain authority: ${this.restartResult.source_authority.replaceAll("_", " ")}. Offset configuration selection never clears gain flash.` : "If gains were also calibrated, restart and verify gains only before the combined review. This does not verify stock offsets."}</p>
+      <p>${this.restartResult ? `Gain authority: ${this.restartResult.source_authority.replaceAll("_", " ")}. Selecting offset configuration never clears gain flash.` : "If gains were calibrated, restart and verify gains before the combined review. This does not verify stock offsets."}</p>
       <footer class="action-footer"><button class="secondary" ?disabled=${Boolean(this.pendingAction) || this.restartBusy} @click=${() => this.navigate("offset", true)}>Back to offset stages</button>
       ${!this.restartResult ? b`<button class="secondary" ?disabled=${Boolean(this.pendingAction) || this.restartBusy} @click=${() => void this.restart()}>${this.restartBusy ? b`<span class="loading-spinner" aria-hidden="true"></span>Restarting and verifying gains…` : "Restart and verify gains only"}</button>` : A}
       <button class="primary" ?disabled=${Boolean(this.pendingAction) || this.restartBusy || !this.offsetFinalization?.results.length} @click=${() => void this.reviewOffsetFinalization()}>Review captured offsets for installation</button>
@@ -6997,7 +6999,7 @@ class CircuitSetupPanel extends i$2 {
     </section>`;
     if (this.step === "save-calibration" && !this.transaction && this.restartResult?.source_handoff_available) return b`<section class="step-content" aria-labelledby="save-calibration-choice-heading">
       <h2 id="save-calibration-choice-heading">Save calibration or keep it in flash</h2>
-      <p>The verified gains are currently stored in meter flash. Installing firmware later may replace them.</p>
+      <p>Verified gains are in meter flash. Later firmware installs may replace them.</p>
       <footer class="action-footer"><button class="secondary" data-action="keep-calibration-flash" ?disabled=${this.pendingAction === "calibration-handoff"} @click=${() => this.keepCalibrationInFlash()}>Keep calibration in meter flash</button><button class="primary" data-action="review-calibration-handoff" ?disabled=${this.pendingAction === "calibration-handoff"} @click=${() => void this.reviewCalibrationHandoff()}>${this.pendingAction === "calibration-handoff" ? b`<span class="loading-spinner" aria-hidden="true"></span>Preparing YAML review…` : "Review and save calibration to YAML"}</button></footer>
     </section>`;
     if (this.step === "install-configuration" || this.step === "save-calibration") return buildInstallStep(
@@ -7203,10 +7205,10 @@ class CircuitSetupPanel extends i$2 {
     return b`<section class="step-content" aria-labelledby="firmware-heading">
       <h2 id="firmware-heading">Install firmware</h2>
       <ol class="firmware-steps">
-        <li>Connect the ESP32 you will use for your energy meter to your computer with a USB cable.</li>
+        <li>Connect the ESP32 to your computer with a USB cable.</li>
         <li>Click <strong>Install firmware</strong>, select the ESP32's <strong>CP2102 USB to UART</strong>, then click <strong>Connect</strong>.</li>
-        <li>Select <strong>Install CircuitSetup 6 Channel Energy Meter</strong> when ESP Web Tools asks for the firmware.</li>
-        <li>Before clicking <strong>Install</strong>, hold down the right <strong>IO0</strong> (or <strong>BOOT</strong>) button on the ESP32.</li>
+        <li>Select <strong>Install CircuitSetup 6 Channel Energy Meter</strong> in ESP Web Tools.</li>
+        <li>Before clicking <strong>Install</strong>, hold the ESP32's right <strong>IO0</strong> (or <strong>BOOT</strong>) button.</li>
       </ol>
       <label>ESPHome firmware version
         <select data-action="firmware-version" ?disabled=${loading || this.firmwareCatalogState !== "ready" || !this.resolvedFirmwareOptions.length}

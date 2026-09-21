@@ -10,14 +10,14 @@ export function calibrationPlanStep(
 ): TemplateResult {
   return html`<section class="step-content" aria-labelledby="calibration-plan-heading" aria-busy=${busy ? "true" : "false"}>
     <h2 id="calibration-plan-heading">Choose calibration</h2>
-    <p>Calibration values stay in meter flash until a verified ESPHome handoff is available.</p>
+    <p>Verified calibration stays in meter flash until an ESPHome handoff.</p>
     ${runtimeOnly ? html`<section class="info-band" aria-label="Runtime-only capabilities">
-      <strong>The meter is connected to Home Assistant.</strong>
+      <strong>Meter connected to Home Assistant.</strong>
       <p>ESPHome source editing is unavailable.</p>
-      <p>Circuit names, CT models, roles, multipliers, entities, and totals cannot be changed by this helper in this mode.</p>
-      <p>Supported calibration is saved in meter flash. Installing firmware later may replace flash-only calibration.</p>
-      <p>Importing the meter into ESPHome Device Builder, when available, is the path to editable configuration.</p>
-      <p>Current calibration requires confirmation of the reporting multiplier because no authoritative CT inventory is available.</p>
+      <p>This helper cannot change circuit names, CT models, roles, multipliers, entities, or totals in this mode.</p>
+      <p>Calibration is saved in meter flash. A later firmware install may replace it.</p>
+      <p>When available, import the meter into ESPHome Device Builder to edit its configuration.</p>
+      <p>Current calibration requires a reporting multiplier because authoritative CT inventory is unavailable.</p>
     </section>` : ""}
     <fieldset class="name-mode" ?disabled=${busy}><legend>Calibration plan</legend>
       <label><input type="radio" name="calibration-plan" .checked=${selected === "keep_existing"} @change=${() => choose("keep_existing")}> Keep existing calibration — no live session or safety acknowledgement.</label>

@@ -58,7 +58,7 @@ export const panelStyles = css`
   h1 { margin: 0 0 20px; font-size: var(--ha-font-size-2xl, 24px); line-height: var(--ha-line-height-condensed, 1.2); font-weight: var(--ha-font-weight-normal, 400); }
   h2 { margin: 24px 0 8px; font-size: var(--ha-font-size-xl, 20px); font-weight: var(--ha-font-weight-medium, 500); }
   h3 { font-size: var(--ha-font-size-l, 16px); font-weight: var(--ha-font-weight-medium, 500); }
-  p { color: var(--muted); }
+  p { color: var(--muted); font-size: var(--ha-font-size-s, 13px); line-height: var(--ha-line-height-condensed, 1.3); }
   .step-content { max-width: 1320px; }
   fieldset { border: 0; margin: 0 0 26px; padding: 0; }
   legend { font-size: var(--ha-font-size-xl, 20px); font-weight: var(--ha-font-weight-medium, 500); }
@@ -77,7 +77,9 @@ export const panelStyles = css`
   .connection-options label::before { content: ""; width: 22px; height: 22px; margin-right: 22px; border: 2px solid var(--border); border-radius: 50%; }
   .connection-options .selected { border-color: var(--accent); }
   .connection-options .selected::before { border: 6px solid var(--accent); }
-  .summary-band, .info-band, .success-band, .warning-band, .status-band { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+  .summary-band, .info-band, .success-band, .warning-band, .status-band { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; font-size: var(--ha-font-size-s, 13px); line-height: var(--ha-line-height-condensed, 1.3); }
+  .info-band button, .success-band button, .warning-band button, .status-band button,
+  .info-band label, .success-band label, .warning-band label, .status-band label { font-size: var(--ha-font-size-m, 14px); line-height: var(--ha-line-height-normal, 1.6); }
   .graph-status { min-height: calc(3.2em + 30px); }
   dl { margin: 0; }
   dl div { display: flex; gap: 12px; }

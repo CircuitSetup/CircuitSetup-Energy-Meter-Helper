@@ -11,8 +11,8 @@ const installer = (option: FirmwareOption, manifestUrl: string): TemplateResult 
   <p class="firmware-summary">${option.productId} · ESPHome ${option.version}</p>
   <esp-web-install-button class="esp-web-installer" .manifest=${manifestUrl}>
     <button slot="activate" aria-label="Install firmware">Install firmware</button>
-    <p slot="unsupported">Use a supported Chromium browser with Web Serial to install firmware.</p>
-    <p slot="not-allowed">Open this helper on HTTPS or localhost to install firmware.</p>
+    <p slot="unsupported">Use Chromium with Web Serial to install firmware.</p>
+    <p slot="not-allowed">Open this helper on HTTPS or localhost.</p>
   </esp-web-install-button>
 `;
 
@@ -25,7 +25,7 @@ export function espWebInstaller(option: FirmwareOption | null) {
     return until(
       loadEspWebTools().then(
         () => installer(option, manifestUrl),
-        () => html`<p role="alert">ESP Web Tools failed to load. Reload Home Assistant and try again.</p>`,
+        () => html`<p role="alert">ESP Web Tools failed to load. Reload Home Assistant and retry.</p>`,
       ),
       html`<p role="status">Loading installer…</p>`,
     );

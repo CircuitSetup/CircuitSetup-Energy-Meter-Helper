@@ -2623,17 +2623,17 @@ export class CircuitSetupPanel extends LitElement {
         && this.sourceMeterConfiguration?.meter.source_sha256 === this.meterConfiguration?.source_sha256
         ? this.sourceMeterConfiguration?.meter.configuration ?? null : null, () => { this.skipCircuitChanges = true; this.navigate("calibration-plan"); },
       this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? html`
-        ${!this.legacyCircuitSemanticsConfirmed ? html`<p class="info-band" role="status">Review and confirm the used/unused channels and circuit roles below to enable Continue.</p>` : nothing}
+        ${!this.legacyCircuitSemanticsConfirmed ? html`<p class="info-band" role="status">Review and confirm used/unused channels and circuit roles to enable Continue.</p>` : nothing}
         <label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event: Event) => { this.legacyCircuitSemanticsConfirmed = (event.target as HTMLInputElement).checked; if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration); else this.requestUpdate(); }} />I reviewed used/unused channels and circuit roles.</label>
-        ${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? html`<p class="warning-band" role="status">Existing generic totals are unmanaged and will remain unchanged unless this reviewed migration replaces them.</p>` : nothing}` : nothing)}`; }
+        ${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? html`<p class="warning-band" role="status">Existing generic totals are unmanaged and stay unchanged unless reviewed migration replaces them.</p>` : nothing}` : nothing)}`; }
     if (this.step === "save-calibration" && !this.transaction && this.offsetRecoveryPending()) return html`<section class="step-content" aria-labelledby="offset-final-heading">
       <h2 id="offset-final-heading">Review captured offset configuration</h2>
-      <p>Captured results are retained with the private backup. Both RMS and power tables must be known for every affected chip before disabling native offset restore. Unknown evidence is not zero.</p>
-      ${this.offsetFinalization?.installed ? html`<p>${this.offsetFinalization.action_ready ? "Final configuration is installed. Confirm fresh configuration selection below; installation is not register readback." : "Final configuration was installed, but its receipt is unconfirmed in this backend owner. Retained values are not lost. Review and install the final configuration again, even if unchanged, before confirming selection."}</p>` : nothing}
+      <p>Captured results stay in private backup. Know both RMS and power tables for every affected chip before disabling native offset restore. Unknown evidence is not zero.</p>
+      ${this.offsetFinalization?.installed ? html`<p>${this.offsetFinalization.action_ready ? "Final configuration installed. Confirm fresh configuration selection; install is not register readback." : "Final configuration installed, but receipt is unconfirmed in this backend owner. Retained values are not lost. Review and install it again, even unchanged, before confirming selection."}</p>` : nothing}
       ${this.offsetFinalization?.results.length ? html`<table aria-label="Retained offset results"><thead><tr><th>Chip</th><th>Stage</th><th>ABC values</th><th>Actual prior register verification</th></tr></thead><tbody>
         ${this.offsetFinalization.results.map(([id, stage, table, verified]) => html`<tr><td>${id}</td><td>${stage}</td><td>${table.map(([a, b]) => `${a}/${b}`).join(", ")}</td><td>${verified ? "Verified at capture" : "Not verified"}</td></tr>`)}
       </tbody></table>` : nothing}
-      <p>${this.restartResult ? `Gain authority: ${this.restartResult.source_authority.replaceAll("_", " ")}. Offset configuration selection never clears gain flash.` : "If gains were also calibrated, restart and verify gains only before the combined review. This does not verify stock offsets."}</p>
+      <p>${this.restartResult ? `Gain authority: ${this.restartResult.source_authority.replaceAll("_", " ")}. Selecting offset configuration never clears gain flash.` : "If gains were calibrated, restart and verify gains before the combined review. This does not verify stock offsets."}</p>
       <footer class="action-footer"><button class="secondary" ?disabled=${Boolean(this.pendingAction) || this.restartBusy} @click=${() => this.navigate("offset", true)}>Back to offset stages</button>
       ${!this.restartResult ? html`<button class="secondary" ?disabled=${Boolean(this.pendingAction) || this.restartBusy} @click=${() => void this.restart()}>${this.restartBusy ? html`<span class="loading-spinner" aria-hidden="true"></span>Restarting and verifying gains…` : "Restart and verify gains only"}</button>` : nothing}
       <button class="primary" ?disabled=${Boolean(this.pendingAction) || this.restartBusy || !this.offsetFinalization?.results.length} @click=${() => void this.reviewOffsetFinalization()}>Review captured offsets for installation</button>
@@ -2641,7 +2641,7 @@ export class CircuitSetupPanel extends LitElement {
     </section>`;
     if (this.step === "save-calibration" && !this.transaction && this.restartResult?.source_handoff_available) return html`<section class="step-content" aria-labelledby="save-calibration-choice-heading">
       <h2 id="save-calibration-choice-heading">Save calibration or keep it in flash</h2>
-      <p>The verified gains are currently stored in meter flash. Installing firmware later may replace them.</p>
+      <p>Verified gains are in meter flash. Later firmware installs may replace them.</p>
       <footer class="action-footer"><button class="secondary" data-action="keep-calibration-flash" ?disabled=${this.pendingAction === "calibration-handoff"} @click=${() => this.keepCalibrationInFlash()}>Keep calibration in meter flash</button><button class="primary" data-action="review-calibration-handoff" ?disabled=${this.pendingAction === "calibration-handoff"} @click=${() => void this.reviewCalibrationHandoff()}>${this.pendingAction === "calibration-handoff" ? html`<span class="loading-spinner" aria-hidden="true"></span>Preparing YAML review…` : "Review and save calibration to YAML"}</button></footer>
     </section>`;
     if (this.step === "install-configuration" || this.step === "save-calibration") return buildInstallStep(this.transaction?.purpose ?? (this.step === "save-calibration" ? "save_calibration" : "install_configuration"), this.transaction,
@@ -2718,10 +2718,10 @@ export class CircuitSetupPanel extends LitElement {
     return html`<section class="step-content" aria-labelledby="firmware-heading">
       <h2 id="firmware-heading">Install firmware</h2>
       <ol class="firmware-steps">
-        <li>Connect the ESP32 you will use for your energy meter to your computer with a USB cable.</li>
+        <li>Connect the ESP32 to your computer with a USB cable.</li>
         <li>Click <strong>Install firmware</strong>, select the ESP32's <strong>CP2102 USB to UART</strong>, then click <strong>Connect</strong>.</li>
-        <li>Select <strong>Install CircuitSetup 6 Channel Energy Meter</strong> when ESP Web Tools asks for the firmware.</li>
-        <li>Before clicking <strong>Install</strong>, hold down the right <strong>IO0</strong> (or <strong>BOOT</strong>) button on the ESP32.</li>
+        <li>Select <strong>Install CircuitSetup 6 Channel Energy Meter</strong> in ESP Web Tools.</li>
+        <li>Before clicking <strong>Install</strong>, hold the ESP32's right <strong>IO0</strong> (or <strong>BOOT</strong>) button.</li>
       </ol>
       <label>ESPHome firmware version
         <select data-action="firmware-version" ?disabled=${loading || this.firmwareCatalogState !== "ready" || !this.resolvedFirmwareOptions.length}

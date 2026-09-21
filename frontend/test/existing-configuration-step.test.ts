@@ -35,8 +35,8 @@ describe("existing configuration step", () => {
     expect(root.textContent).toContain("Existing settings");
     expect(root.textContent).toContain("What setup records");
     expect(root.textContent).toContain("unowned YAML");
-    expect(root.textContent).toContain("electrical profile was inferred");
-    expect(root.textContent).toContain("Existing generic totals will be preserved");
+    expect(root.textContent).toContain("Electrical profile was inferred");
+    expect(root.textContent).toContain("Existing generic totals stay unchanged unless you replace them");
     expect(root.textContent).toContain("helper contract update");
     expect([...root.querySelectorAll(".warning-band li")].map((item) => item.textContent).join(" ")).not.toContain("stored_semantics_stale");
     expect(root.querySelector("details")?.textContent).toContain("stored_semantics_stale");

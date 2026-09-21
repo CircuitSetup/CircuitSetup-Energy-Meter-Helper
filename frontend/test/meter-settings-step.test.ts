@@ -25,8 +25,8 @@ describe("meterSettingsStep", () => {
     expect(options.querySelector('[aria-label="main phase label"]')?.getAttribute("aria-describedby")).toBe("main-phase-help");
     expect(options.querySelector("#main-phase-help")?.textContent).toContain("does not change wiring or assign CT groups");
     expect(options.querySelector("#new-reference-help")?.textContent).toContain("then click Add voltage reference");
-    expect(options.querySelector("#voltage-assignment-help")?.textContent).toContain("Selecting a reference updates the draft immediately");
-    expect(options.querySelector("#voltage-assignment-help")?.textContent).toContain("click Apply to save");
+    expect(options.querySelector("#voltage-assignment-help")?.textContent).toContain("Changes update the draft");
+    expect(options.querySelector("#voltage-assignment-help")?.textContent).toContain("then Apply");
     expect(options.querySelector("#voltage-assignment-help")?.textContent).toContain("Compile and Install");
     expect(options.querySelector('[aria-label="Reporting interval"]')).toBeNull();
     expect(root.querySelector(".package-options")?.textContent).toContain("reactive power, apparent power, and power factor");

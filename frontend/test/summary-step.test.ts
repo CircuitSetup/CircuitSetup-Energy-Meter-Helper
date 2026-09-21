@@ -80,7 +80,7 @@ it("labels source-owned unknown outputs as unverified and never presents runtime
   expect(root.textContent).toContain("Legacy report");
   expect(root.textContent).toContain("Read-only source YAML");
   expect(root.textContent).toContain("Unverified outputs: external custom kWh");
-  expect(root.textContent).toContain("not been adopted or verified as installed");
+  expect(root.textContent).toContain("not adopted or verified as installed");
   show("runtime_only");
   expect(root.textContent).not.toContain("Legacy report");
   expect(root.textContent).toContain("no authoritative configuration was available");

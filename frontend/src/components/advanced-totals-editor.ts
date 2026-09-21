@@ -92,10 +92,10 @@ export function advancedTotalsEditor(
     }] });
   };
   return html`<section aria-labelledby="advanced-totals-heading"><details class="advanced-totals"><summary id="advanced-totals-heading">Advanced totals</summary>
-    <p>Watts and Amps control Home Assistant visibility. kWh is checked when an energy sensor exists, including a hidden sensor; turning it off removes that sensor.</p>
-    ${!writable ? html`<p class="info-band" role="status">Aggregate editing unavailable: ${reason === "unmanaged_total_present" ? "This meter has legacy unmanaged totals." : "This meter does not expose managed totals."} Upgrade the meter configuration before editing aggregate totals. Existing aggregates remain reviewable.</p>` : nothing}
-    ${!fresh ? html`<p class="info-band" role="status">Total graph unavailable or updating. You can still edit or remove draft sources; complete the graph before continuing.</p>` : nothing}
-    ${fresh && catalog.stale_automatic_total_settings.length ? html`<p class="info-band" role="status">${catalog.stale_automatic_total_settings.length} inactive automatic settings are retained for this plan, not included in the active configuration.</p>` : nothing}
+    <p>Watts and Amps control Home Assistant visibility. kWh controls the energy sensor, including hidden sensors; turning it off removes it.</p>
+    ${!writable ? html`<p class="info-band" role="status">Aggregate editing unavailable: ${reason === "unmanaged_total_present" ? "This meter has legacy unmanaged totals." : "This meter does not expose managed totals."} Upgrade the meter configuration before editing. Existing aggregates remain reviewable.</p>` : nothing}
+    ${!fresh ? html`<p class="info-band" role="status">Total graph unavailable or updating. Draft sources can still be edited or removed; complete the graph before continuing.</p>` : nothing}
+    ${fresh && catalog.stale_automatic_total_settings.length ? html`<p class="info-band" role="status">${catalog.stale_automatic_total_settings.length} inactive automatic settings are retained for this plan but are not active.</p>` : nothing}
     <div class="aggregate-list">${configuration.aggregates.map((aggregate) => {
       let parent = "", problem = "", leaves: number[] = [], overlaps = false;
       try {
@@ -161,7 +161,7 @@ export function advancedTotalsEditor(
               const input = event.target as HTMLSelectElement;
               if (!writable || !methods.includes(input.value as typeof methods[number]) || input.value !== "direct" && aggregate.sources.some((source) => source.kind !== "channel")) { input.value = aggregate.measurement_method; return; }
               patch(aggregate, { measurement_method: input.value as CircuitAggregate["measurement_method"] });
-            }}>${methods.map((method) => html`<option value=${method} ?selected=${method === aggregate.measurement_method} ?disabled=${method !== "direct" && aggregate.sources.some((source) => source.kind !== "channel")}>${method === "two_ct_sum" ? "Two CT Sum" : method.replaceAll("_", " ")}</option>`)}</select><small>Two CT Sum adds exactly two CTs. Nested totals use Direct.</small></label>
+            }}>${methods.map((method) => html`<option value=${method} ?selected=${method === aggregate.measurement_method} ?disabled=${method !== "direct" && aggregate.sources.some((source) => source.kind !== "channel")}>${method === "two_ct_sum" ? "Two CT Sum" : method.replaceAll("_", " ")}</option>`)}</select><small>Two CT Sum uses exactly two CTs. Nested totals use Direct.</small></label>
           <label>Energy behavior <select aria-label=${`${aggregate.aggregate_id} aggregate energy`} .value=${aggregate.energy_mode}
             @change=${(event: Event) => {
               const input = event.target as HTMLSelectElement;
@@ -169,7 +169,7 @@ export function advancedTotalsEditor(
                 || input.value === "bidirectional" && !hasSolar && aggregate.energy_mode !== "bidirectional") { input.value = aggregate.energy_mode; return; }
               if (aggregate.outputs.kwh && !confirmTotalOutputRemoval(`${aggregate.name} kWh`, published?.kwh, input.value !== "none")) { input.value = aggregate.energy_mode; return; }
               patch(aggregate, { energy_mode: input.value as CircuitAggregate["energy_mode"], outputs: { ...aggregate.outputs, kwh: input.value === "none" ? false : aggregate.outputs.kwh } });
-            }}>${energyModes.filter((mode) => mode !== "bidirectional" || hasSolar || aggregate.energy_mode === mode).map((mode) => html`<option value=${mode} ?selected=${mode === aggregate.energy_mode}>${mode[0]!.toUpperCase()}${mode.slice(1)}</option>`)}</select><small>Import/export totals require an enabled Solar CT. kWh uses ESPHome platform: total_daily_energy, integrating this total's Watts rather than adding child kWh.</small></label>
+            }}>${energyModes.filter((mode) => mode !== "bidirectional" || hasSolar || aggregate.energy_mode === mode).map((mode) => html`<option value=${mode} ?selected=${mode === aggregate.energy_mode}>${mode[0]!.toUpperCase()}${mode.slice(1)}</option>`)}</select><small>Import/export totals require a Solar CT. kWh uses ESPHome's total_daily_energy from this total's Watts, not child kWh.</small></label>
           <label>Feeds into <select aria-label=${`${aggregate.name} Feeds into`} .value=${parent}
             @change=${(event: Event) => {
               const input = event.target as HTMLSelectElement;
@@ -186,8 +186,8 @@ export function advancedTotalsEditor(
         <p class="aggregate-formula">Formula: ${aggregate.sources.length ? aggregate.sources.map(label).join(" + ") : "Select sources"}</p>
         ${fresh && !problem ? html`<p>Coverage: ${coverageLabel(leaves)}</p>` : nothing}
         ${problem ? html`<p class="warning-band" role="status">${problem} Complete the total before continuing.</p>` : nothing}
-        ${overlaps ? html`<p class="warning-band" role="note">This total overlaps another report. They are valid independently but must not be added together.</p>` : nothing}
-        <p>Select CTs or totals, not both. Remove current sources before changing source class.</p>
+        ${overlaps ? html`<p class="warning-band" role="note">This total overlaps another report. Keep them separate; do not add them together.</p>` : nothing}
+        <p>Select CTs or totals, not both. Remove current sources before switching.</p>
         ${nativeChoices.length ? html`<fieldset class="aggregate-sources"><legend>Native totals</legend><div class="aggregate-source-options">${nativeChoices.map((item) => option({ kind: "native_total", source_id: item.source_id }, item.label))}</div></fieldset>` : nothing}
         ${existingChoices.length ? html`<fieldset class="aggregate-sources"><legend>Existing totals</legend><div class="aggregate-source-options">${existingChoices.map((item) => option({ kind: "aggregate", aggregate_id: item.aggregate_id }, item.name))}</div></fieldset>` : nothing}
         <fieldset class="aggregate-sources aggregate-channels"><legend>CTs</legend><div class="aggregate-channel-groups">${Array.from({ length: Math.ceil(configuration.channels.length / 6) }, (_, board) => {
