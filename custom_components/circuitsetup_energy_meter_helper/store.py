@@ -826,6 +826,12 @@ def _verified_meter_record(
         if not isinstance(raw_meter, dict):
             raise ValueError("current meter record is unavailable")
         if _configuration_hash(raw_meter) != expected_source_sha256:
+            if (
+                _configuration_hash(raw_meter) == configuration.config_sha256
+                and raw_meter.get("meter_configuration")
+                == _serialize_meter_configuration(configuration, record_topology)
+            ):
+                return deepcopy(raw_meter)
             raise ValueError("configuration does not match the current meter record")
         if _topology_identity(_current_topology(raw_meter)) != _topology_identity(
             record_topology
@@ -837,7 +843,7 @@ def _verified_meter_record(
             == raw_meter.get("meter_configuration")
         ):
             raise ValueError("configuration replay is not permitted")
-        next_meter = raw_meter
+        next_meter = deepcopy(raw_meter)
         next_meter["config_sha256"] = configuration.config_sha256
         next_meter["ct_selections"] = [
             _serialize_ct_selection(selection)
@@ -1378,10 +1384,10 @@ class HelperStore:
         async with self._update_lock:
             data = await self.async_load()
             raw = data.get("meters", {}).get(mac)
-            if (
-                not isinstance(raw, dict)
-                or _configuration_hash(raw) != expected_source_sha256
-            ):
+            if not isinstance(raw, dict):
+                return False
+            current_hash = _configuration_hash(raw)
+            if current_hash not in {expected_source_sha256, proposed_sha256}:
                 return False
             try:
                 topology = _current_topology(raw)
@@ -1402,15 +1408,18 @@ class HelperStore:
                     return False
                 for item in selections:
                     selection = StoredCTSelection(**item)
-                    if selection.config_sha256 != expected_source_sha256:
+                    if selection.config_sha256 != current_hash:
                         return False
                 configuration = raw.get("meter_configuration")
                 if configuration is not None:
-                    if _configuration_hash(configuration) != expected_source_sha256:
+                    if _configuration_hash(configuration) != current_hash:
                         return False
                     _deserialize_meter_configuration(configuration, topology)
             except KeyError, TypeError, ValueError:
                 return False
+            if current_hash == proposed_sha256:
+                await self._store.async_save(data)
+                return True
             updated = deepcopy(raw)
             updated["config_sha256"] = proposed_sha256
             for item in updated.get("ct_selections", []):
@@ -1552,10 +1561,13 @@ class HelperStore:
                         or raw_meter.get("config_filename") != record.config_filename
                     ):
                         raise ValueError("current meter record does not match the source")
-                    # Bridge only the local candidate's source identity. The shared
-                    # validator still checks trusted topology and NEW full metadata;
-                    # stale stored semantics are never saved as current.
-                    raw_meter = {**raw_meter, "config_sha256": expected_source_sha256}
+                    _current_topology(raw_meter)
+                    preserved = {
+                        key: deepcopy(raw_meter[key])
+                        for key in ("interrupted_session", "verified_calibration")
+                        if key in raw_meter
+                    }
+                    raw_meter = {**serialize_meter_record(record), **preserved}
             meters[mac] = _verified_meter_record(
                 mac,
                 expected_source_sha256,
@@ -1588,10 +1600,7 @@ class HelperStore:
             data = await self.async_load()
             meters = data.setdefault("meters", {})
             raw_meter = meters.get(mac)
-            if (
-                not isinstance(raw_meter, dict)
-                or _configuration_hash(raw_meter) != expected_source_sha256
-            ):
+            if not isinstance(raw_meter, dict):
                 return False
             raw_calibration = raw_meter.get("verified_calibration")
             if raw_calibration is None:
@@ -1603,6 +1612,24 @@ class HelperStore:
                 or calibration.has_offset_calibration
                 or calibration.source_handoff_transaction_id != transaction_id
             ):
+                return False
+            current_hash = _configuration_hash(raw_meter)
+            if current_hash == configuration.config_sha256:
+                if not calibration.source_handoff_firmware_installed:
+                    return False
+                try:
+                    _verified_meter_record(
+                        mac,
+                        expected_source_sha256,
+                        configuration,
+                        record,
+                        raw_meter,
+                    )
+                except ValueError:
+                    return False
+                await self._store.async_save(data)
+                return True
+            if current_hash != expected_source_sha256:
                 return False
             try:
                 raw_meter = _verified_meter_record(
@@ -1644,9 +1671,7 @@ class HelperStore:
         async with self._update_lock:
             data = await self.async_load()
             raw_meter = data.setdefault("meters", {}).get(mac)
-            if not isinstance(raw_meter, dict) or _configuration_hash(
-                raw_meter
-            ) != expected_source_sha256:
+            if not isinstance(raw_meter, dict):
                 return False
             if (
                 not isinstance(record, StoredMeterRecord)
@@ -1668,10 +1693,23 @@ class HelperStore:
                 or calibration.source_handoff_transaction_id != transaction_id
             ):
                 return False
-            raw_meter["config_sha256"] = proposed_sha256
-            raw_meter["ct_selections"] = [
+            current_hash = _configuration_hash(raw_meter)
+            serialized_selections = [
                 _serialize_ct_selection(selection) for selection in selections
             ]
+            if current_hash == proposed_sha256:
+                if (
+                    not calibration.source_handoff_firmware_installed
+                    or raw_meter.get("ct_selections") != serialized_selections
+                    or "meter_configuration" in raw_meter
+                ):
+                    return False
+                await self._store.async_save(data)
+                return True
+            if current_hash != expected_source_sha256:
+                return False
+            raw_meter["config_sha256"] = proposed_sha256
+            raw_meter["ct_selections"] = serialized_selections
             raw_meter.pop("meter_configuration", None)
             raw_calibration["source_handoff_firmware_installed"] = True
             await self._store.async_save(data)

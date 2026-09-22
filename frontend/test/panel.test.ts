@@ -146,6 +146,22 @@ it.each(["entity_mismatch", "reconnect_unavailable"] as const)("shows only the l
   expect([...host.querySelectorAll("button")].some((button) => button.textContent === "Rollback")).toBe(true);
 });
 
+it("offers metadata completion without another upload or rollback", () => {
+  const host = document.createElement("div");
+  const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64),
+    changes: [], redacted_diff: "", rollback_available: false, evidence: ["persistence_failed"],
+    progress: ["firmware_compiled", "ota_uploaded", "device_verified"], validation_detail: null,
+    upload_progress: [{ stage: "uploading", percentage: 100 }], purpose: "install_configuration" as const,
+    aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  const noop = () => undefined;
+  render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop), host);
+
+  expect(host.textContent).toContain("Firmware installed; Helper data was not saved");
+  expect(host.textContent).toContain("without uploading again");
+  expect([...host.querySelectorAll("button")].find((button) => button.textContent === "Retry completion")?.disabled).toBe(false);
+  expect([...host.querySelectorAll("button")].some((button) => button.textContent === "Rollback")).toBe(false);
+});
+
 const firmwareIndex = [
   { productId: "6chan_energy_meter_main_board", name: "Main board", versions: [{ version: "2026.8.0" }, { version: "2026.7.0" }] },
   { productId: "6chan_energy_meter_1-addon", name: "One add-on", versions: [{ version: "2026.8.0" }, { version: "2026.6.0" }] },
@@ -1648,6 +1664,40 @@ describe("CircuitSetup panel", () => {
     expect((state.meterConfiguration as import("../src/types").MeterConfiguration).source_sha256).toBe("c".repeat(64));
     expect((state.meterConfiguration as import("../src/types").MeterConfiguration).configuration.meter.friendly_name).toBe("Fresh external edit");
     expect(state.canonicalConfigurationChanged).toBe(false);
+    expect(state.step).toBe("ct");
+  });
+
+  it("recovers an old terminal persistence failure from the installed configuration", async () => {
+    const calls: string[] = [];
+    const installed = meterResponse(); installed.source_sha256 = "c".repeat(64);
+    installed.configuration.meter.friendly_name = "Installed configuration";
+    const failed = { transaction_id: "1".repeat(32), state: "failed" as const,
+      source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false,
+      evidence: ["persistence_failed"], progress: ["firmware_compiled", "ota_uploaded", "device_verified"],
+      validation_detail: null, upload_progress: [{ stage: "uploading", percentage: 100 }],
+      purpose: "install_configuration" as const, aggregate_entity_mismatch: false,
+      full_meter_configuration_verified: false };
+    const hass = makeHass({ setup_status: { state: "no_device", devices: [] }, get_meter_configuration: installed });
+    const call = hass.callWS;
+    hass.callWS = async <T>(message: Record<string, unknown>) => {
+      calls.push(String(message.type).split("/").at(-1) ?? "");
+      return call<T>(message);
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & { backFromBuild(): Promise<void> };
+    state.selectedDeviceId = "meter-1";
+    state.meterConfiguration = meterResponse();
+    state.transaction = failed;
+    state.step = "install-configuration";
+
+    await state.backFromBuild();
+
+    expect(calls).not.toContain("abandon_ct_config");
+    expect(calls).not.toContain("rollback_ct_config");
+    expect(state.transaction).toBeNull();
+    expect((state.meterConfiguration as import("../src/types").MeterConfiguration).source_sha256).toBe("c".repeat(64));
+    expect((state.meterConfiguration as import("../src/types").MeterConfiguration).configuration.meter.friendly_name).toBe("Installed configuration");
+    expect(state.announcement).toContain("Installed configuration was reloaded");
     expect(state.step).toBe("ct");
   });
 

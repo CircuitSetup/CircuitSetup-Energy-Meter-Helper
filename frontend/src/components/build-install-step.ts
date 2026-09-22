@@ -35,8 +35,9 @@ export function buildInstallStep(
   const retryClear = purpose === "save_calibration" && state === "verified";
   const busy = Boolean(pendingAction);
   const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) =>
-    ["reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed"].includes(code)) === true;
+    ["reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed"].includes(code)) === true;
   const communicationFailure = status?.evidence.includes("meter_communication_failed") === true;
+  const persistenceFailure = status?.evidence.includes("persistence_failed") === true;
   const failedPins = status?.communication_failed_cs_pins ?? [];
   const waitingForStartup = state === "reconnecting";
   const latestProgress = status?.upload_progress.slice().reverse().find((item) => item.percentage !== null)
@@ -58,7 +59,7 @@ export function buildInstallStep(
       ${meterInventory ? totalsMigrationReview(meterInventory, () => undefined, totalPreview, impact !== null, true) : ""}
       ${state === "failed" || retryableInstall ? html`
         <div class="recovery-panel" role="status">
-          <strong>${communicationFailure ? "Meter chip communication failed" : failureMessage ?? "Build or install needs attention"}</strong>
+          <strong>${communicationFailure ? "Meter chip communication failed" : persistenceFailure ? "Firmware installed; Helper data was not saved" : failureMessage ?? "Build or install needs attention"}</strong>
           ${communicationFailure ? html`<p>The ESP32 reconnected but could not establish SPI communication with
             ${failedPins.length ? "the meter chip(s) on CS pin(s) " + failedPins.map((pin) => "GPIO" + pin).join(", ") : "one or more meter chips (CS pin unavailable)"}.
             This is an ESP32–meter-chip link, not a Wi-Fi or Home Assistant problem.</p>
@@ -71,7 +72,8 @@ export function buildInstallStep(
             </ol>
             <p>Fix the hardware or configuration, power up, and Retry verification. It rechecks installed firmware without another upload.</p>
             <p>Back keeps this saved configuration for editing; rollback is optional.</p>
-          ` : html`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
+          ` : persistenceFailure ? html`<p>The meter accepted and verified the firmware. Retry completion to save the Helper data without uploading again, or use Back to reload the installed configuration.</p>`
+            : html`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
           ${status?.rollback_available ? html`<button class="danger" @click=${rollback} ?disabled=${busy}>${pendingAction === "rollback" ? "Rolling back…" : "Rollback"}</button>` : ""}
         </div>
       ` : ""}
@@ -87,7 +89,7 @@ export function buildInstallStep(
       <div class="confirmation-actions">
         <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : labels.apply}</button>
         <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : labels.compile}</button>
-        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || (state !== "install_confirmation_required" && !retryClear)}>${pendingAction === "install" ? retryableInstall ? "Checking…" : "Installing…" : retryClear ? "Retry clearing saved flash values" : retryableInstall ? "Retry verification" : labels.install}</button>
+        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || (state !== "install_confirmation_required" && !retryClear)}>${pendingAction === "install" ? retryableInstall ? "Checking…" : "Installing…" : retryClear ? "Retry clearing saved flash values" : persistenceFailure ? "Retry completion" : retryableInstall ? "Retry verification" : labels.install}</button>
       </div>
       ${status?.validation_detail ? html`<dl class="status-list evidence-list">
         <div><dt>Validation code</dt><dd>${status.validation_detail.code ?? "unavailable"}</dd></div>

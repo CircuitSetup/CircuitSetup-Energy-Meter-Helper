@@ -136,7 +136,7 @@ def test_exact_fingerprint_cannot_bypass_record_validation(invalid):
         transaction = workflow.transactions._transaction(preview.transaction_id)
         raw = store._store.data["meters"][MAC]
         if invalid == "topology":
-            raw["topology"]["connection_type"] = "ethernet_lilygo"
+            raw["topology"] = None
         elif invalid == "filename":
             raw["config_filename"] = "different.yaml"
         elif invalid == "hash":

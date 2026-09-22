@@ -201,6 +201,7 @@ _RETRYABLE_INSTALL_EVIDENCE = {
     TransactionEvidenceCode.METER_COMMUNICATION_FAILED,
     TransactionEvidenceCode.ENTITY_MISMATCH,
     TransactionEvidenceCode.SENSOR_COUNT_MISMATCH,
+    TransactionEvidenceCode.PERSISTENCE_FAILED,
 }
 
 
@@ -1009,8 +1010,13 @@ class ConfigTransactionManager:
                 transaction.purpose == "install_configuration"
                 and transaction.state
                 is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
-                and TransactionEvidenceCode.METER_COMMUNICATION_FAILED
-                in transaction.evidence
+                and any(
+                    code in transaction.evidence
+                    for code in (
+                        TransactionEvidenceCode.METER_COMMUNICATION_FAILED,
+                        TransactionEvidenceCode.PERSISTENCE_FAILED,
+                    )
+                )
             )
             if transaction.state is ConfigTransactionState.PREVIEWED:
                 await transaction.async_release_reservation()
@@ -1020,7 +1026,7 @@ class ConfigTransactionManager:
                 await self._check_configuration_source(transaction, proposed=True)
             else:
                 raise RuntimeError(
-                    "only an unconfirmed preview or meter communication retry "
+                    "only an unconfirmed preview or post-upload install retry "
                     "can be abandoned"
                 )
             return self._finish(
@@ -1472,13 +1478,9 @@ class ConfigTransactionManager:
             self._finish(transaction, ConfigTransactionState.FAILED, TransactionEvidenceCode.CANCELLED)
             raise
         except Exception:  # noqa: BLE001 - external storage boundary
-            return self._finish(
-                transaction, ConfigTransactionState.FAILED, TransactionEvidenceCode.PERSISTENCE_FAILED
-            )
+            return self._persistence_failure_status(transaction)
         if not installed:
-            status = self._finish(
-                transaction, ConfigTransactionState.FAILED, TransactionEvidenceCode.PERSISTENCE_FAILED
-            )
+            status = self._persistence_failure_status(transaction)
             if cancelled:
                 raise asyncio.CancelledError
             return status
@@ -1741,20 +1743,32 @@ class ConfigTransactionManager:
         code: TransactionEvidenceCode,
     ) -> TransactionStatus:
         transaction.state = ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
-        transaction.rollback_available = True
-        transaction.failure = TransactionFailure(
+        persistence_failed = code is TransactionEvidenceCode.PERSISTENCE_FAILED
+        transaction.rollback_available = not persistence_failed
+        transaction.failure = None if persistence_failed else TransactionFailure(
             TransactionFailureStage.VERIFYING_METER,
-            (
-                TransactionFailureReason.METER_COMMUNICATION_FAILED
-                if code is TransactionEvidenceCode.METER_COMMUNICATION_FAILED
-                else TransactionFailureReason.VERIFICATION_INCOMPLETE
-            ),
+            TransactionFailureReason.METER_COMMUNICATION_FAILED
+            if code is TransactionEvidenceCode.METER_COMMUNICATION_FAILED
+            else TransactionFailureReason.VERIFICATION_INCOMPLETE,
         )
         self._refresh_deadline(transaction)
         _evidence(transaction, code)
         status = _status(transaction)
         self.publish_status(status)
         return status
+
+    def _persistence_failure_status(
+        self, transaction: _ConfigTransaction
+    ) -> TransactionStatus:
+        if transaction.purpose.startswith("offset_"):
+            return self._finish(
+                transaction,
+                ConfigTransactionState.FAILED,
+                TransactionEvidenceCode.PERSISTENCE_FAILED,
+            )
+        return self._retain_install_retry(
+            transaction, TransactionEvidenceCode.PERSISTENCE_FAILED
+        )
 
     async def async_rollback(self, transaction_id: str) -> TransactionStatus:
         """Consume the one available rollback and restore through Device Builder once."""

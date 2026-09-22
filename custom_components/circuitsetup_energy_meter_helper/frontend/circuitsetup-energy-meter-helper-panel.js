@@ -2063,8 +2063,9 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
   const state = status.state;
   const retryClear = purpose === "save_calibration" && state === "verified";
   const busy = Boolean(pendingAction);
-  const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) => ["reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed"].includes(code)) === true;
+  const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) => ["reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed"].includes(code)) === true;
   const communicationFailure = status?.evidence.includes("meter_communication_failed") === true;
+  const persistenceFailure = status?.evidence.includes("persistence_failed") === true;
   const failedPins = status?.communication_failed_cs_pins ?? [];
   const waitingForStartup = state === "reconnecting";
   const latestProgress = status?.upload_progress.slice().reverse().find((item) => item.percentage !== null) ?? status?.upload_progress.at(-1) ?? null;
@@ -2082,7 +2083,7 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
       ${meterInventory ? totalsMigrationReview(meterInventory, () => void 0, totalPreview, impact !== null, true) : ""}
       ${state === "failed" || retryableInstall ? b`
         <div class="recovery-panel" role="status">
-          <strong>${communicationFailure ? "Meter chip communication failed" : failureMessage ?? "Build or install needs attention"}</strong>
+          <strong>${communicationFailure ? "Meter chip communication failed" : persistenceFailure ? "Firmware installed; Helper data was not saved" : failureMessage ?? "Build or install needs attention"}</strong>
           ${communicationFailure ? b`<p>The ESP32 reconnected but could not establish SPI communication with
             ${failedPins.length ? "the meter chip(s) on CS pin(s) " + failedPins.map((pin) => "GPIO" + pin).join(", ") : "one or more meter chips (CS pin unavailable)"}.
             This is an ESP32–meter-chip link, not a Wi-Fi or Home Assistant problem.</p>
@@ -2095,7 +2096,7 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
             </ol>
             <p>Fix the hardware or configuration, power up, and Retry verification. It rechecks installed firmware without another upload.</p>
             <p>Back keeps this saved configuration for editing; rollback is optional.</p>
-          ` : b`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
+          ` : persistenceFailure ? b`<p>The meter accepted and verified the firmware. Retry completion to save the Helper data without uploading again, or use Back to reload the installed configuration.</p>` : b`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
           ${status?.rollback_available ? b`<button class="danger" @click=${rollback} ?disabled=${busy}>${pendingAction === "rollback" ? "Rolling back…" : "Rollback"}</button>` : ""}
         </div>
       ` : ""}
@@ -2111,7 +2112,7 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
       <div class="confirmation-actions">
         <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : labels.apply}</button>
         <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : labels.compile}</button>
-        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "install_confirmation_required" && !retryClear}>${pendingAction === "install" ? retryableInstall ? "Checking…" : "Installing…" : retryClear ? "Retry clearing saved flash values" : retryableInstall ? "Retry verification" : labels.install}</button>
+        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "install_confirmation_required" && !retryClear}>${pendingAction === "install" ? retryableInstall ? "Checking…" : "Installing…" : retryClear ? "Retry clearing saved flash values" : persistenceFailure ? "Retry completion" : retryableInstall ? "Retry verification" : labels.install}</button>
       </div>
       ${status?.validation_detail ? b`<dl class="status-list evidence-list">
         <div><dt>Validation code</dt><dd>${status.validation_detail.code ?? "unavailable"}</dd></div>
@@ -5196,7 +5197,8 @@ class CircuitSetupPanel extends i$2 {
     const deviceId = this.selectedDeviceId;
     const current = this.transaction;
     const calibrationPreparation2 = current !== null && this.isCalibrationPreparationTransaction(current);
-    const chipFailureRetry = current?.purpose === "install_configuration" && current.state === "install_confirmation_required" && current.evidence.includes("meter_communication_failed");
+    const appliedInstallRetry = current?.purpose === "install_configuration" && current.state === "install_confirmation_required" && current.evidence.some((code) => ["meter_communication_failed", "persistence_failed"].includes(code));
+    const terminalPersistenceFailure = current?.purpose === "install_configuration" && current.state === "failed" && !current.rollback_available && current.evidence.includes("persistence_failed") && current.progress.includes("device_verified");
     if (current?.purpose.startsWith("offset_")) {
       if (!["previewed", "rolled_back", "failed"].includes(current.state)) {
         this.fail(new Error(), "This review has already advanced. Complete or roll back this transaction first.");
@@ -5220,7 +5222,7 @@ class CircuitSetupPanel extends i$2 {
       this.requestUpdate();
       return;
     }
-    if (current && !["previewed", "rolled_back"].includes(current.state) && !chipFailureRetry) {
+    if (current && !["previewed", "rolled_back"].includes(current.state) && !appliedInstallRetry && !terminalPersistenceFailure) {
       this.fail(new Error(), "This review has already advanced. Roll it back before changing the configuration.");
       return;
     }
@@ -5239,7 +5241,7 @@ class CircuitSetupPanel extends i$2 {
       meterFrequencyTouched: this.meterFrequencyTouched,
       meterNominalVoltageTouched: new Set(this.meterNominalVoltageTouched)
     } : null);
-    if (!chipFailureRetry && !this.calibrationHandoff && !calibrationPreparation2 && !correction) {
+    if (!appliedInstallRetry && !terminalPersistenceFailure && !this.calibrationHandoff && !calibrationPreparation2 && !correction) {
       this.fail(new Error(), "The edited configuration is unavailable. Return to setup and reload the meter.");
       return;
     }
@@ -5249,15 +5251,16 @@ class CircuitSetupPanel extends i$2 {
     const generation = ++this.operationGeneration;
     let abandoned = current === null || current?.state === "rolled_back";
     try {
-      if (current?.state === "previewed" || chipFailureRetry) {
+      if (current?.state === "previewed" || appliedInstallRetry) {
         await api.abandonCtConfig(deviceId, current.transaction_id, current.source_sha256);
         if (!this.ownsOperation(generation, api, deviceId)) return;
         this.clearSubscription("transaction");
         this.transaction = null;
         abandoned = true;
-      } else if (current?.state === "rolled_back") {
+      } else if (current?.state === "rolled_back" || terminalPersistenceFailure) {
         this.clearSubscription("transaction");
         this.transaction = null;
+        abandoned = true;
       }
       if (calibrationPreparation2) {
         this.clearSubscription("session");
@@ -5275,14 +5278,14 @@ class CircuitSetupPanel extends i$2 {
       this.reviewCorrection = correction;
       const fresh = await api.getMeterConfiguration(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
-      if (chipFailureRetry) {
+      if (appliedInstallRetry || terminalPersistenceFailure) {
         this.packageOptionsTouched = false;
         this.meterFrequencyTouched = false;
         this.meterNominalVoltageTouched = /* @__PURE__ */ new Set();
         this.setMeterConfiguration(fresh);
         this.showInventory(this.meterConfiguration);
         this.reviewCorrection = null;
-        this.announcement = "Review cancelled. Live saved configuration was reloaded.";
+        this.announcement = current?.evidence.includes("persistence_failed") ? "Installed configuration was reloaded." : "Review cancelled. Live saved configuration was reloaded.";
         return;
       }
       if (fresh.source_sha256 !== correction.sourceSha256) {
