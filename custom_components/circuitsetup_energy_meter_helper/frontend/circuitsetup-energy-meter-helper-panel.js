@@ -518,8 +518,8 @@ const UPDATE_INTERVALS = /* @__PURE__ */ new Set([1, 2, 5, 10, 30, 60]);
 const EVIDENCE_SOURCES = /* @__PURE__ */ new Set(["config_project", "config_packages", "dashboard_import", "native_project", "native_entity_counts"]);
 const PHASES = /* @__PURE__ */ new Set(["A", "B", "C"]);
 const JOB_STAGES = /* @__PURE__ */ new Set(["connecting", "uploading", "writing", "verifying", "completed", "transfer"]);
-const TRANSACTION_EVIDENCE = /* @__PURE__ */ new Set(["write_failed", "write_not_applied", "write_recovery_required", "source_changed", "validation_failed", "validation_unavailable", "compile_failed", "upload_failed", "reconnect_unavailable", "meter_communication_failed", "identity_mismatch", "topology_mismatch", "entity_mismatch", "sensor_count_mismatch", "persistence_failed", "rollback_failed", "cancelled"]);
-const TRANSACTION_PROGRESS = /* @__PURE__ */ new Set(["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted", "config_restored"]);
+const TRANSACTION_EVIDENCE = /* @__PURE__ */ new Set(["write_failed", "write_not_applied", "write_recovery_required", "source_changed", "validation_failed", "validation_unavailable", "compile_failed", "upload_failed", "upload_outcome_unknown", "reconnect_unavailable", "meter_communication_failed", "identity_mismatch", "topology_mismatch", "entity_mismatch", "sensor_count_mismatch", "persistence_failed", "rollback_failed", "cancelled"]);
+const TRANSACTION_PROGRESS = /* @__PURE__ */ new Set(["config_written", "config_validated", "firmware_compiled", "ota_attempted", "ota_uploaded", "device_verified", "metadata_persisted", "config_restored"]);
 const TRANSACTION_FAILURE_STAGES = /* @__PURE__ */ new Set(["validating", "building", "installing", "verifying_meter"]);
 const TRANSACTION_FAILURE_REASONS = /* @__PURE__ */ new Set(["unknown", "missing_package", "unsupported_component_option", "required_secret", "conflicting_managed_override", "validation_rejected", "compile_rejected", "upload_failed", "verification_incomplete", "meter_communication_failed"]);
 const PREFLIGHT_CODES = /* @__PURE__ */ new Set(["count_mismatch", "invalid_kind", "invalid_unit", "invalid_range", "invalid_step", "unavailable", "zero_ack", "device_busy"]);
@@ -2063,7 +2063,8 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
   const state = status.state;
   const retryClear = purpose === "save_calibration" && state === "verified";
   const busy = Boolean(pendingAction);
-  const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) => ["reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed"].includes(code)) === true;
+  const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) => ["upload_outcome_unknown", "reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed"].includes(code)) === true;
+  const uploadUnknown = status.progress.includes("ota_attempted") && !status.progress.includes("ota_uploaded") && !status.progress.includes("device_verified");
   const communicationFailure = status?.evidence.includes("meter_communication_failed") === true;
   const persistenceFailure = status?.evidence.includes("persistence_failed") === true;
   const failedPins = status?.communication_failed_cs_pins ?? [];
@@ -2083,7 +2084,7 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
       ${meterInventory ? totalsMigrationReview(meterInventory, () => void 0, totalPreview, impact !== null, true) : ""}
       ${state === "failed" || retryableInstall ? b`
         <div class="recovery-panel" role="status">
-          <strong>${communicationFailure ? "Meter chip communication failed" : persistenceFailure ? "Firmware installed; Helper data was not saved" : failureMessage ?? "Build or install needs attention"}</strong>
+          <strong>${communicationFailure ? "Meter chip communication failed" : uploadUnknown ? "Installation outcome needs verification" : persistenceFailure ? "Firmware installed; Helper data was not saved" : failureMessage ?? "Build or install needs attention"}</strong>
           ${communicationFailure ? b`<p>The ESP32 reconnected but could not establish SPI communication with
             ${failedPins.length ? "the meter chip(s) on CS pin(s) " + failedPins.map((pin) => "GPIO" + pin).join(", ") : "one or more meter chips (CS pin unavailable)"}.
             This is an ESP32–meter-chip link, not a Wi-Fi or Home Assistant problem.</p>
@@ -2096,13 +2097,13 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
             </ol>
             <p>Fix the hardware or configuration, power up, and Retry verification. It rechecks installed firmware without another upload.</p>
             <p>Back keeps this saved configuration for editing; rollback is optional.</p>
-          ` : persistenceFailure ? b`<p>The meter accepted and verified the firmware. Retry completion to save the Helper data without uploading again, or use Back to reload the installed configuration.</p>` : b`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
+          ` : uploadUnknown ? b`<p>The upload may have reached the meter. Retry verification checks the source and meter without uploading again.</p>` : persistenceFailure ? b`<p>The meter accepted and verified the firmware. Retry completion to save the Helper data without uploading again, or use Back to reload the installed configuration.</p>` : b`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
           ${status?.rollback_available ? b`<button class="danger" @click=${rollback} ?disabled=${busy}>${pendingAction === "rollback" ? "Rolling back…" : "Rollback"}</button>` : ""}
         </div>
       ` : ""}
       ${validationFailed ? b`<div class="recovery-panel" role="status"><strong>ESPHome rejected the config (code ${status?.validation_detail?.code ?? "unavailable"})</strong><p>Original config restored. Review the changes and open ESPHome Device Builder logs for the validation error.</p></div>` : ""}
       ${status?.failure ? b`<div class="recovery-panel" role="status">
-        ${failureMessage ? b`<p>${failureMessage}</p>` : b`<p>Open ESPHome Device Builder details for the failed operation.</p>`}
+        ${failureMessage && !uploadUnknown ? b`<p>${failureMessage}</p>` : b`<p>Open ESPHome Device Builder details for the failed operation.</p>`}
         ${status.failure.context.map(([key, value]) => b`<p>${key === "secret_name" ? "Required secret" : key === "component" ? "Component" : key === "field" ? "Option" : "Package"}: <code>${value}</code></p>`)}
       </div>` : ""}
       ${waitingForStartup ? b`<div class="job-progress" role="status" aria-live="polite">
@@ -5197,7 +5198,7 @@ class CircuitSetupPanel extends i$2 {
     const deviceId = this.selectedDeviceId;
     const current = this.transaction;
     const calibrationPreparation2 = current !== null && this.isCalibrationPreparationTransaction(current);
-    const appliedInstallRetry = current?.purpose === "install_configuration" && current.state === "install_confirmation_required" && current.evidence.some((code) => ["meter_communication_failed", "persistence_failed"].includes(code));
+    const appliedInstallRetry = current?.purpose === "install_configuration" && current.state === "install_confirmation_required" && current.evidence.some((code) => ["upload_outcome_unknown", "reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed"].includes(code));
     const terminalPersistenceFailure = current?.purpose === "install_configuration" && current.state === "failed" && !current.rollback_available && current.evidence.includes("persistence_failed") && current.progress.includes("device_verified");
     if (current?.purpose.startsWith("offset_")) {
       if (!["previewed", "rolled_back", "failed"].includes(current.state)) {

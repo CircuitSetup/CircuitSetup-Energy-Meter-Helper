@@ -936,7 +936,7 @@ class EntryWorkflow:
         return {
             "session": session,
             "transaction": (
-                self.transactions.active_status(mac)
+                await self.transactions.async_recover_install(mac)
                 if self.transactions is not None
                 else None
             ),
@@ -2338,7 +2338,7 @@ class EntryWorkflow:
                         )
                         exact_claim()
                         await recovery.async_require_finalization(
-                            lease, final, installed=True
+                            lease, final, installed=True, require_confirmed=False
                         )
                         exact_claim()
                         self._sessions_owner.consume_finalized_offsets(

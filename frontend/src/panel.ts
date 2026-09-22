@@ -1037,7 +1037,7 @@ export class CircuitSetupPanel extends LitElement {
     const calibrationPreparation = current !== null && this.isCalibrationPreparationTransaction(current);
     const appliedInstallRetry = current?.purpose === "install_configuration"
       && current.state === "install_confirmation_required"
-      && current.evidence.some((code) => ["meter_communication_failed", "persistence_failed"].includes(code));
+      && current.evidence.some((code) => ["upload_outcome_unknown", "reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed"].includes(code));
     const terminalPersistenceFailure = current?.purpose === "install_configuration"
       && current.state === "failed" && !current.rollback_available
       && current.evidence.includes("persistence_failed") && current.progress.includes("device_verified");

@@ -3230,7 +3230,7 @@ def test_parent_decision_cross_route_persists_only_after_verified_install(succes
             ct_names={channel.channel: channel.name for channel in retained.meter_configuration.channels},
             sensor_entities=retained.expected_sensor_entities)
         transaction = {"transaction_id": status["transaction_id"], "source_sha256": status["source_sha256"]}
-        fixture.builder.upload = Job(success)
+        fixture.builder.upload = Job(success, code=0 if success else 1)
         await call("apply_ct_config", **transaction)
         await call("compile_ct_config", **transaction)
         assert await fixture.store.async_get_meter_configuration(MAC) == before

@@ -146,6 +146,21 @@ it.each(["entity_mismatch", "reconnect_unavailable"] as const)("shows only the l
   expect([...host.querySelectorAll("button")].some((button) => button.textContent === "Rollback")).toBe(true);
 });
 
+it("offers verification for uncertain uploads without claiming installation", () => {
+  const host = document.createElement("div");
+  const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64),
+    changes: [], redacted_diff: "", rollback_available: false, evidence: ["upload_outcome_unknown"],
+    progress: ["ota_attempted"], validation_detail: null, upload_progress: [], purpose: "install_configuration",
+    aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  const noop = () => undefined;
+  render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop), host);
+  expect(host.textContent).toContain("Installation outcome needs verification");
+  expect(host.textContent).toContain("without uploading again");
+  expect(host.textContent).not.toContain("Firmware installed");
+  expect([...host.querySelectorAll("button")].find((button) => button.textContent === "Retry verification")?.disabled).toBe(false);
+  expect([...host.querySelectorAll("button")].some((button) => button.textContent === "Rollback")).toBe(false);
+});
+
 it("offers metadata completion without another upload or rollback", () => {
   const host = document.createElement("div");
   const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64),

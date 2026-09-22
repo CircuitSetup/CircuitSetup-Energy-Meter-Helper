@@ -35,7 +35,8 @@ export function buildInstallStep(
   const retryClear = purpose === "save_calibration" && state === "verified";
   const busy = Boolean(pendingAction);
   const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) =>
-    ["reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed"].includes(code)) === true;
+    ["upload_outcome_unknown", "reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed"].includes(code)) === true;
+  const uploadUnknown = status.progress.includes("ota_attempted") && !status.progress.includes("ota_uploaded") && !status.progress.includes("device_verified");
   const communicationFailure = status?.evidence.includes("meter_communication_failed") === true;
   const persistenceFailure = status?.evidence.includes("persistence_failed") === true;
   const failedPins = status?.communication_failed_cs_pins ?? [];
@@ -59,7 +60,7 @@ export function buildInstallStep(
       ${meterInventory ? totalsMigrationReview(meterInventory, () => undefined, totalPreview, impact !== null, true) : ""}
       ${state === "failed" || retryableInstall ? html`
         <div class="recovery-panel" role="status">
-          <strong>${communicationFailure ? "Meter chip communication failed" : persistenceFailure ? "Firmware installed; Helper data was not saved" : failureMessage ?? "Build or install needs attention"}</strong>
+          <strong>${communicationFailure ? "Meter chip communication failed" : uploadUnknown ? "Installation outcome needs verification" : persistenceFailure ? "Firmware installed; Helper data was not saved" : failureMessage ?? "Build or install needs attention"}</strong>
           ${communicationFailure ? html`<p>The ESP32 reconnected but could not establish SPI communication with
             ${failedPins.length ? "the meter chip(s) on CS pin(s) " + failedPins.map((pin) => "GPIO" + pin).join(", ") : "one or more meter chips (CS pin unavailable)"}.
             This is an ESP32–meter-chip link, not a Wi-Fi or Home Assistant problem.</p>
@@ -72,14 +73,14 @@ export function buildInstallStep(
             </ol>
             <p>Fix the hardware or configuration, power up, and Retry verification. It rechecks installed firmware without another upload.</p>
             <p>Back keeps this saved configuration for editing; rollback is optional.</p>
-          ` : persistenceFailure ? html`<p>The meter accepted and verified the firmware. Retry completion to save the Helper data without uploading again, or use Back to reload the installed configuration.</p>`
+          ` : uploadUnknown ? html`<p>The upload may have reached the meter. Retry verification checks the source and meter without uploading again.</p>` : persistenceFailure ? html`<p>The meter accepted and verified the firmware. Retry completion to save the Helper data without uploading again, or use Back to reload the installed configuration.</p>`
             : html`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
           ${status?.rollback_available ? html`<button class="danger" @click=${rollback} ?disabled=${busy}>${pendingAction === "rollback" ? "Rolling back…" : "Rollback"}</button>` : ""}
         </div>
       ` : ""}
       ${validationFailed ? html`<div class="recovery-panel" role="status"><strong>ESPHome rejected the config (code ${status?.validation_detail?.code ?? "unavailable"})</strong><p>Original config restored. Review the changes and open ESPHome Device Builder logs for the validation error.</p></div>` : ""}
       ${status?.failure ? html`<div class="recovery-panel" role="status">
-        ${failureMessage ? html`<p>${failureMessage}</p>` : html`<p>Open ESPHome Device Builder details for the failed operation.</p>`}
+        ${failureMessage && !uploadUnknown ? html`<p>${failureMessage}</p>` : html`<p>Open ESPHome Device Builder details for the failed operation.</p>`}
         ${status.failure.context.map(([key, value]) => html`<p>${key === "secret_name" ? "Required secret" : key === "component" ? "Component" : key === "field" ? "Option" : "Package"}: <code>${value}</code></p>`)}
       </div>` : ""}
       ${waitingForStartup ? html`<div class="job-progress" role="status" aria-live="polite">

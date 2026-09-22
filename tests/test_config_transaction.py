@@ -199,6 +199,17 @@ class UncertainUpdateBuilder(Builder):
 
 
 class Persistence:
+    async def async_get_install_recovery(self, mac):
+        return getattr(self, "checkpoints", {}).get(mac)
+
+    async def async_save_install_recovery(self, mac, transaction_id, checkpoint):
+        if not hasattr(self, "checkpoints"):
+            self.checkpoints = {}
+        if checkpoint is None:
+            self.checkpoints.pop(mac, None)
+        else:
+            self.checkpoints[mac] = checkpoint
+
     async def async_revoke_installed_calibration(
         self, mac: str, *, expected_record_fingerprint: str | None = None
     ) -> str | None:
@@ -716,10 +727,14 @@ def test_new_upload_revokes_previous_flash_clear_authority_before_side_effects(f
                 assert (
                     await manager.async_confirm_install(preview.transaction_id, "admin")
                 ).state is ConfigTransactionState.VERIFIED
+            elif failure == "upload_response_lost":
+                assert result.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
             else:
                 assert result.state is ConfigTransactionState.FAILED
         backend.fail = False
-        assert not manager.sessions.is_config_locked(record.mac)
+        assert manager.sessions.is_config_locked(record.mac) is (
+            failure in {"upload_cancel", "upload_response_lost", "reconnect_cancel"}
+        )
         if failure == "receipt_save":
             assert "upload" not in builder.calls
             assert await store.async_get_verified_calibration(record.mac) == record
@@ -733,8 +748,9 @@ def test_new_upload_revokes_previous_flash_clear_authority_before_side_effects(f
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("restart", (False, True))
 def test_real_store_swallowed_post_upload_failure_retries_without_reupload(
-    tmp_path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path, monkeypatch: pytest.MonkeyPatch, restart: bool,
 ) -> None:
     """A lost receipt stays retryable and cannot report a verified install."""
     from types import SimpleNamespace
@@ -799,6 +815,12 @@ def test_real_store_swallowed_post_upload_failure_retries_without_reupload(
         persisted = await store.async_get_verified_calibration(record.mac)
         assert persisted is not None and not persisted.source_handoff_firmware_installed
         monkeypatch.setattr(store._store, "_async_write_data", write)
+        if restart:
+            await manager.sessions.async_unload()
+            store = HelperStore(hass)
+            manager = _manager(builder, store)
+            recovered = await manager.async_recover_install(record.mac)
+            assert recovered is not None and recovered.transaction_id == preview.transaction_id
         retry = await manager.async_confirm_install(preview.transaction_id, "admin")
         assert retry.state is ConfigTransactionState.VERIFIED
         assert builder.calls.count("upload") == 1
@@ -2546,7 +2568,7 @@ def test_confirmations_and_verified_persistence_are_separate() -> None:
         assert status.state is ConfigTransactionState.VERIFIED
         assert not status.full_meter_configuration_verified
         assert builder.calls == [
-            "write", "validate", "read", "compile", "read", "read", "upload", "read"
+            "write", "validate", "read", "compile", "read", "read", "read", "upload", "read"
         ]
         saved = persistence.saved[0][1][0]  # type: ignore[index]
         assert (
@@ -2804,7 +2826,7 @@ def test_rollback_claim_is_atomic_and_replay_safe() -> None:
     asyncio.run(run())
 
 
-def test_upload_disconnect_is_terminal_and_never_persists() -> None:
+def test_upload_disconnect_retains_verification_and_never_persists() -> None:
     async def run() -> None:
         persistence = Persistence()
         manager = _manager(
@@ -2814,10 +2836,10 @@ def test_upload_disconnect_is_terminal_and_never_persists() -> None:
         await manager.async_confirm_write(preview.transaction_id, "admin")
         await manager.async_compile(preview.transaction_id)
         status = await manager.async_confirm_install(preview.transaction_id, "admin")
-        assert status.state is ConfigTransactionState.FAILED
-        assert status.evidence == (TransactionEvidenceCode.UPLOAD_FAILED,)
+        assert status.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        assert status.evidence == (TransactionEvidenceCode.UPLOAD_OUTCOME_UNKNOWN,)
         assert "token" not in repr(status) and not persistence.saved
-        assert not manager.sessions.is_config_locked("aabbccddeeff")
+        assert manager.sessions.is_config_locked("aabbccddeeff")
 
     asyncio.run(run())
 
@@ -2940,7 +2962,7 @@ def test_rebooting_meter_waits_and_verifies_without_second_upload(
     asyncio.run(run())
 
 
-def test_cancellation_during_reboot_wait_finishes_the_transaction(
+def test_cancellation_during_reboot_wait_retains_verification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def run() -> None:
@@ -2974,9 +2996,9 @@ def test_cancellation_during_reboot_wait_finishes_the_transaction(
         with pytest.raises(asyncio.CancelledError):
             await install
 
-        assert statuses[-1].state is ConfigTransactionState.FAILED
-        assert statuses[-1].evidence == (TransactionEvidenceCode.CANCELLED,)
-        assert manager.active_status("aabbccddeeff") is None
+        assert statuses[-1].state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        assert statuses[-1].evidence == (TransactionEvidenceCode.RECONNECT_UNAVAILABLE,)
+        assert manager.active_status("aabbccddeeff") is not None
 
     asyncio.run(run())
 
@@ -3153,7 +3175,7 @@ def test_persistence_retry_can_be_abandoned_without_rollback() -> None:
     asyncio.run(run())
 
 
-def test_cancellation_after_write_restores_and_upload_cancel_cleans_up() -> None:
+def test_cancellation_after_write_restores_and_upload_cancel_retains_verification() -> None:
     async def run() -> None:
         builder = Builder()
         builder.pause("validate")
@@ -3182,11 +3204,10 @@ def test_cancellation_after_write_restores_and_upload_cancel_cleans_up() -> None
         task2.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task2
-        assert not persistence2.saved and not manager2.sessions.is_config_locked(
+        assert not persistence2.saved and manager2.sessions.is_config_locked(
             "aabbccddeeff"
         )
-        with pytest.raises(KeyError):
-            manager2.status(preview2.transaction_id)
+        assert manager2.status(preview2.transaction_id).state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
 
     asyncio.run(run())
 

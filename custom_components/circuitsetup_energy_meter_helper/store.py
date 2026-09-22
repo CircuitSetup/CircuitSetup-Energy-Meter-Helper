@@ -1360,6 +1360,48 @@ class HelperStore:
             meters[record.mac] = serialized
             await self._store.async_save(data)
 
+    async def async_get_install_recovery(self, mac: str) -> dict[str, Any] | None:
+        """Read a private verification checkpoint, separate from installed metadata."""
+        records = (await self.async_load()).get("install_recovery", {})
+        if not isinstance(records, dict):
+            raise TypeError("invalid install recovery storage")
+        record = records.get(canonical_mac(mac))
+        if record is not None and not isinstance(record, dict):
+            raise ValueError("invalid install recovery record")
+        return deepcopy(record)
+
+    async def async_save_install_recovery(
+        self, mac: str, transaction_id: str, checkpoint: dict[str, Any] | None
+    ) -> None:
+        """Durably replace or remove only this transaction's recovery checkpoint."""
+        mac = canonical_mac(mac)
+        if re.fullmatch(r"[0-9a-f]{32}", transaction_id) is None:
+            raise ValueError("invalid recovery transaction identity")
+        if checkpoint is not None and (
+            checkpoint.get("transaction_id") != transaction_id
+            or checkpoint.get("mac") != mac
+            or len(json.dumps(checkpoint, allow_nan=False).encode()) > 1_048_576
+        ):
+            raise ValueError("invalid install recovery checkpoint")
+        async with self._update_lock:
+            data = await self.async_load()
+            records = data.setdefault("install_recovery", {})
+            if not isinstance(records, dict):
+                raise TypeError("invalid install recovery storage")
+            current = records.get(mac)
+            if checkpoint is None and current is not None and (
+                not isinstance(current, dict)
+                or current.get("transaction_id") != transaction_id
+            ):
+                raise ValueError("another install requires recovery")
+            if checkpoint is None:
+                records.pop(mac, None)
+                if not records:
+                    data.pop("install_recovery")
+            else:
+                records[mac] = deepcopy(checkpoint)
+            await self._store.async_save_verified(data)
+
     async def async_advance_offset_configuration_source(
         self,
         mac: str,
@@ -1550,8 +1592,23 @@ class HelperStore:
                     record is None
                     or not isinstance(expected_record_fingerprint, str)
                     or re.fullmatch(r"[0-9a-f]{64}", expected_record_fingerprint) is None
-                    or _meter_record_fingerprint(mac, meters) != expected_record_fingerprint
                 ):
+                    raise ValueError("meter record changed since preview")
+                if (
+                    isinstance(raw_meter, dict)
+                    and record.mac == mac and record.config_sha256 == expected_source_sha256
+                    and raw_meter.get("config_filename") == record.config_filename
+                    and _configuration_hash(raw_meter) == configuration.config_sha256
+                    and _topology_identity(_current_topology(raw_meter))
+                    == _topology_identity(_current_topology(serialize_meter_record(record)))
+                    and raw_meter.get("meter_configuration")
+                    == _serialize_meter_configuration(configuration, _current_topology(raw_meter))
+                ):
+                    # An earlier verified commit may have outlived its acknowledgement.
+                    # Confirm the exact result without overwriting any newer metadata.
+                    await self._store.async_save_verified(data)
+                    return
+                if _meter_record_fingerprint(mac, meters) != expected_record_fingerprint:
                     raise ValueError("meter record changed since preview")
                 if mac in meters and not isinstance(raw_meter, dict):
                     raise ValueError("current meter record is invalid")

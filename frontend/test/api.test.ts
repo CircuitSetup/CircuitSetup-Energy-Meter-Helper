@@ -736,6 +736,15 @@ describe("HelperApi", () => {
     }
   });
 
+  it("accepts verification-only recovered installation status", async () => {
+    const hass = new FakeHass();
+    const recovered = { ...transaction, state: "install_confirmation_required", changes: [], redacted_diff: "",
+      progress: ["ota_attempted"], evidence: ["upload_outcome_unknown"], rollback_available: false };
+    hass.responses.get_active_work = { session: null, transaction: recovered, verified_calibration: null };
+    const active = await new HelperApi(hass, "entry-1").getActiveWork("meter-1", topology);
+    expect(active.transaction).toEqual(recovered);
+  });
+
   it("sends the exact Task 19 command identifiers and confirmation handles", async () => {
     const hass = new FakeHass();
     const api = new HelperApi(hass, "entry-1");

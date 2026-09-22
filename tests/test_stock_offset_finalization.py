@@ -522,7 +522,7 @@ def test_mixed_gain_final_plan_uses_real_reservation_without_claiming_flash_clea
         await manager.async_compile(review.transaction_id)
         installed = await manager.async_confirm_install(review.transaction_id, "admin")
         if failure == "stale_metadata":
-            assert installed.state.value == "failed"
+            assert installed.state.value == "install_confirmation_required"
             assert store._store.data["meters"][MAC]["config_sha256"] == "f" * 64
             assert (
                 store._store.data["meters"][MAC]["meter_configuration"]
@@ -1061,16 +1061,12 @@ def test_finalization_source_fences_revoke_changed_sources(
 
 
 @pytest.mark.parametrize("outcome", ("confirmed", "double_io", "late_cancel"))
-def test_new_owner_needs_identical_source_review_install_even_for_surviving_receipt(
+def test_new_owner_reconciles_only_a_durable_uncancelled_final_receipt(
     tmp_path, monkeypatch, outcome
 ):
     from threading import Event
 
     from custom_components.circuitsetup_energy_meter_helper import offset_recovery
-    from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
-        ConfigTransactionManager,
-    )
-    from tests.test_config_transaction import Persistence
     from tests.test_offset_recovery import hass_at
 
     async def run():
@@ -1108,58 +1104,155 @@ def test_new_owner_needs_identical_source_review_install_even_for_surviving_rece
                 await task
         else:
             result = await manager.async_confirm_install(review.transaction_id, "admin")
-            assert result.state.value == (
-                "verified" if outcome == "confirmed" else "failed"
-            )
+            if outcome == "confirmed":
+                assert result.state.value == "verified"
+            else:
+                assert result.state.value != "verified"
         monkeypatch.setattr(offset_recovery, "write_utf8_file_atomic", real)
-        fresh = offset_recovery.OffsetRecovery(hass_at(tmp_path), sessions)
-        source = await builder.async_get_config("meter.yaml")
+        await sessions.async_unload()
+        from custom_components.circuitsetup_energy_meter_helper.session_manager import (
+            SessionManager,
+        )
+
+        owner = SessionManager()
+        fresh = offset_recovery.OffsetRecovery(hass_at(tmp_path), owner)
         api = make_session([SelectionClient()])
         await api.async_connect()
-        lease = await sessions.async_acquire_calibration(MAC)
+        uploads = builder.calls.count("upload")
+        lease = await owner.async_acquire_calibration(MAC)
         try:
             record = await fresh.async_load(lease)
             assert not fresh.is_finalization_ready(record)
-            with pytest.raises(ValueError):
-                await fresh.async_reconcile_finalization(
+            if record.final_installed and not record.final_cancelled:
+                reconciled = await fresh.async_reconcile_finalization(
                     lease,
                     final,
                     api,
                     source_reader=lambda: builder.async_get_config("meter.yaml"),
                     timeout=0.01,
                 )
-            plan = fresh.build_finalization_plan(record, source)
-            assert plan.proposed_content == source.content
-            replacement = await fresh.async_review_finalization(
-                lease, record, source, plan, "e" * 32, 1
-            )
+                assert reconciled.configuration_selected
+                assert fresh.is_finalization_ready(reconciled)
+                assert builder.calls.count("upload") == uploads
+            else:
+                with pytest.raises(ValueError):
+                    await fresh.async_reconcile_finalization(
+                        lease,
+                        final,
+                        api,
+                        source_reader=lambda: builder.async_get_config("meter.yaml"),
+                        timeout=0.01,
+                    )
         finally:
             lease.release()
-        manager = ConfigTransactionManager(
-            builder, manager._verifier, Persistence(), sessions, offset_recovery=fresh
-        )
-        review = await manager.async_preview(
-            MAC, _topology(), plan, source, offset_finalization=replacement
+        await api.async_shutdown()
+
+    asyncio.run(run())
+
+
+def test_fresh_verifier_can_renew_matching_durable_final_receipt(tmp_path):
+    from custom_components.circuitsetup_energy_meter_helper import offset_recovery
+    from tests.test_offset_recovery import hass_at
+
+    async def run():
+        sessions, _recovery, _builder, manager, review, final = await finalization_case(
+            tmp_path
         )
         await manager.async_confirm_write(review.transaction_id, "admin")
         await manager.async_compile(review.transaction_id)
-        assert (
-            await manager.async_confirm_install(review.transaction_id, "admin")
-        ).state.value == "verified"
-        lease = await sessions.async_acquire_calibration(MAC)
+        assert (await manager.async_confirm_install(review.transaction_id, "admin")).state.value == "verified"
+
+        fresh = offset_recovery.OffsetRecovery(hass_at(tmp_path), sessions)
+        lease = await sessions.async_acquire_config(MAC)
         try:
-            assert (
-                await fresh.async_reconcile_finalization(
-                    lease,
-                    replacement,
-                    api,
-                    source_reader=lambda: builder.async_get_config("meter.yaml"),
-                    timeout=0.01,
-                )
-            ).configuration_selected
+            await fresh.async_mark_final_installed(lease, final)
+            assert fresh.is_finalization_ready(await fresh.async_load(lease))
         finally:
             lease.release()
-            await api.async_shutdown()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("upload_outcome", (None, "lost", "cancel"))
+def test_finalization_checkpoint_recovers_metadata_retry_without_reupload(
+    tmp_path, upload_outcome
+):
+    from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
+        ConfigTransactionManager,
+        ConfigTransactionState,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.offset_recovery import (
+        OffsetRecovery,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.session_manager import (
+        SessionManager,
+    )
+    from tests.test_config_transaction import Job
+    from tests.test_offset_recovery import hass_at
+
+    async def run():
+        store = await current_store()
+        sessions, _recovery, builder, manager, review, final = await finalization_case(
+            tmp_path, store=store
+        )
+        save_checkpoint = store.async_save_install_recovery
+
+        async def fail_checkpoint_clear(mac, transaction_id, checkpoint):
+            if checkpoint is None:
+                raise OSError("checkpoint clear failed")
+            await save_checkpoint(mac, transaction_id, checkpoint)
+
+        store.async_save_install_recovery = fail_checkpoint_clear
+        if upload_outcome == "lost":
+            builder.upload = ConnectionError("upload acknowledgement lost")
+        elif upload_outcome == "cancel":
+            builder.upload = asyncio.CancelledError()
+        await manager.async_confirm_write(review.transaction_id, "admin")
+        await manager.async_compile(review.transaction_id)
+        if upload_outcome == "cancel":
+            with pytest.raises(asyncio.CancelledError):
+                await manager.async_confirm_install(review.transaction_id, "admin")
+            status = manager.active_status(MAC)
+        else:
+            status = await manager.async_confirm_install(review.transaction_id, "admin")
+        assert status is not None
+        assert status.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        uploads, writes = builder.calls.count("upload"), builder.calls.count("write")
+        await sessions.async_unload()
+        owner = SessionManager()
+        fresh = OffsetRecovery(hass_at(tmp_path), owner)
+        manager = ConfigTransactionManager(
+            builder, manager._verifier, store, owner, offset_recovery=fresh
+        )
+        status = await manager.async_recover_install(MAC)
+        assert status is not None
+        builder.upload = Job(True)
+        status = await manager.async_confirm_install(status.transaction_id, "admin")
+        assert status.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        transaction = owner._get_transaction(status.transaction_id)
+        assert transaction.lease is not None
+        assert (await fresh.async_load(transaction.lease)).final_installed
+
+        store.async_save_install_recovery = save_checkpoint
+        await owner.async_unload()
+        owner = SessionManager()
+        fresh = OffsetRecovery(hass_at(tmp_path), owner)
+        manager = ConfigTransactionManager(
+            builder, manager._verifier, store, owner, offset_recovery=fresh
+        )
+        status = await manager.async_recover_install(MAC)
+        assert status is not None
+        status = await manager.async_confirm_install(status.transaction_id, "admin")
+        assert status.state is ConfigTransactionState.VERIFIED
+        assert builder.calls.count("upload") == uploads
+        assert builder.calls.count("write") == writes
+        assert await manager.async_recover_install(MAC) is None
+        lease = await owner.async_acquire_calibration(MAC)
+        try:
+            record = await fresh.async_load(lease)
+            assert record.finalization == final and record.final_installed
+        finally:
+            lease.release()
 
     asyncio.run(run())
 
