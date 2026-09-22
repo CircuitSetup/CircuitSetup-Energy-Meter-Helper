@@ -720,6 +720,41 @@ def test_verified_meter_configuration_compare_and_swap_updates_record_and_metada
     asyncio.run(run())
 
 
+def test_verified_meter_configuration_reconciliation_replaces_stale_topology() -> None:
+    async def run() -> None:
+        backend = _CopyingStorage()
+        store = object.__new__(HelperStore)
+        store._store = backend  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        await store.async_save_meter(_record())
+        await store.async_save_verified_meter_configuration(
+            MAC, CONFIG_HASH, _configuration()
+        )
+        backend.data["meters"][MAC]["topology"].update(  # type: ignore[index]
+            addon_count=5,
+            board_count=6,
+            ct_count=36,
+            group_count=12,
+            project_name="circuitsetup.6c-energy-meter-5-addons",
+        )
+        fingerprint = await store.async_get_meter_record_fingerprint(MAC)
+        proposed = replace(_configuration(), config_sha256=PROPOSED_HASH)
+
+        await store.async_save_verified_meter_configuration(
+            MAC,
+            CONFIG_HASH,
+            proposed,
+            _record(),
+            expected_record_fingerprint=fingerprint,
+        )
+
+        raw = backend.data["meters"][MAC]  # type: ignore[index]
+        assert raw["topology"]["ct_count"] == 6  # type: ignore[index]
+        assert await store.async_get_meter_configuration(MAC) == proposed
+
+    asyncio.run(run())
+
+
 def test_verified_meter_configuration_retries_after_uncertain_save() -> None:
     class UncertainStorage(_CopyingStorage):
         fail_after_commit = False

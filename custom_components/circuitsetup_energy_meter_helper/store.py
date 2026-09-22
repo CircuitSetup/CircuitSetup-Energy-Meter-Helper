@@ -1561,10 +1561,13 @@ class HelperStore:
                         or raw_meter.get("config_filename") != record.config_filename
                     ):
                         raise ValueError("current meter record does not match the source")
-                    # Bridge only the local candidate's source identity. The shared
-                    # validator still checks trusted topology and NEW full metadata;
-                    # stale stored semantics are never saved as current.
-                    raw_meter = {**raw_meter, "config_sha256": expected_source_sha256}
+                    _current_topology(raw_meter)
+                    preserved = {
+                        key: deepcopy(raw_meter[key])
+                        for key in ("interrupted_session", "verified_calibration")
+                        if key in raw_meter
+                    }
+                    raw_meter = {**serialize_meter_record(record), **preserved}
             meters[mac] = _verified_meter_record(
                 mac,
                 expected_source_sha256,
