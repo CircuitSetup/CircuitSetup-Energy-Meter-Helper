@@ -122,7 +122,7 @@ def device_builder_status(
         return DeviceBuilderStatus(None, None)
     configured_name = getattr(entry, "data", {}).get("device_name")
     entry_data = getattr(entry, "data", {})
-    entry_mac = _mac_key(entry_data.get("unique_id"))
+    entry_mac = _mac_key(getattr(entry, "unique_id", None))
     entry_host = entry_data.get("host")
     configuration_name = (
         f"{configured_name}.yaml"
@@ -139,21 +139,34 @@ def device_builder_status(
     if strict and not (names or entry_mac or isinstance(entry_host, str)):
         return DeviceBuilderStatus(None, None)
 
+    def item_macs(item: Mapping[str, Any]) -> tuple[str, ...]:
+        return tuple(
+            mac
+            for key in ("mac_address", "ethernet_mac", "bluetooth_mac")
+            if (mac := _mac_key(item.get(key))) is not None
+        )
+
+    has_mac_match = bool(entry_mac) and any(
+        entry_mac in item_macs(item)
+        for section in ("configured", "importable")
+        for item in listing.get(section, ())
+        if isinstance(item, Mapping)
+    )
+
     def matches(items: Any) -> list[Mapping[str, Any]]:
+        candidates = [item for item in items if isinstance(item, Mapping)]
+        if entry_mac:
+            mac_matches = [item for item in candidates if entry_mac in item_macs(item)]
+            if has_mac_match:
+                return mac_matches
+            candidates = [item for item in candidates if not item_macs(item)]
+
         matched: list[Mapping[str, Any]] = []
-        for item in items:
-            if not isinstance(item, Mapping):
-                continue
+        for item in candidates:
             if not names and not entry_mac and not isinstance(entry_host, str):
                 matched.append(item)
                 continue
             if item.get("name") in names or item.get("configuration") == configuration_name:
-                matched.append(item)
-                continue
-            if entry_mac and any(
-                _mac_key(item.get(key)) == entry_mac
-                for key in ("mac_address", "ethernet_mac", "bluetooth_mac")
-            ):
                 matched.append(item)
                 continue
             if isinstance(entry_host, str) and entry_host in {

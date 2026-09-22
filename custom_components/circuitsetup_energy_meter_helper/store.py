@@ -1418,7 +1418,7 @@ class HelperStore:
             except KeyError, TypeError, ValueError:
                 return False
             if current_hash == proposed_sha256:
-                await self._store.async_save(data)
+                await self._store.async_save_verified(data)
                 return True
             updated = deepcopy(raw)
             updated["config_sha256"] = proposed_sha256
@@ -1430,7 +1430,7 @@ class HelperStore:
                     item["config_sha256"] = proposed_sha256
             if updated != raw:
                 data["meters"][mac] = updated
-                await self._store.async_save(data)
+                await self._store.async_save_verified(data)
             return True
 
     async def async_save_verified_ct_selections(
@@ -1449,7 +1449,7 @@ class HelperStore:
             calibration = meter.get("verified_calibration")
             if isinstance(calibration, dict) and calibration.get("source_handoff_firmware_installed"):
                 meter.pop("verified_calibration")
-            await self._store.async_save(data)
+            await self._store.async_save_verified(data)
 
     async def async_get_ct_selections(self, mac: str) -> tuple[StoredCTSelection, ...]:
         """Load only the safe persisted model selections for one meter."""
@@ -1579,7 +1579,7 @@ class HelperStore:
             calibration = meters[mac].get("verified_calibration")
             if isinstance(calibration, dict) and calibration.get("source_handoff_firmware_installed"):
                 meters[mac].pop("verified_calibration")
-            await self._store.async_save(data)
+            await self._store.async_save_verified(data)
 
     async def async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
         self,
@@ -1627,7 +1627,7 @@ class HelperStore:
                     )
                 except ValueError:
                     return False
-                await self._store.async_save(data)
+                await self._store.async_save_verified(data)
                 return True
             if current_hash != expected_source_sha256:
                 return False
@@ -1645,7 +1645,7 @@ class HelperStore:
                 "source_handoff_firmware_installed"
             ] = True
             meters[mac] = raw_meter
-            await self._store.async_save(data)
+            await self._store.async_save_verified(data)
             return True
 
     async def async_save_verified_ct_selections_and_mark_verified_calibration_installed(
@@ -1704,7 +1704,7 @@ class HelperStore:
                     or "meter_configuration" in raw_meter
                 ):
                     return False
-                await self._store.async_save(data)
+                await self._store.async_save_verified(data)
                 return True
             if current_hash != expected_source_sha256:
                 return False
@@ -1712,7 +1712,7 @@ class HelperStore:
             raw_meter["ct_selections"] = serialized_selections
             raw_meter.pop("meter_configuration", None)
             raw_calibration["source_handoff_firmware_installed"] = True
-            await self._store.async_save(data)
+            await self._store.async_save_verified(data)
             return True
 
     async def async_save_interrupted_session(
@@ -1726,7 +1726,7 @@ class HelperStore:
             meter["interrupted_session"] = (
                 _serialize_interrupted_session(marker) if marker is not None else None
             )
-            await self._store.async_save(data)
+            await self._store.async_save_verified(data)
 
     async def async_get_interrupted_session(
         self, mac: str
@@ -1761,7 +1761,7 @@ class HelperStore:
             meters = data.setdefault("meters", {})
             meter = meters.setdefault(record.mac, {})
             meter["verified_calibration"] = _serialize_verified_calibration(record)
-            await self._store.async_save(data)
+            await self._store.async_save_verified(data)
 
     async def async_finalize_verified_calibration(
         self, record: VerifiedCalibrationRecord
@@ -1772,7 +1772,7 @@ class HelperStore:
             meter = data.setdefault("meters", {}).setdefault(record.mac, {})
             meter["interrupted_session"] = None
             meter["verified_calibration"] = _serialize_verified_calibration(record)
-            await self._store.async_save(data)
+            await self._store.async_save_verified(data)
 
     async def async_get_verified_calibration(
         self, mac: str
@@ -1832,7 +1832,7 @@ class HelperStore:
             raw["source_handoff_available"] = False
             raw["source_handoff_transaction_id"] = transaction_id
             raw["source_handoff_firmware_installed"] = False
-            await self._store.async_save(data)
+            await self._store.async_save_verified(data)
             return True
 
     async def async_revalidate_verified_calibration(
@@ -1873,7 +1873,7 @@ class HelperStore:
             raw["source_handoff_available"] = not record.has_offset_calibration
             raw["source_handoff_transaction_id"] = None
             raw["source_handoff_firmware_installed"] = False
-            await self._store.async_save(data)
+            await self._store.async_save_verified(data)
             return True
 
     async def async_mark_verified_calibration_installed(
@@ -1895,7 +1895,7 @@ class HelperStore:
             ):
                 return False
             raw["source_handoff_firmware_installed"] = True
-            await self._store.async_save(data)
+            await self._store.async_save_verified(data)
             return True
 
     async def async_complete_verified_calibration_handoff(
@@ -1918,5 +1918,5 @@ class HelperStore:
             ):
                 return False
             raw["source_authority"] = CalibrationSourceAuthority.CONFIGURATION.value
-            await self._store.async_save(data)
+            await self._store.async_save_verified(data)
             return True

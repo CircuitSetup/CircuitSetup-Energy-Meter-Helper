@@ -46,6 +46,7 @@ class FakeEntry:
     runtime_data: FakeRuntimeData
     domain: str = "esphome"
     data: dict[str, str] = field(default_factory=dict)
+    unique_id: str | None = None
 
 
 @dataclass
@@ -448,14 +449,15 @@ def test_device_builder_status_keeps_hostname_match_when_runtime_name_is_friendl
     assert status.friendly_name == "CircuitSetup Energy Meter 12x"
 
 
-def test_device_builder_status_matches_renamed_entry_by_mac() -> None:
+def test_device_builder_status_matches_renamed_entry_by_canonical_mac() -> None:
     entry = FakeEntry(
         "meter",
         "Old title",
         FakeRuntimeData(
             FakeDeviceInfo("circuitsetup.6c-energy-meter", name="old-hostname")
         ),
-        data={"device_name": "old-hostname", "unique_id": "58:2a:bd:6f:94:c0"},
+        data={"device_name": "old-hostname", "host": "192.0.2.10"},
+        unique_id="58:2a:bd:6f:94:c0",
     )
 
     status = device_builder_status(
@@ -463,9 +465,16 @@ def test_device_builder_status_matches_renamed_entry_by_mac() -> None:
         {
             "configured": [
                 {
+                    "name": "foreign-meter",
+                    "configuration": "foreign.yaml",
+                    "ip": "192.0.2.10",
+                    "mac_address": "58:2A:BD:6F:94:C1",
+                },
+                {
                     "name": "energy-meter-6f94c0",
                     "configuration": "energy-meter-6f94c0.yaml",
                     "mac_address": "58:2A:BD:6F:94:C0",
+                    "ip": "192.0.2.20",
                 }
             ],
             "importable": [],
@@ -473,6 +482,119 @@ def test_device_builder_status_matches_renamed_entry_by_mac() -> None:
     )
 
     assert status.configuration == "energy-meter-6f94c0.yaml"
+
+
+def test_device_builder_status_rejects_same_name_with_conflicting_mac() -> None:
+    entry = FakeEntry(
+        "meter",
+        "Old title",
+        FakeRuntimeData(
+            FakeDeviceInfo("circuitsetup.6c-energy-meter", name="old-hostname")
+        ),
+        data={"device_name": "old-hostname", "host": "192.0.2.10"},
+        unique_id="58:2a:bd:6f:94:c0",
+    )
+
+    status = device_builder_status(
+        entry,
+        {
+            "configured": [
+                {
+                    "name": "old-hostname",
+                    "configuration": "foreign.yaml",
+                    "mac_address": "58:2A:BD:6F:94:C1",
+                }
+            ],
+            "importable": [],
+        },
+    )
+
+    assert status.configuration is None
+    assert status.importable is False
+
+
+def test_device_builder_status_does_not_fallback_when_importable_mac_matches() -> None:
+    entry = FakeEntry(
+        "meter",
+        "Old title",
+        FakeRuntimeData(
+            FakeDeviceInfo("circuitsetup.6c-energy-meter", name="old-hostname")
+        ),
+        data={"device_name": "old-hostname", "host": "192.0.2.10"},
+        unique_id="58:2a:bd:6f:94:c0",
+    )
+
+    status = device_builder_status(
+        entry,
+        {
+            "configured": [
+                {
+                    "name": "foreign-meter",
+                    "configuration": "foreign.yaml",
+                    "ip": "192.0.2.10",
+                }
+            ],
+            "importable": [
+                {
+                    "name": "energy-meter-6f94c0",
+                    "mac_address": "58:2A:BD:6F:94:C0",
+                    "package_import_url": "https://example.invalid/package.yaml",
+                }
+            ],
+        },
+    )
+
+    assert status.configuration is None
+    assert status.importable is True
+
+
+def test_device_builder_status_uses_name_fallback_without_mac_evidence() -> None:
+    entry = FakeEntry(
+        "meter",
+        "Old title",
+        FakeRuntimeData(
+            FakeDeviceInfo("circuitsetup.6c-energy-meter", name="old-hostname")
+        ),
+        data={"device_name": "old-hostname"},
+        unique_id="58:2a:bd:6f:94:c0",
+    )
+
+    status = device_builder_status(
+        entry,
+        {
+            "configured": [
+                {"name": "old-hostname", "configuration": "old-hostname.yaml"}
+            ],
+            "importable": [],
+        },
+    )
+
+    assert status.configuration == "old-hostname.yaml"
+
+
+def test_device_builder_status_keeps_macless_name_matches_ambiguous() -> None:
+    entry = FakeEntry(
+        "meter",
+        "Old title",
+        FakeRuntimeData(
+            FakeDeviceInfo("circuitsetup.6c-energy-meter", name="old-hostname")
+        ),
+        data={"device_name": "old-hostname"},
+        unique_id="58:2a:bd:6f:94:c0",
+    )
+
+    status = device_builder_status(
+        entry,
+        {
+            "configured": [
+                {"name": "old-hostname", "configuration": "first.yaml"},
+                {"name": "old-hostname", "configuration": "second.yaml"},
+            ],
+            "importable": [],
+        },
+    )
+
+    assert status.configuration is None
 
 
 def test_rescan_uses_current_runtime_name_for_display() -> None:

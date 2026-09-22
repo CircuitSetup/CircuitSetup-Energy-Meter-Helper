@@ -733,6 +733,79 @@ def test_new_upload_revokes_previous_flash_clear_authority_before_side_effects(f
     asyncio.run(run())
 
 
+def test_real_store_swallowed_post_upload_failure_retries_without_reupload(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lost receipt stays retryable and cannot report a verified install."""
+    from types import SimpleNamespace
+
+    from homeassistant.core import CoreState
+    from homeassistant.util.file import WriteError
+
+    from custom_components.circuitsetup_energy_meter_helper.store import (
+        HelperStore,
+        VerifiedCalibrationRecord,
+        VerifiedGainGroup,
+    )
+    from tests.test_store import _record
+
+    async def run() -> None:
+        async def executor(function, *args):
+            return await asyncio.to_thread(function, *args)
+
+        hass = SimpleNamespace(
+            data={}, state=CoreState.running, loop=asyncio.get_running_loop(),
+            config=SimpleNamespace(
+                config_dir=str(tmp_path),
+                path=lambda *parts: str(tmp_path.joinpath(*parts)),
+            ),
+            async_add_executor_job=executor,
+            bus=SimpleNamespace(async_listen_once=lambda *_args: lambda: None),
+        )
+        store = HelperStore(hass)
+        await store.async_save_meter(_record(_source().sha256))
+        record = VerifiedCalibrationRecord(
+            "aabbccddeeff", "meter.yaml", _source().sha256, 0,
+            _topology().project_name, "wifi", "standard", 1,
+            (VerifiedGainGroup("meter_main1", ((7301, 28001),) * 3),),
+            "1" * 32, source_handoff_available=True,
+        )
+        await store.async_save_verified_calibration(record)
+        write = store._store._async_write_data
+
+        async def failed_write(_data):
+            raise WriteError("disk full")
+
+        class UploadBuilder(Builder):
+            async def async_upload(self, configuration, progress=None):
+                result = await super().async_upload(configuration, progress)
+                monkeypatch.setattr(store._store, "_async_write_data", failed_write)
+                return result
+
+        builder = UploadBuilder()
+        manager = _manager(builder, store)  # type: ignore[arg-type]
+        preview = await _preview(manager)
+        transaction = manager._transaction(preview.transaction_id)
+        transaction.verification_id = record.verification_id
+        transaction.reservation_claimed = True
+        assert await store.async_claim_verified_calibration(
+            record.mac, record.verification_id, preview.transaction_id
+        )
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        first = await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert first.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        persisted = await store.async_get_verified_calibration(record.mac)
+        assert persisted is not None and not persisted.source_handoff_firmware_installed
+        monkeypatch.setattr(store._store, "_async_write_data", write)
+        retry = await manager.async_confirm_install(preview.transaction_id, "admin")
+        assert retry.state is ConfigTransactionState.VERIFIED
+        assert builder.calls.count("upload") == 1
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("external_change", (False, True))
 def test_receipt_revocation_advances_only_its_own_stale_metadata_fingerprint(external_change: bool) -> None:
     from custom_components.circuitsetup_energy_meter_helper.store import (
