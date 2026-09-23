@@ -294,6 +294,7 @@ function session(value: unknown, label: string): SessionStatus {
   const preflight = record(item.preflight, label); array(preflight.issues, label).forEach((entry) => { const issue = record(entry, label); enumeration(issue.code, PREFLIGHT_CODES, label); string(issue.role, label); string(issue.detail, label); }); array(preflight.zeroed_roles, label).forEach((entry) => string(entry, label));
   if (item.entity_role_counts !== undefined) Object.values(record(item.entity_role_counts, label)).forEach((count) => { if (integer(count, label) < 0) throw new Error(`${label} response is invalid`); });
   if (item.calibration_sources !== undefined) Object.values(record(item.calibration_sources, label)).forEach((source) => enumeration(source, new Set(["flash", "configuration", "unknown"]), label));
+  if (item.configured_offset_values_present !== undefined) boolean(item.configured_offset_values_present, label);
   const offsetFields = [item.offset_capability, item.offset_disposition, item.offset_boards, item.has_pending_calibration];
   if (offsetFields.every((field) => field === undefined)) return value as SessionStatus;
   if (offsetFields.some((field) => field === undefined)) throw new Error(`${label} response is invalid`);

@@ -86,6 +86,29 @@ def test_noop_preserves_every_byte() -> None:
     assert "wifi_password" not in repr(doc)
 
 
+def test_detects_nonzero_configured_offsets_outside_comments_and_block_scalars() -> None:
+    document = ESPHomeConfigDocument.parse(
+        """sensor:
+  - platform: atm90e32
+    phase_a:
+      offset_voltage: -928
+      offset_current: 0
+    phase_b:
+      offset_active_power: ${power_offset}
+# offset_reactive_power: 17
+text_sensor:
+  - platform: template
+    lambda: |-
+      offset_reactive_power: 8
+"""
+    )
+
+    assert document.configured_offset_fields == (
+        "offset_active_power",
+        "offset_voltage",
+    )
+
+
 def test_extracts_bounded_meter_substitutions_and_managed_blocks() -> None:
     content = fixture("meter_configuration.yaml").replace("\n", "\r\n")
     doc = ESPHomeConfigDocument.parse(content)

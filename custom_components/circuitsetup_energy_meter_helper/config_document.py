@@ -14,6 +14,9 @@ METER_ID_RE = re.compile(r"^(?:main_meter_id[12]|addon[1-6]_id[12])$")
 METER_SETTING_RE = re.compile(
     r"^(?:friendly_name|update_time|electric_freq|csemh_config_contract)$"
 )
+OFFSET_FIELD_KEYS = frozenset(
+    ("offset_voltage", "offset_current", "offset_active_power", "offset_reactive_power")
+)
 _KEY_TOKEN_RE = r'''(?:<<|[\w-]+|'(?:[^']|'')*'|"(?:[^"\\]|\\.)*")'''
 _MAPPING_RE = re.compile(
     rf"^(?P<indent> *)(?P<key>{_KEY_TOKEN_RE})[ \t]*:(?P<rest>(?:[ \t].*)?)$"
@@ -141,6 +144,7 @@ class ESPHomeConfigDocument:
     writable_sensor_span: SourceSpan | None
     sensor_item_indent: int | None
     code_lines: tuple[str, ...] = field(repr=False)
+    configured_offset_fields: tuple[str, ...] = ()
 
     @classmethod
     def parse(cls, content: str) -> ESPHomeConfigDocument:
@@ -208,7 +212,23 @@ class _DocumentParser:
                 "" if index in self._block_scalar_lines else self._without_comment(body)
                 for index, body in enumerate(self._bodies)
             ),
+            configured_offset_fields=self._configured_offset_fields(),
         )
+
+    def _configured_offset_fields(self) -> tuple[str, ...]:
+        fields: set[str] = set()
+        for index in range(len(self.lines)):
+            mapping = self._mapping(index) or self._sequence_mapping(index)
+            if mapping is None or mapping.key not in OFFSET_FIELD_KEYS:
+                continue
+            value = self._scalar(index, mapping).value
+            try:
+                is_zero = int(value, 0) == 0
+            except ValueError:
+                is_zero = value in {"0", "+0", "-0"}
+            if not is_zero:
+                fields.add(mapping.key)
+        return tuple(sorted(fields))
 
     def _writable_sensor_section(self) -> tuple[SourceSpan, int] | None:
         roots: list[tuple[int, _Mapping]] = []

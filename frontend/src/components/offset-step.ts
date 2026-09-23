@@ -35,11 +35,13 @@ export function offsetStep(
   const stageState = boards[board]?.stages[stage - 1]?.state ?? "not_started";
   const recovery = Boolean(result?.retry_allowed) || stageState === "partial" || stageState === "indeterminate";
   const unavailable = capability?.status !== "available";
+  const configuredOffsets = session?.configured_offset_values_present === true;
   const keys = groupKeys(board);
   const tableByGroup = new Map(result?.expected_tables ?? []);
 
   return html`
     <section class="step-content offset-step" aria-labelledby="step-heading">
+      ${configuredOffsets ? html`<p class="warning-band" data-offset-config-warning><strong>Existing offset values in the config file must be removed before re-running calibration.</strong></p>` : nothing}
       ${unavailable ? html`
         <div class="warning-band" role="status">
           <strong>Offset calibration is ${capability?.status === "invalid" ? "not safely available" : "not available on this firmware"}.</strong>
@@ -82,7 +84,7 @@ export function offsetStep(
               ${busy ? "Checking measured readiness…" : "Check measured readiness"}
             </button>
             <button class="primary" data-action="calibrate-offset"
-              ?disabled=${busy || !acknowledged || !readiness?.ready || stageState === "completed" || recovery && !retryConfirmed}
+              ?disabled=${busy || configuredOffsets || !acknowledged || !readiness?.ready || stageState === "completed" || recovery && !retryConfirmed}
               @click=${calibrate}>${result?.retry_allowed ? "Retry unfinished chip" : `Run Stage ${stage} calibration`}</button>
           </div>
           ${readiness ? html`

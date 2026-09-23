@@ -1575,15 +1575,35 @@ describe("CircuitSetup panel", () => {
       preflight: { issues: [], zeroed_roles: [] }, entity_role_counts: {},
       offset_capability: { status: "invalid", repair_reason: "duplicate run control" }, offset_disposition: "not_started",
       offset_boards: [{ board_index: 0, stages: [{ stage: 1, state: "not_started" }, { stage: 2, state: "not_started" }] }],
-      has_pending_calibration: false };
+      has_pending_calibration: false, configured_offset_values_present: true };
 
     panel.showState("offset" as never);
     await panel.updateComplete;
 
     expect(text(panel)).toContain("duplicate run control");
+    expect(panel.shadowRoot?.querySelector("[data-offset-config-warning] strong")).not.toBeNull();
     expect(panel.shadowRoot?.querySelector("[data-action='check-offset']")).toBeNull();
     expect(panel.shadowRoot?.querySelector("[data-action='calibrate-offset']")).toBeNull();
     expect(panel.shadowRoot?.querySelector("[data-action='skip-offset']")).not.toBeNull();
+  });
+
+  it("warns in bold and blocks a rerun when config offsets exist", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const state = panel as unknown as Record<string, unknown>;
+    state.topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name, evidence: [] };
+    state.session = { session_id: "session", device_id: "meter-1", state: "ready", safety_acknowledged: true,
+      preflight: { issues: [], zeroed_roles: [] }, entity_role_counts: {},
+      offset_capability: { status: "available", repair_reason: null }, offset_disposition: "not_started",
+      offset_boards: [{ board_index: 0, stages: [{ stage: 1, state: "not_started" }, { stage: 2, state: "not_started" }] }],
+      has_pending_calibration: false, configured_offset_values_present: true };
+
+    panel.showState("offset" as never);
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector("[data-offset-config-warning] strong")?.textContent)
+      .toContain("offset values in the config file must be removed before re-running calibration");
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action='calibrate-offset']")?.disabled).toBe(true);
   });
 
   it("runs measured readiness and requires confirmation before retrying an unfinished chip", async () => {

@@ -1387,7 +1387,7 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private async calibrateOffset(): Promise<void> {
-    if (!this.api || !this.session || this.offsetBusy) return;
+    if (!this.api || !this.session || this.offsetBusy || this.session.configured_offset_values_present) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
     const board = this.board; const stage = this.offsetStage; const key = this.offsetKey(board, stage);
     const prior = this.offsetResultByTarget.get(key);

@@ -325,6 +325,7 @@ export interface SessionStatus {
   offset_disposition?: "not_started" | "in_progress" | "completed" | "skipped" | "partial";
   offset_boards?: OffsetBoardStatus[];
   has_pending_calibration?: boolean;
+  configured_offset_values_present?: boolean;
 }
 
 export type OffsetStageState = "not_started" | "in_progress" | "completed" | "skipped" | "partial" | "indeterminate";

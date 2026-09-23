@@ -854,6 +854,33 @@ def test_offset_calibration_requires_literal_physical_preparation_acknowledgemen
     asyncio.run(run())
 
 
+def test_offset_calibration_rejects_existing_config_offsets_before_dispatch() -> None:
+    async def run() -> None:
+        workflow, handle, _sessions, _api = _workflow()
+        content = "sensor:\n  - platform: atm90e32\n    phase_a:\n      offset_voltage: -928\n"
+        digest = sha256(content.encode()).hexdigest()
+
+        class Builder:
+            async def async_get_config(self, configuration: str) -> ESPHomeConfigSnapshot:
+                return ESPHomeConfigSnapshot(configuration, content, digest)
+
+            async def async_close(self) -> None:
+                return None
+
+        handle.configuration = "meter.yaml"
+        handle.configuration_sha256 = digest
+        workflow._builder = Builder()  # type: ignore[assignment]
+
+        with pytest.raises(WorkflowHandleError, match="offset values.*removed"):
+            await workflow.async_calibrate_offset(handle.session_id, 0, 1, True)
+
+        assert handle.offset_active is None
+        assert handle.offset_results == {}
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
 def test_offset_readiness_uses_owned_binding_and_rejects_stale_generation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

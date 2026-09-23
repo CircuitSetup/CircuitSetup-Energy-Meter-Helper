@@ -149,6 +149,7 @@ class SessionStatus:
     offset_disposition: str = "not_started"
     offset_boards: tuple[dict[str, Any], ...] = ()
     has_pending_calibration: bool = False
+    configured_offset_values_present: bool = False
 
 
 @dataclass(slots=True)
@@ -177,6 +178,7 @@ class _SessionHandle:
     pending_reporting_multipliers: dict[int, float] = field(default_factory=dict)
     meter_configuration: MeterConfigurationRequest | None = None
     configuration_sha256: str | None = None
+    configured_offset_values_present: bool = False
     timing_policy: CalibrationTimingPolicy = field(
         default_factory=lambda: CalibrationTimingPolicy(5, 3)
     )
@@ -234,6 +236,7 @@ class _SessionHandle:
             },
             disposition,
             boards,
+            configured_offset_values_present=self.configured_offset_values_present,
         )
 
     def _offset_stage_state(self, board_index: int, stage: int) -> str:
@@ -844,6 +847,9 @@ class EntryWorkflow:
             state="safety_required" if preflight.ok else "preflight_failed",
             meter_configuration=meter_configuration,
             configuration_sha256=(snapshot.sha256 if snapshot is not None else None),
+            configured_offset_values_present=(
+                bool(document.configured_offset_fields) if snapshot is not None else False
+            ),
             timing_policy=CalibrationTimingPolicy(
                 (
                     meter_configuration.meter.update_interval_s
@@ -992,6 +998,19 @@ class EntryWorkflow:
             self._validate_offset_target(handle, board_index, stage)
             if handle.offset_skipped:
                 raise WorkflowHandleError("offset calibration is already finalized")
+            if handle.configuration is not None:
+                snapshot = await self._require_builder().async_get_config(
+                    handle.configuration
+                )
+                if (
+                    sha256(snapshot.content.encode()).hexdigest() != snapshot.sha256
+                    or snapshot.sha256 != handle.configuration_sha256
+                ):
+                    raise WorkflowHandleError("calibration configuration is stale")
+                if ESPHomeConfigDocument.parse(snapshot.content).configured_offset_fields:
+                    raise WorkflowHandleError(
+                        "Config offset values must be removed before re-running calibration"
+                    )
             handle.offset_active = (board_index, stage)
             active = True
             self._publish(handle)
