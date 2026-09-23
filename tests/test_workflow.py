@@ -2251,6 +2251,99 @@ def test_offset_calibration_requires_literal_physical_preparation_acknowledgemen
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(
+    ("field", "blocked_stage", "allowed_stage"),
+    (("offset_voltage", 1, 2), ("offset_reactive_power", 2, 1)),
+)
+def test_offset_calibration_blocks_only_the_configured_stage(
+    field: str, blocked_stage: int, allowed_stage: int
+) -> None:
+    async def run() -> None:
+        workflow, handle, _sessions, _api = _workflow()
+        content = f"sensor:\n  - platform: atm90e32\n    phase_a:\n      {field}: -928\n"
+        digest = sha256(content.encode()).hexdigest()
+        calls: list[int] = []
+
+        class Builder:
+            async def async_get_config(self, configuration: str) -> ESPHomeConfigSnapshot:
+                return ESPHomeConfigSnapshot(configuration, content, digest)
+
+            async def async_close(self) -> None:
+                return None
+
+        handle.configuration = "meter.yaml"
+        handle.configuration_sha256 = digest
+        workflow._builder = Builder()  # type: ignore[assignment]
+
+        class Calibration:
+            async def async_calibrate_offset_board(
+                self, _mac: str, _api: Any, _binding: Any, _board: int, stage: int,
+                **_kwargs: Any,
+            ) -> OffsetCalibrationResult:
+                calls.append(stage)
+                return OffsetCalibrationResult(
+                    OffsetCalibrationState.APPLIED_PENDING_RESTART_VERIFICATION,
+                    0, stage, (), (), False,
+                )
+
+        workflow._calibration = Calibration()  # type: ignore[assignment]
+
+        with pytest.raises(WorkflowHandleError, match="offset values.*removed"):
+            await workflow.async_calibrate_offset(handle.session_id, 0, blocked_stage, True)
+
+        assert handle.offset_active is None
+        assert handle.offset_results == {}
+        await workflow.async_calibrate_offset(handle.session_id, 0, allowed_stage, True)
+        assert calls == [allowed_stage]
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_offset_calibration_allows_an_unconfigured_board() -> None:
+    async def run() -> None:
+        workflow, handle, _sessions, _api = _workflow()
+        handle.topology = topology_from_native("circuitsetup.6c-energy-meter-1-addon")
+        handle.binding.topology = handle.topology
+        content = (
+            "sensor:\n  - id: !extend meter_main1\n    phase_a:\n"
+            "      offset_voltage: -928\n"
+        )
+        digest = sha256(content.encode()).hexdigest()
+        calls: list[int] = []
+
+        class Builder:
+            async def async_get_config(self, configuration: str) -> ESPHomeConfigSnapshot:
+                return ESPHomeConfigSnapshot(configuration, content, digest)
+
+            async def async_close(self) -> None:
+                return None
+
+        class Calibration:
+            async def async_calibrate_offset_board(
+                self, _mac: str, _api: Any, _binding: Any, board: int, stage: int,
+                **_kwargs: Any,
+            ) -> OffsetCalibrationResult:
+                calls.append(board)
+                return OffsetCalibrationResult(
+                    OffsetCalibrationState.APPLIED_PENDING_RESTART_VERIFICATION,
+                    board, stage, (), (), False,
+                )
+
+        handle.configuration = "meter.yaml"
+        handle.configuration_sha256 = digest
+        workflow._builder = Builder()  # type: ignore[assignment]
+        workflow._calibration = Calibration()  # type: ignore[assignment]
+
+        with pytest.raises(WorkflowHandleError, match="offset values.*removed"):
+            await workflow.async_calibrate_offset(handle.session_id, 0, 1, True)
+        await workflow.async_calibrate_offset(handle.session_id, 1, 1, True)
+        assert calls == [1]
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
 def test_offset_readiness_uses_owned_binding_and_rejects_stale_generation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2348,6 +2441,7 @@ def test_one_offset_call_maps_one_board_stage_and_status_retains_result() -> Non
                 {
                     "confirm_retry": False,
                     "timing_policy": handle.timing_policy,
+                    "stage_one_configured": False,
                 },
             )
         ]
@@ -2378,8 +2472,10 @@ def test_noncanonical_offset_targets_cannot_bypass_partial_retry_confirmation() 
                 *,
                 confirm_retry: bool,
                 timing_policy: Any,
+                stage_one_configured: bool,
             ) -> OffsetCalibrationResult:
                 del timing_policy
+                assert not stage_one_configured
                 calls.append((board_index, stage, confirm_retry))
                 return OffsetCalibrationResult(
                     OffsetCalibrationState.PARTIAL,
@@ -2428,6 +2524,23 @@ def test_offset_disposition_completes_only_after_both_board_stages() -> None:
             "completed",
             "completed",
         )
+        await workflow.async_close()
+
+    asyncio.run(run())
+
+
+def test_configured_offset_stage_counts_as_satisfied_for_completion() -> None:
+    async def run() -> None:
+        workflow, handle, _sessions, _api = _workflow()
+        handle.configured_offset_targets = ((0, 1),)
+        assert (await workflow.async_get_session(handle.session_id)).offset_disposition == "not_started"
+        handle.offset_results[(0, 2)] = OffsetCalibrationResult(
+            OffsetCalibrationState.APPLIED_PENDING_RESTART_VERIFICATION,
+            0, 2, (("meter_main1", POWER_OFFSET_TABLE),), (), False,
+        )
+        assert (await workflow.async_get_session(handle.session_id)).offset_disposition == "completed"
+        with pytest.raises(WorkflowHandleError, match="already finalized"):
+            await workflow.async_skip_offset_calibration(handle.session_id)
         await workflow.async_close()
 
     asyncio.run(run())

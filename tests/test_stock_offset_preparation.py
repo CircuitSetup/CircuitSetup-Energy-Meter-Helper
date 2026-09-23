@@ -101,6 +101,44 @@ def test_native_first_use_rechecks_newly_reported_saved_values(tmp_path: Path) -
     asyncio.run(run())
 
 
+def test_native_run_blocks_only_stage_with_config_offsets(tmp_path: Path) -> None:
+    async def run() -> None:
+        from custom_components.circuitsetup_energy_meter_helper.workflow import (
+            WorkflowHandleError,
+        )
+        from tests.test_offset_recovery import OLD
+
+        workflow, handle, session, _recovery, _sessions = _native_workflow(tmp_path)
+        builder = workflow._builder
+        source = await builder.async_get_config("meter.yaml")
+        plan = build_offset_table_mutation(
+            source, handle.topology, {"meter_main1": OLD}, {},
+        )
+        builder.remote_content = plan.proposed_content
+        handle.configuration_sha256 = sha256(builder.remote_content.encode()).hexdigest()
+        blocked = await workflow.async_preview_offset_preparation(
+            handle.session_id, 0, 1, backup_acknowledged=True,
+        )
+        with pytest.raises(WorkflowHandleError, match="offset values.*removed"):
+            await workflow.async_resume_offset_calibration(
+                handle.session_id, blocked["operation_id"], 0, 1,
+                preparation_acknowledged=True,
+            )
+        assert session.button_names == []
+
+        session.stage = 2
+        allowed = await workflow.async_preview_offset_preparation(
+            handle.session_id, 0, 2, backup_acknowledged=True,
+        )
+        result = await workflow.async_resume_offset_calibration(
+            handle.session_id, allowed["operation_id"], 0, 2,
+            preparation_acknowledged=True,
+        )
+        assert result.state.value == "captured_pending_configuration"
+
+    asyncio.run(run())
+
+
 def test_native_review_replaces_stale_unstarted_preview(tmp_path: Path) -> None:
     async def run() -> None:
         workflow, handle, _session, recovery, sessions = _native_workflow(tmp_path)

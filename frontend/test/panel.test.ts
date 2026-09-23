@@ -2983,15 +2983,74 @@ describe("CircuitSetup panel", () => {
       preflight: { issues: [], zeroed_roles: [] }, entity_role_counts: {},
       offset_capability: { status: "invalid", repair_reason: "duplicate run control" }, offset_disposition: "not_started",
       offset_boards: [{ board_index: 0, stages: [{ stage: 1, state: "not_started" }, { stage: 2, state: "not_started" }] }],
-      has_pending_calibration: false };
+      has_pending_calibration: false, configured_offset_targets: [[0, 1]] };
 
     panel.showState("offset" as never);
     await panel.updateComplete;
 
     expect(text(panel)).toContain("duplicate run control");
+    expect(panel.shadowRoot?.querySelector("[data-offset-config-warning] strong")).not.toBeNull();
     expect(panel.shadowRoot?.querySelector("[data-action='check-offset']")).toBeNull();
     expect(panel.shadowRoot?.querySelector("[data-action='calibrate-offset']")).toBeNull();
     expect(panel.shadowRoot?.querySelector("[data-action='skip-offset']")).not.toBeNull();
+  });
+
+  it("warns in bold and blocks a rerun when config offsets exist", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] },
+      calibrate_offset: { state: "applied_pending_restart_verification", board_index: 0, stage: 2,
+        expected_tables: [["main_1", [[1, -1], [2, -2], [3, -3]]], ["main_2", [[4, -4], [5, -5], [6, -6]]]],
+        unfinished_group_keys: [], retry_allowed: false, error: null } }));
+    const state = panel as unknown as Record<string, unknown>;
+    state.configurationMode = "runtime_only";
+    state.topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name, evidence: [] };
+    state.session = { session_id: "session", device_id: "meter-1", state: "ready", safety_acknowledged: true,
+      preflight: { issues: [], zeroed_roles: [] }, entity_role_counts: {},
+      offset_capability: { status: "available", repair_reason: null }, offset_disposition: "not_started",
+      offset_boards: [{ board_index: 0, stages: [{ stage: 1, state: "not_started" }, { stage: 2, state: "not_started" }] }],
+      has_pending_calibration: false, configured_offset_targets: [[0, 1]] };
+
+    panel.showState("offset" as never);
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector("[data-offset-config-warning] strong")?.textContent)
+      .toContain("offset values in the config file must be removed before re-running this calibration");
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action='calibrate-offset']")?.disabled).toBe(true);
+
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".offset-footer .primary")?.disabled).toBe(false);
+    panel.shadowRoot?.querySelector<HTMLButtonElement>(".offset-footer .primary")?.click();
+    await panel.updateComplete;
+    expect(text(panel)).toContain("Stage 2 · Main Board");
+    state.offsetAcknowledged = [false, true];
+    const readiness = { stage: 2, ready: true, connection_generation: 4,
+      entities: offsetReadinessEntities(), reasons: [], thresholds: { sample_count: 3, zero_voltage_peak_volts: 1,
+        zero_voltage_spread_volts: 0.5, zero_current_peak_amps: 0.25, zero_current_spread_amps: 0.1,
+        voltage_present_minimum_volts: 90, voltage_present_spread_volts: 2 } };
+    state.offsetReadinessByTarget = new Map([["0:2", readiness]]);
+    panel.requestUpdate();
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("[data-offset-config-warning]")).toBeNull();
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-offset-stage='2']")?.disabled).toBe(false);
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action='calibrate-offset']")?.disabled).toBe(false);
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action='calibrate-offset']")?.click();
+    await tick(); await panel.updateComplete;
+    expect((state.session as { offset_disposition: string }).offset_disposition).toBe("completed");
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".offset-footer .primary")?.disabled).toBe(false);
+
+    state.topology = { ...(state.topology as Record<string, unknown>), addon_count: 1, board_count: 2,
+      ct_count: 12, group_count: 4 };
+    state.session = { ...(state.session as Record<string, unknown>), offset_boards: [
+      { board_index: 0, stages: [{ stage: 1, state: "completed" }, { stage: 2, state: "not_started" }] },
+      { board_index: 1, stages: [{ stage: 1, state: "not_started" }, { stage: 2, state: "not_started" }] },
+    ] };
+    state.board = 1;
+    state.offsetStage = 1;
+    state.offsetAcknowledged = [true, false];
+    state.offsetReadinessByTarget = new Map([["1:1", readiness]]);
+    panel.requestUpdate();
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("[data-offset-config-warning]")).toBeNull();
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action='calibrate-offset']")?.disabled).toBe(false);
   });
 
   it("runs measured readiness and requires confirmation before retrying an unfinished chip", async () => {

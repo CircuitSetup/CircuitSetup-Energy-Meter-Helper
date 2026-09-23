@@ -1199,6 +1199,14 @@ function session(value, label) {
   });
   if (item.calibration_sources !== void 0) Object.values(record(item.calibration_sources, label)).forEach((source) => enumeration(source, /* @__PURE__ */ new Set(["flash", "configuration", "unknown"]), label));
   if (item.calibration_plan !== void 0) enumeration(item.calibration_plan, /* @__PURE__ */ new Set(["standard", "full"]), label);
+  if (item.configured_offset_targets !== void 0) {
+    const targets = array(item.configured_offset_targets, label, 14).map((target) => {
+      const pair = array(target, label, 2);
+      if (pair.length !== 2) throw new Error(`${label} response is invalid`);
+      return [integer(pair[0], label), integer(pair[1], label)];
+    });
+    if (targets.some(([board, stage]) => board < 0 || board > 6 || stage !== 1 && stage !== 2) || new Set(targets.map(([board, stage]) => `${board}:${stage}`)).size !== targets.length) throw new Error(`${label} response is invalid`);
+  }
   const offsetFields = [item.offset_capability, item.offset_disposition, item.offset_boards, item.has_pending_calibration];
   if (offsetFields.every((field) => field === void 0)) return value;
   if (offsetFields.some((field) => field === void 0)) throw new Error(`${label} response is invalid`);
@@ -3428,11 +3436,14 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
   const capability = session2?.offset_capability;
   const boards = session2?.offset_boards ?? [];
   const finalized = session2?.offset_disposition === "completed" || session2?.offset_disposition === "skipped" || session2?.offset_disposition === "partial" && session2.state === "applied_pending_restart_verification";
-  const stageTwoReady = boards.length > 0 && boards.every((item) => item.stages[0]?.state === "completed");
+  const configuredTargets = session2?.configured_offset_targets ?? [];
+  const stageTwoReady = boards.length > 0 && boards.every((item) => item.stages[0]?.state === "completed" || configuredTargets.some(([targetBoard, targetStage]) => targetBoard === item.board_index && targetStage === 1));
   const stageState = boards[board]?.stages[stage - 1]?.state ?? "not_started";
   const boardCount = topology2?.board_count ?? boards.length;
   const continueLabel = finalized ? "Continue to Voltage" : board + 1 < boardCount ? `Continue to Add-on ${board + 1}` : stage === 1 ? "Continue to Stage 2" : "Continue to Voltage";
-  const canContinue = finalized || stageState === "completed";
+  const canContinue = finalized || stageState === "completed" || configuredTargets.some(
+    ([targetBoard, targetStage]) => targetBoard === board && targetStage === stage
+  );
   const preparation = stock?.preparation;
   const nativePreparation = Boolean(stock && (preparation?.mode ?? "native") === "native");
   const selectedInstances = groupKeys(board).map((id2) => id2.replace("main_", "meter_main"));
@@ -3442,11 +3453,13 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
   const recovery = Boolean(result?.retry_allowed) || stageState === "partial" || stageState === "indeterminate" || attempted && stageState !== "completed";
   const actionReady = !stock || Boolean(matching && preparation?.action_ready && !attempted);
   const unavailable = capability?.status !== "available";
+  const configuredOffsets = configuredTargets.some(([targetBoard, targetStage]) => targetBoard === board && targetStage === stage);
   const keys = groupKeys(board);
   const tableByGroup = new Map(result?.expected_tables ?? []);
   const savedSources = new Map(readiness?.saved_offset_sources ?? []);
   return b`
     <section class="step-content offset-step" aria-labelledby="step-heading">
+      ${configuredOffsets ? b`<p class="warning-band" data-offset-config-warning><strong>Existing offset values in the config file must be removed before re-running this calibration.</strong></p>` : A}
       ${unavailable ? b`
         <div class="warning-band" role="status">
           <strong>Offset calibration is ${capability?.status === "invalid" ? "not safely available" : "not available on this firmware"}.</strong>
@@ -3500,7 +3513,7 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
               ${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Checking measured readiness…` : "Check measured readiness"}
             </button>
             <button class="primary" data-action="calibrate-offset"
-              ?disabled=${busy || !actionReady || !acknowledged || !readiness?.ready || stageState === "completed" || !stock && recovery && !retryConfirmed}
+              ?disabled=${busy || configuredOffsets || !actionReady || !acknowledged || !readiness?.ready || stageState === "completed" || !stock && recovery && !retryConfirmed}
               @click=${calibrate}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Running Stage ${stage} calibration…` : result?.retry_allowed ? "Retry unfinished chip" : `Run Stage ${stage} calibration`}</button>
           </div>
           ${readiness ? b`
@@ -6399,7 +6412,7 @@ class CircuitSetupPanel extends i$2 {
     }
   }
   async calibrateOffset() {
-    if (!this.api || !this.session || this.offsetBusy) return;
+    if (!this.api || !this.session || this.offsetBusy || this.session.configured_offset_targets?.some(([board2, stage2]) => board2 === this.board && stage2 === this.offsetStage)) return;
     const api = this.api;
     const deviceId = this.selectedDeviceId;
     const sessionId = this.session.session_id;
@@ -6429,7 +6442,8 @@ class CircuitSetupPanel extends i$2 {
             })
           });
           const states = boards.flatMap((item) => item.stages.map((entry) => entry.state));
-          const disposition = states.every((state) => state === "completed") ? "completed" : states.some((state) => state === "partial" || state === "indeterminate") ? "partial" : "in_progress";
+          const completed = boards.every((item) => item.stages.every((entry) => entry.state === "completed" || this.session?.configured_offset_targets?.some(([board2, stage2]) => board2 === item.board_index && stage2 === entry.stage)));
+          const disposition = completed ? "completed" : states.some((state) => state === "partial" || state === "indeterminate") ? "partial" : "in_progress";
           this.session = {
             ...this.session,
             offset_boards: boards,
@@ -6473,12 +6487,12 @@ class CircuitSetupPanel extends i$2 {
   }
   continueOffset() {
     if (!this.session || this.offsetBusy) return;
-    const finalized = this.session.offset_disposition === "skipped" || this.session.offset_disposition === "partial" && this.session.state === "applied_pending_restart_verification";
+    const finalized = this.session.offset_disposition === "completed" || this.session.offset_disposition === "skipped" || this.session.offset_disposition === "partial" && this.session.state === "applied_pending_restart_verification";
     if (finalized) {
       this.navigate("voltage");
       return;
     }
-    if (this.session.offset_boards?.[this.board]?.stages[this.offsetStage - 1]?.state !== "completed") return;
+    if (this.session.offset_boards?.[this.board]?.stages[this.offsetStage - 1]?.state !== "completed" && !this.session.configured_offset_targets?.some(([board, stage]) => board === this.board && stage === this.offsetStage)) return;
     const boardCount = this.topology?.board_count ?? this.session.offset_boards?.length ?? 1;
     if (this.board + 1 < boardCount) this.board += 1;
     else if (this.offsetStage === 1) {
@@ -7064,7 +7078,7 @@ class CircuitSetupPanel extends i$2 {
         this.requestUpdate();
       },
       (value) => {
-        if (value === 1 || this.session?.offset_boards?.every((item) => item.stages[0]?.state === "completed")) {
+        if (value === 1 || this.session?.offset_boards?.every((item) => item.stages[0]?.state === "completed" || this.session?.configured_offset_targets?.some(([board, stage]) => board === item.board_index && stage === 1))) {
           this.offsetStage = value;
           this.board = 0;
           this.offsetRetryConfirmed = false;

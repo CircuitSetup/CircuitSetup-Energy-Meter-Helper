@@ -2131,7 +2131,7 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private async calibrateOffset(): Promise<void> {
-    if (!this.api || !this.session || this.offsetBusy) return;
+    if (!this.api || !this.session || this.offsetBusy || this.session.configured_offset_targets?.some(([board, stage]) => board === this.board && stage === this.offsetStage)) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
     const board = this.board; const stage = this.offsetStage; const key = this.offsetKey(board, stage);
     const prior = this.offsetResultByTarget.get(key);
@@ -2158,7 +2158,9 @@ export class CircuitSetupPanel extends LitElement {
           })),
         }));
         const states = boards.flatMap((item) => item.stages.map((entry) => entry.state));
-        const disposition = states.every((state) => state === "completed") ? "completed" as const
+        const completed = boards.every((item) => item.stages.every((entry) => entry.state === "completed"
+          || this.session?.configured_offset_targets?.some(([board, stage]) => board === item.board_index && stage === entry.stage)));
+        const disposition = completed ? "completed" as const
           : states.some((state) => state === "partial" || state === "indeterminate") ? "partial" as const : "in_progress" as const;
         this.session = { ...this.session, offset_boards: boards, offset_disposition: disposition,
           has_pending_calibration: this.session.has_pending_calibration || result.expected_tables.length > 0 };
@@ -2196,10 +2198,12 @@ export class CircuitSetupPanel extends LitElement {
 
   private continueOffset(): void {
     if (!this.session || this.offsetBusy) return;
-    const finalized = this.session.offset_disposition === "skipped"
+    const finalized = this.session.offset_disposition === "completed"
+      || this.session.offset_disposition === "skipped"
       || this.session.offset_disposition === "partial" && this.session.state === "applied_pending_restart_verification";
     if (finalized) { this.navigate("voltage"); return; }
-    if (this.session.offset_boards?.[this.board]?.stages[this.offsetStage - 1]?.state !== "completed") return;
+    if (this.session.offset_boards?.[this.board]?.stages[this.offsetStage - 1]?.state !== "completed"
+      && !this.session.configured_offset_targets?.some(([board, stage]) => board === this.board && stage === this.offsetStage)) return;
     const boardCount = this.topology?.board_count ?? this.session.offset_boards?.length ?? 1;
     if (this.board + 1 < boardCount) this.board += 1;
     else if (this.offsetStage === 1) { this.offsetStage = 2; this.board = 0; }
@@ -2675,7 +2679,8 @@ export class CircuitSetupPanel extends LitElement {
       this.offsetReadinessByTarget.get(this.offsetKey()) ?? null, this.offsetResultByTarget.get(this.offsetKey()) ?? null,
       this.offsetBusy,
       (value) => { this.board = value; this.offsetRetryConfirmed = false; this.requestUpdate(); },
-      (value) => { if (value === 1 || this.session?.offset_boards?.every((item) => item.stages[0]?.state === "completed")) {
+      (value) => { if (value === 1 || this.session?.offset_boards?.every((item) => item.stages[0]?.state === "completed"
+        || this.session?.configured_offset_targets?.some(([board, stage]) => board === item.board_index && stage === 1))) {
         this.offsetStage = value; this.board = 0; this.offsetRetryConfirmed = false; this.requestUpdate();
       } },
       (value) => { this.offsetAcknowledged = this.offsetAcknowledged.map((current, index) => index === this.offsetStage - 1 ? value : current); this.requestUpdate(); },

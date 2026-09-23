@@ -604,6 +604,7 @@ class CalibrationEngine:
         *,
         confirm_retry: bool = False,
         timing_policy: CalibrationTimingPolicy | None = None,
+        stage_one_configured: bool = False,
     ) -> OffsetCalibrationResult:
         """Run one offset stage for both chips on a selected board."""
         if stage not in (1, 2):
@@ -641,7 +642,7 @@ class CalibrationEngine:
             if origin is not None:
                 origin = await self._calibration_origin(lease, session, binding)
             expected = _pending_offset_tables(origin, stage)
-            if stage == 2 and not all(
+            if stage == 2 and not stage_one_configured and not all(
                 origin is not None and instance_id in origin.expected_phase_offsets
                 for _, _, instance_id in selected
             ):
@@ -755,6 +756,7 @@ class CalibrationEngine:
         source_reader: Callable[[], Awaitable[ESPHomeConfigSnapshot]],
         claim_guard: Callable[[], None] = lambda: None,
         timing_policy: CalibrationTimingPolicy | None = None,
+        stage_one_configured: bool = False,
     ) -> OffsetCalibrationResult:
         """Capture stock candidates through a backed-up native or legacy preparation.
 
@@ -919,7 +921,7 @@ class CalibrationEngine:
             stage_one = {item.instance_id for item in record.results if item.stage == 1}
             if pending is not None:
                 stage_one.update(pending.expected_phase_offsets)
-            if stage == 2 and not {item[2] for item in selected} <= stage_one:
+            if stage == 2 and not stage_one_configured and not {item[2] for item in selected} <= stage_one:
                 raise ValueError("Stage 1 must complete for both selected chips")
             for _, _, instance in selected:
                 if instance not in unfinished:

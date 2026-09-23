@@ -32,13 +32,17 @@ export function offsetStep(
   const boards = session?.offset_boards ?? [];
   const finalized = session?.offset_disposition === "completed" || session?.offset_disposition === "skipped"
     || session?.offset_disposition === "partial" && session.state === "applied_pending_restart_verification";
-  const stageTwoReady = boards.length > 0 && boards.every((item) => item.stages[0]?.state === "completed");
+  const configuredTargets = session?.configured_offset_targets ?? [];
+  const stageTwoReady = boards.length > 0 && boards.every((item) => item.stages[0]?.state === "completed"
+    || configuredTargets.some(([targetBoard, targetStage]) => targetBoard === item.board_index && targetStage === 1));
   const stageState = boards[board]?.stages[stage - 1]?.state ?? "not_started";
   const boardCount = topology?.board_count ?? boards.length;
   const continueLabel = finalized ? "Continue to Voltage"
     : board + 1 < boardCount ? `Continue to Add-on ${board + 1}`
       : stage === 1 ? "Continue to Stage 2" : "Continue to Voltage";
-  const canContinue = finalized || stageState === "completed";
+  const canContinue = finalized || stageState === "completed" || configuredTargets.some(
+    ([targetBoard, targetStage]) => targetBoard === board && targetStage === stage,
+  );
   const preparation = stock?.preparation;
   const nativePreparation = Boolean(stock && (preparation?.mode ?? "native") === "native");
   const selectedInstances = groupKeys(board).map((id) => id.replace("main_", "meter_main"));
@@ -48,12 +52,14 @@ export function offsetStep(
   const recovery = Boolean(result?.retry_allowed) || stageState === "partial" || stageState === "indeterminate" || attempted && stageState !== "completed";
   const actionReady = !stock || Boolean(matching && preparation?.action_ready && !attempted);
   const unavailable = capability?.status !== "available";
+  const configuredOffsets = configuredTargets.some(([targetBoard, targetStage]) => targetBoard === board && targetStage === stage);
   const keys = groupKeys(board);
   const tableByGroup = new Map(result?.expected_tables ?? []);
   const savedSources = new Map(readiness?.saved_offset_sources ?? []);
 
   return html`
     <section class="step-content offset-step" aria-labelledby="step-heading">
+      ${configuredOffsets ? html`<p class="warning-band" data-offset-config-warning><strong>Existing offset values in the config file must be removed before re-running this calibration.</strong></p>` : nothing}
       ${unavailable ? html`
         <div class="warning-band" role="status">
           <strong>Offset calibration is ${capability?.status === "invalid" ? "not safely available" : "not available on this firmware"}.</strong>
@@ -107,7 +113,7 @@ export function offsetStep(
               ${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Checking measured readiness…` : "Check measured readiness"}
             </button>
             <button class="primary" data-action="calibrate-offset"
-              ?disabled=${busy || !actionReady || !acknowledged || !readiness?.ready || stageState === "completed" || !stock && recovery && !retryConfirmed}
+              ?disabled=${busy || configuredOffsets || !actionReady || !acknowledged || !readiness?.ready || stageState === "completed" || !stock && recovery && !retryConfirmed}
               @click=${calibrate}>${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Running Stage ${stage} calibration…` : result?.retry_allowed ? "Retry unfinished chip" : `Run Stage ${stage} calibration`}</button>
           </div>
           ${readiness ? html`

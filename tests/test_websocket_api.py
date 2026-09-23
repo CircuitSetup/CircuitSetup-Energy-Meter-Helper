@@ -2100,6 +2100,7 @@ def test_builder_session_uses_legacy_snapshot_configuration_for_calibration(
                 f"  current_cal_ct{channel}: 27518\n"
                 for channel in range(1, 13)
             )
+            + "sensor:\n  - platform: atm90e32\n    id: meter_main1\n    phase_a:\n      offset_voltage: -928\n"
         )
         digest = sha256(content.encode()).hexdigest()
         snapshot = ESPHomeConfigSnapshot("meter.yaml", content, digest)
@@ -2205,6 +2206,7 @@ def test_builder_session_uses_legacy_snapshot_configuration_for_calibration(
         session = await workflow.async_start_session("meter")
         handle = workflow._sessions[session.session_id]
 
+        assert session.configured_offset_targets == ((0, 1),)
         assert handle.meter_configuration is not None
         assert handle.meter_configuration.meter.update_interval_s == 60
         assert handle.timing_policy == CalibrationTimingPolicy(60, 3)

@@ -537,6 +537,15 @@ function session(value: unknown, label: string): SessionStatus {
   if (item.entity_role_counts !== undefined) Object.values(record(item.entity_role_counts, label)).forEach((count) => { if (integer(count, label) < 0) throw new Error(`${label} response is invalid`); });
   if (item.calibration_sources !== undefined) Object.values(record(item.calibration_sources, label)).forEach((source) => enumeration(source, new Set(["flash", "configuration", "unknown"]), label));
   if (item.calibration_plan !== undefined) enumeration(item.calibration_plan, new Set(["standard", "full"]), label);
+  if (item.configured_offset_targets !== undefined) {
+    const targets = array(item.configured_offset_targets, label, 14).map((target) => {
+      const pair = array(target, label, 2);
+      if (pair.length !== 2) throw new Error(`${label} response is invalid`);
+      return [integer(pair[0], label), integer(pair[1], label)] as const;
+    });
+    if (targets.some(([board, stage]) => board < 0 || board > 6 || stage !== 1 && stage !== 2)
+      || new Set(targets.map(([board, stage]) => `${board}:${stage}`)).size !== targets.length) throw new Error(`${label} response is invalid`);
+  }
   const offsetFields = [item.offset_capability, item.offset_disposition, item.offset_boards, item.has_pending_calibration];
   if (offsetFields.every((field) => field === undefined)) return value as SessionStatus;
   if (offsetFields.some((field) => field === undefined)) throw new Error(`${label} response is invalid`);
