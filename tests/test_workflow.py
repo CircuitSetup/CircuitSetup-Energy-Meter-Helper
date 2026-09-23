@@ -2261,6 +2261,8 @@ def test_offset_calibration_blocks_only_the_configured_stage(
     async def run() -> None:
         workflow, handle, _sessions, _api = _workflow()
         content = f"sensor:\n  - platform: atm90e32\n    phase_a:\n      {field}: -928\n"
+        if blocked_stage == 1:
+            content += "      offset_active_power: 0\n      offset_reactive_power: 0\n"
         digest = sha256(content.encode()).hexdigest()
         calls: list[int] = []
 
