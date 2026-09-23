@@ -31,17 +31,19 @@ export function offsetStep(
   const boards = session?.offset_boards ?? [];
   const finalized = session?.offset_disposition === "completed" || session?.offset_disposition === "skipped"
     || session?.offset_disposition === "partial" && session.state === "applied_pending_restart_verification";
-  const stageTwoReady = boards.length > 0 && boards.every((item) => item.stages[0]?.state === "completed");
+  const configuredTargets = session?.configured_offset_targets ?? [];
+  const stageTwoReady = boards.length > 0 && boards.every((item) => item.stages[0]?.state === "completed"
+    || configuredTargets.some(([targetBoard, targetStage]) => targetBoard === item.board_index && targetStage === 1));
   const stageState = boards[board]?.stages[stage - 1]?.state ?? "not_started";
   const recovery = Boolean(result?.retry_allowed) || stageState === "partial" || stageState === "indeterminate";
   const unavailable = capability?.status !== "available";
-  const configuredOffsets = session?.configured_offset_values_present === true;
+  const configuredOffsets = configuredTargets.some(([targetBoard, targetStage]) => targetBoard === board && targetStage === stage);
   const keys = groupKeys(board);
   const tableByGroup = new Map(result?.expected_tables ?? []);
 
   return html`
     <section class="step-content offset-step" aria-labelledby="step-heading">
-      ${configuredOffsets ? html`<p class="warning-band" data-offset-config-warning><strong>Existing offset values in the config file must be removed before re-running calibration.</strong></p>` : nothing}
+      ${configuredOffsets ? html`<p class="warning-band" data-offset-config-warning><strong>Existing offset values in the config file must be removed before re-running this calibration.</strong></p>` : nothing}
       ${unavailable ? html`
         <div class="warning-band" role="status">
           <strong>Offset calibration is ${capability?.status === "invalid" ? "not safely available" : "not available on this firmware"}.</strong>

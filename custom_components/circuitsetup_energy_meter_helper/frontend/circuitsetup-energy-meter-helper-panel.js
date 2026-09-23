@@ -936,7 +936,14 @@ function session(value, label) {
     if (integer(count, label) < 0) throw new Error(`${label} response is invalid`);
   });
   if (item.calibration_sources !== void 0) Object.values(record(item.calibration_sources, label)).forEach((source) => enumeration(source, /* @__PURE__ */ new Set(["flash", "configuration", "unknown"]), label));
-  if (item.configured_offset_values_present !== void 0) boolean(item.configured_offset_values_present, label);
+  if (item.configured_offset_targets !== void 0) {
+    const targets = array(item.configured_offset_targets, label, 14).map((target) => {
+      const pair = array(target, label, 2);
+      if (pair.length !== 2) throw new Error(`${label} response is invalid`);
+      return [integer(pair[0], label), integer(pair[1], label)];
+    });
+    if (targets.some(([board, stage]) => board < 0 || board > 6 || stage !== 1 && stage !== 2) || new Set(targets.map(([board, stage]) => `${board}:${stage}`)).size !== targets.length) throw new Error(`${label} response is invalid`);
+  }
   const offsetFields = [item.offset_capability, item.offset_disposition, item.offset_boards, item.has_pending_calibration];
   if (offsetFields.every((field) => field === void 0)) return value;
   if (offsetFields.some((field) => field === void 0)) throw new Error(`${label} response is invalid`);
@@ -2375,16 +2382,17 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
   const capability = session2?.offset_capability;
   const boards = session2?.offset_boards ?? [];
   const finalized = session2?.offset_disposition === "completed" || session2?.offset_disposition === "skipped" || session2?.offset_disposition === "partial" && session2.state === "applied_pending_restart_verification";
-  const stageTwoReady = boards.length > 0 && boards.every((item) => item.stages[0]?.state === "completed");
+  const configuredTargets = session2?.configured_offset_targets ?? [];
+  const stageTwoReady = boards.length > 0 && boards.every((item) => item.stages[0]?.state === "completed" || configuredTargets.some(([targetBoard, targetStage]) => targetBoard === item.board_index && targetStage === 1));
   const stageState = boards[board]?.stages[stage - 1]?.state ?? "not_started";
   const recovery = Boolean(result?.retry_allowed) || stageState === "partial" || stageState === "indeterminate";
   const unavailable = capability?.status !== "available";
-  const configuredOffsets = session2?.configured_offset_values_present === true;
+  const configuredOffsets = configuredTargets.some(([targetBoard, targetStage]) => targetBoard === board && targetStage === stage);
   const keys = groupKeys(board);
   const tableByGroup = new Map(result?.expected_tables ?? []);
   return b`
     <section class="step-content offset-step" aria-labelledby="step-heading">
-      ${configuredOffsets ? b`<p class="warning-band" data-offset-config-warning><strong>Existing offset values in the config file must be removed before re-running calibration.</strong></p>` : A}
+      ${configuredOffsets ? b`<p class="warning-band" data-offset-config-warning><strong>Existing offset values in the config file must be removed before re-running this calibration.</strong></p>` : A}
       ${unavailable ? b`
         <div class="warning-band" role="status">
           <strong>Offset calibration is ${capability?.status === "invalid" ? "not safely available" : "not available on this firmware"}.</strong>
@@ -4250,7 +4258,7 @@ class CircuitSetupPanel extends i$2 {
     }
   }
   async calibrateOffset() {
-    if (!this.api || !this.session || this.offsetBusy || this.session.configured_offset_values_present) return;
+    if (!this.api || !this.session || this.offsetBusy || this.session.configured_offset_targets?.some(([board2, stage2]) => board2 === this.board && stage2 === this.offsetStage)) return;
     const api = this.api;
     const deviceId = this.selectedDeviceId;
     const sessionId = this.session.session_id;
@@ -4278,7 +4286,8 @@ class CircuitSetupPanel extends i$2 {
             })
           });
           const states = boards.flatMap((item) => item.stages.map((entry) => entry.state));
-          const disposition = states.every((state) => state === "completed") ? "completed" : states.some((state) => state === "partial" || state === "indeterminate") ? "partial" : "in_progress";
+          const completed = boards.every((item) => item.stages.every((entry) => entry.state === "completed" || this.session?.configured_offset_targets?.some(([board2, stage2]) => board2 === item.board_index && stage2 === entry.stage)));
+          const disposition = completed ? "completed" : states.some((state) => state === "partial" || state === "indeterminate") ? "partial" : "in_progress";
           this.session = {
             ...this.session,
             offset_boards: boards,
@@ -4759,7 +4768,7 @@ class CircuitSetupPanel extends i$2 {
         this.requestUpdate();
       },
       (value) => {
-        if (value === 1 || this.session?.offset_boards?.every((item) => item.stages[0]?.state === "completed")) {
+        if (value === 1 || this.session?.offset_boards?.every((item) => item.stages[0]?.state === "completed" || this.session?.configured_offset_targets?.some(([board, stage]) => board === item.board_index && stage === 1))) {
           this.offsetStage = value;
           this.board = 0;
           this.offsetRetryConfirmed = false;

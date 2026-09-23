@@ -109,6 +109,24 @@ text_sensor:
     )
 
 
+def test_attributes_configured_offsets_to_meter_instance() -> None:
+    document = ESPHomeConfigDocument.parse(
+        """sensor:
+  - id: !extend meter_main1
+    phase_a:
+      offset_voltage: -928
+  - id: !extend addon1_2
+    phase_b:
+      offset_active_power: -4
+"""
+    )
+
+    assert document.configured_offset_entries == (
+        ("meter_main1", "offset_voltage"),
+        ("addon1_2", "offset_active_power"),
+    )
+
+
 def test_extracts_bounded_meter_substitutions_and_managed_blocks() -> None:
     content = fixture("meter_configuration.yaml").replace("\n", "\r\n")
     doc = ESPHomeConfigDocument.parse(content)

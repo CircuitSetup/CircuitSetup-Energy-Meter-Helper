@@ -17,6 +17,7 @@ METER_SETTING_RE = re.compile(
 OFFSET_FIELD_KEYS = frozenset(
     ("offset_voltage", "offset_current", "offset_active_power", "offset_reactive_power")
 )
+_METER_INSTANCE_RE = re.compile(r"^(?:meter_main[12]|addon[1-6]_[12])$")
 _KEY_TOKEN_RE = r'''(?:<<|[\w-]+|'(?:[^']|'')*'|"(?:[^"\\]|\\.)*")'''
 _MAPPING_RE = re.compile(
     rf"^(?P<indent> *)(?P<key>{_KEY_TOKEN_RE})[ \t]*:(?P<rest>(?:[ \t].*)?)$"
@@ -145,6 +146,7 @@ class ESPHomeConfigDocument:
     sensor_item_indent: int | None
     code_lines: tuple[str, ...] = field(repr=False)
     configured_offset_fields: tuple[str, ...] = ()
+    configured_offset_entries: tuple[tuple[str | None, str], ...] = ()
 
     @classmethod
     def parse(cls, content: str) -> ESPHomeConfigDocument:
@@ -196,6 +198,7 @@ class _DocumentParser:
         project = self._nested_scalar("esphome", "project", "name")
         dashboard = self._section_scalar("dashboard_import", "package_import_url")
         sensor = self._writable_sensor_section()
+        offset_entries = self._configured_offset_entries(sensor)
         return document_type(
             content=self.content,
             lines=self.lines,
@@ -212,13 +215,43 @@ class _DocumentParser:
                 "" if index in self._block_scalar_lines else self._without_comment(body)
                 for index, body in enumerate(self._bodies)
             ),
-            configured_offset_fields=self._configured_offset_fields(),
+            configured_offset_fields=tuple(sorted({field for _, field in offset_entries})),
+            configured_offset_entries=offset_entries,
         )
 
-    def _configured_offset_fields(self) -> tuple[str, ...]:
-        fields: set[str] = set()
+    def _configured_offset_entries(
+        self, sensor: tuple[SourceSpan, int] | None
+    ) -> tuple[tuple[str | None, str], ...]:
+        entries: list[tuple[str | None, str]] = []
+        item_fields: list[str] = []
+        owner: str | None = None
+        in_item = False
+        item_indent = sensor[1] if sensor is not None else -1
         for index in range(len(self.lines)):
-            mapping = self._mapping(index) or self._sequence_mapping(index)
+            sequence = self._sequence_mapping(index)
+            mapping = self._mapping(index) or sequence
+            in_sensor = (
+                sensor is not None
+                and sensor[0].start <= self._offsets[index] < sensor[0].end
+            )
+            if in_item and not in_sensor:
+                entries.extend((owner, field) for field in item_fields)
+                item_fields = []
+                owner = None
+                in_item = False
+            if in_sensor and sequence is not None and sequence.indent == item_indent:
+                entries.extend((owner, field) for field in item_fields)
+                item_fields = []
+                owner = self._offset_owner(index, sequence) if sequence.key == "id" else None
+                in_item = True
+            elif (
+                in_item
+                and in_sensor
+                and mapping is not None
+                and mapping.key == "id"
+                and mapping.indent == item_indent + 2
+            ):
+                owner = self._offset_owner(index, mapping)
             if mapping is None or mapping.key not in OFFSET_FIELD_KEYS:
                 continue
             value = self._scalar(index, mapping).value
@@ -227,8 +260,23 @@ class _DocumentParser:
             except ValueError:
                 is_zero = value in {"0", "+0", "-0"}
             if not is_zero:
-                fields.add(mapping.key)
-        return tuple(sorted(fields))
+                if in_item and in_sensor:
+                    item_fields.append(mapping.key)
+                else:
+                    entries.append((None, mapping.key))
+        entries.extend((owner, field) for field in item_fields)
+        return tuple(entries)
+
+    def _offset_owner(self, index: int, mapping: _Mapping) -> str | None:
+        raw = self._without_comment(mapping.rest).strip()
+        if raw.startswith("!extend "):
+            value = raw.removeprefix("!extend ")
+        else:
+            try:
+                value = self._scalar(index, mapping).value
+            except ESPHomeConfigParseError:
+                return None
+        return value if _METER_INSTANCE_RE.fullmatch(value) else None
 
     def _writable_sensor_section(self) -> tuple[SourceSpan, int] | None:
         roots: list[tuple[int, _Mapping]] = []
