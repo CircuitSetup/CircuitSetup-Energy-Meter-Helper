@@ -5240,6 +5240,33 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).not.toContain("Calibration session could not be started");
   });
 
+  it("returns from Safety after cancellation without cancelling the removed session again", async () => {
+    const cancelled = { session_id: "session", device_id: "meter-1", state: "cancelled",
+      safety_acknowledged: false, preflight: { issues: [], zeroed_roles: [] } };
+    let cancelCalls = 0;
+    const hass = makeHass({ setup_status: { state: "device_discovered", devices: [device] }, cancel_session: cancelled });
+    const callWS = hass.callWS;
+    hass.callWS = async <T>(message: Record<string, unknown>) => {
+      if (String(message.type).endsWith("/cancel_session") && ++cancelCalls > 1)
+        throw Object.assign(new Error("removed"), { code: "stale_handle" });
+      return callWS<T>(message);
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown>;
+    state.session = { ...cancelled, state: "safety_required" };
+    state.skipCircuitChanges = true;
+    panel.showState("safety"); await panel.updateComplete;
+
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("button.danger")?.click();
+    await vi.waitFor(() => expect((state.session as typeof cancelled).state).toBe("cancelled"));
+    panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .secondary")?.click();
+    await tick(); await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Calibration Plan");
+    expect(cancelCalls).toBe(1);
+    expect(text(panel)).not.toContain("The selected device changed or is no longer available");
+  });
+
   it("renders unavailable validation counts without contradictory wording", async () => {
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
     const state = panel as unknown as Record<string, unknown>;

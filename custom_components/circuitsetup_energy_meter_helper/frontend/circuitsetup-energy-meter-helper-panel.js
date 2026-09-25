@@ -6750,6 +6750,10 @@ class CircuitSetupPanel extends i$2 {
   }
   async cancelSession(destination = "safety") {
     if (!this.api || !this.session) return;
+    if (this.session.state === "cancelled") {
+      if (destination) this.navigate(destination);
+      return;
+    }
     const api = this.api;
     const deviceId = this.selectedDeviceId;
     const sessionId = this.session.session_id;

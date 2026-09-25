@@ -2444,6 +2444,10 @@ export class CircuitSetupPanel extends LitElement {
 
   private async cancelSession(destination: WorkflowRoute | null = "safety"): Promise<void> {
     if (!this.api || !this.session) return;
+    if (this.session.state === "cancelled") {
+      if (destination) this.navigate(destination);
+      return;
+    }
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
     const generation = ++this.operationGeneration;
     await this.run(async () => {
