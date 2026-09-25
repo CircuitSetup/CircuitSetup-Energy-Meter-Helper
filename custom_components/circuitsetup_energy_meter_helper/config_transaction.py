@@ -7,7 +7,7 @@ import logging
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from difflib import unified_diff
 from enum import StrEnum
 from hashlib import sha256
@@ -59,6 +59,8 @@ from .models import (
     StoredTopology,
     StoredTopologyEvidence,
     SubstitutionChange,
+    TopologyEvidence,
+    TopologyEvidenceSource,
     canonical_mac,
 )
 from .offset_recovery import (
@@ -73,6 +75,10 @@ from .store import (
     StoredMeterConfiguration,
     TotalsMigrationRecord,
     VerifiedCalibrationRecord,
+    _current_topology,
+    _deserialize_meter_configuration,
+    _serialize_meter_configuration,
+    serialize_meter_record,
 )
 from .topology import (
     package_graph_owner_is_official,
@@ -135,6 +141,7 @@ class TransactionEvidenceCode(StrEnum):
     VALIDATION_UNAVAILABLE = "validation_unavailable"
     COMPILE_FAILED = "compile_failed"
     UPLOAD_FAILED = "upload_failed"
+    UPLOAD_OUTCOME_UNKNOWN = "upload_outcome_unknown"
     RECONNECT_UNAVAILABLE = "reconnect_unavailable"
     METER_COMMUNICATION_FAILED = "meter_communication_failed"
     IDENTITY_MISMATCH = "identity_mismatch"
@@ -152,6 +159,7 @@ class TransactionProgress(StrEnum):
     CONFIG_WRITTEN = "config_written"
     CONFIG_VALIDATED = "config_validated"
     FIRMWARE_COMPILED = "firmware_compiled"
+    OTA_ATTEMPTED = "ota_attempted"
     OTA_UPLOADED = "ota_uploaded"
     DEVICE_VERIFIED = "device_verified"
     METADATA_PERSISTED = "metadata_persisted"
@@ -197,6 +205,7 @@ class TransactionFailure:
 
 
 _RETRYABLE_INSTALL_EVIDENCE = {
+    TransactionEvidenceCode.UPLOAD_OUTCOME_UNKNOWN,
     TransactionEvidenceCode.RECONNECT_UNAVAILABLE,
     TransactionEvidenceCode.METER_COMMUNICATION_FAILED,
     TransactionEvidenceCode.ENTITY_MISMATCH,
@@ -239,6 +248,12 @@ class DeviceBuilder(Protocol):
 
 
 class VerifiedPersistence(Protocol):
+    async def async_get_install_recovery(self, mac: str) -> dict[str, Any] | None: ...
+
+    async def async_save_install_recovery(
+        self, mac: str, transaction_id: str, checkpoint: dict[str, Any] | None
+    ) -> None: ...
+
     async def async_advance_offset_configuration_source(
         self,
         mac: str,
@@ -369,6 +384,7 @@ class TransactionStatus:
     aggregate_entity_mismatch: bool = False
     full_meter_configuration_verified: bool = False
     purpose: TransactionPurpose = "install_configuration"
+
     communication_failed_cs_pins: tuple[int, ...] = ()
     failure: TransactionFailure | None = None
 
@@ -426,6 +442,10 @@ class _ConfigTransaction:
     offset_finalization: StockOffsetFinalization | None = field(default=None, repr=False)
     preparation_guard: Callable[[], None] | None = field(default=None, repr=False)
     purpose: TransactionPurpose = "install_configuration"
+
+    recovered: bool = field(default=False, repr=False)
+    checkpoint_saved: bool = field(default=False, repr=False)
+    recovery_proposed_sha256: str | None = field(default=None, repr=False)
 
     async def async_release_reservation(self) -> None:
         """Drain an exact pre-write release even if this caller is cancelled."""
@@ -545,6 +565,100 @@ class ConfigTransactionManager:
                 continue
             return _status(transaction)
         return None
+
+    async def async_recover_install(self, mac: str) -> TransactionStatus | None:
+        """Reopen confirmed installs for verification or uncertain installs for retry."""
+        mac = canonical_mac(mac)
+        active = self.active_status(mac)
+        if active is not None:
+            return active
+        checkpoint = await self._persistence.async_get_install_recovery(mac)
+        if checkpoint is None or self.sessions.is_config_locked(mac):
+            return None
+        lease = await self.sessions.async_acquire_config(mac)
+        try:
+            transaction = _restore_install_checkpoint(checkpoint, mac)
+            transaction.checkpoint_saved = True
+            source = await self._device_builder.async_get_config(
+                _meter_record(transaction).config_filename  # type: ignore[arg-type]
+            )
+            self._adopt_recovered_source(transaction, source)
+            transaction.lease = lease
+            if transaction.purpose == "offset_finalization":
+                if self._offset_recovery is None:
+                    raise ValueError("offset recovery is unavailable")
+                record = await self._offset_recovery.async_load(lease)
+                if (
+                    record is None or record.finalization is None
+                    or record.finalization.transaction_id != transaction.transaction_id
+                    or record.finalization.proposed_sha256 != transaction.recovery_proposed_sha256
+                    or record.finalization.source_sha256 != transaction.source_sha256
+                    or record.finalization.verification_id != transaction.verification_id
+                    or record.final_cancelled
+                ):
+                    raise ValueError("offset finalization recovery changed")
+                transaction.offset_finalization = record.finalization
+            if checkpoint != await self._persistence.async_get_install_recovery(mac):
+                raise ValueError("install recovery changed")
+            self._refresh_deadline(transaction)
+            self.sessions._register_transaction(transaction.transaction_id, transaction)
+            return _status(transaction)
+        except BaseException:
+            lease.release()
+            raise
+
+    @staticmethod
+    def _adopt_recovered_source(
+        transaction: _ConfigTransaction, source: ESPHomeConfigSnapshot
+    ) -> bool:
+        """Restore a plan only from the exact YAML named by the checkpoint."""
+        if (
+            source.configuration_authoritative is not True
+            or source.configuration != _meter_record(transaction).config_filename
+            or source.sha256 != transaction.recovery_proposed_sha256
+            or sha256(source.content.encode()).hexdigest() != source.sha256
+        ):
+            transaction.plan = None
+            transaction.prior_content = None
+            _evidence(transaction, TransactionEvidenceCode.SOURCE_CHANGED)
+            return False
+        transaction.plan = ConfigMutationPlan(
+            source.configuration, transaction.source_sha256,
+            transaction.changes, "", source.content,
+        )
+        transaction.prior_content = ""  # Recovery cannot restore absent original YAML.
+        return True
+
+    async def _clear_install_checkpoint(self, transaction: _ConfigTransaction) -> None:
+        if transaction.offset_preparation is None:
+            await self._persistence.async_save_install_recovery(
+                transaction.mac, transaction.transaction_id, None
+            )
+            transaction.checkpoint_saved = False
+
+    async def _finish_terminal_install_failure(
+        self, transaction: _ConfigTransaction, code: TransactionEvidenceCode
+    ) -> TransactionStatus:
+        """Keep an install retryable if its durable checkpoint cannot be cleared."""
+        try:
+            _, cancelled = await self._drain_persistence_commit(
+                transaction, self._clear_install_checkpoint(transaction)
+            )
+        except asyncio.CancelledError:
+            _evidence(transaction, code)
+            self._retain_install_retry(transaction, TransactionEvidenceCode.PERSISTENCE_FAILED)
+            raise
+        except Exception:  # noqa: BLE001 - failed cleanup must retain the recovery handle
+            _evidence(transaction, code)
+            return self._retain_install_retry(
+                transaction, TransactionEvidenceCode.PERSISTENCE_FAILED
+            )
+        finally:
+            transaction.persistence_commit_started = False
+        status = self._finish(transaction, ConfigTransactionState.FAILED, code)
+        if cancelled:
+            raise asyncio.CancelledError
+        return status
 
     def _is_proposed_source_authorized(
         self,
@@ -1013,8 +1127,13 @@ class ConfigTransactionManager:
                 and any(
                     code in transaction.evidence
                     for code in (
+                        TransactionEvidenceCode.UPLOAD_OUTCOME_UNKNOWN,
+                        TransactionEvidenceCode.RECONNECT_UNAVAILABLE,
+                        TransactionEvidenceCode.ENTITY_MISMATCH,
+                        TransactionEvidenceCode.SENSOR_COUNT_MISMATCH,
                         TransactionEvidenceCode.METER_COMMUNICATION_FAILED,
                         TransactionEvidenceCode.PERSISTENCE_FAILED,
+                        TransactionEvidenceCode.SOURCE_CHANGED,
                     )
                 )
             )
@@ -1023,12 +1142,15 @@ class ConfigTransactionManager:
             elif retryable:
                 # The flashed firmware and proposed YAML are retained. Check the
                 # exact applied source while the transaction still owns the lock.
-                await self._check_configuration_source(transaction, proposed=True)
+                if not transaction.recovered:
+                    await self._check_configuration_source(transaction, proposed=True)
             else:
                 raise RuntimeError(
                     "only an unconfirmed preview or post-upload install retry "
                     "can be abandoned"
                 )
+            if TransactionProgress.OTA_ATTEMPTED in transaction.progress:
+                await self._clear_install_checkpoint(transaction)
             return self._finish(
                 transaction,
                 ConfigTransactionState.FAILED,
@@ -1085,8 +1207,37 @@ class ConfigTransactionManager:
                             TransactionEvidenceCode.SOURCE_CHANGED,
                         )
                 raise ConfigMutationError("verified calibration preview was superseded")
-            transaction.state = ConfigTransactionState.WRITE_CONFIRMED
             plan, prior_content = _sensitive(transaction)
+            if (
+                transaction.purpose == "install_configuration"
+                and plan.proposed_content == prior_content
+            ):
+                try:
+                    saved, cancelled = await self._drain_persistence_commit(
+                        transaction, self._persist_configuration_metadata(transaction, plan)
+                    )
+                except asyncio.CancelledError:
+                    self._finish(
+                        transaction, ConfigTransactionState.FAILED,
+                        TransactionEvidenceCode.PERSISTENCE_FAILED,
+                    )
+                    raise
+                except Exception:  # noqa: BLE001 - storage failure must not imply firmware installation
+                    return self._finish(
+                        transaction, ConfigTransactionState.FAILED,
+                        TransactionEvidenceCode.PERSISTENCE_FAILED,
+                    )
+                if not saved:
+                    return self._finish(
+                        transaction, ConfigTransactionState.FAILED,
+                        TransactionEvidenceCode.PERSISTENCE_FAILED,
+                    )
+                _progress(transaction, TransactionProgress.METADATA_PERSISTED)
+                status = self._finish(transaction, ConfigTransactionState.VERIFIED)
+                if cancelled:
+                    raise asyncio.CancelledError
+                return status
+            transaction.state = ConfigTransactionState.WRITE_CONFIRMED
             snapshot = ESPHomeConfigSnapshot(
                 plan.configuration, prior_content, transaction.source_sha256
             )
@@ -1249,9 +1400,14 @@ class ConfigTransactionManager:
     ) -> TransactionStatus:
         if transaction.closed:
             return _status(transaction)
+        if transaction.recovered:
+            return self._retain_install_retry(transaction, TransactionEvidenceCode.RECONNECT_UNAVAILABLE)
+        if TransactionProgress.OTA_ATTEMPTED in transaction.progress:
+            return self._retain_install_retry(transaction, TransactionEvidenceCode.SOURCE_CHANGED)
         transaction.state = ConfigTransactionState.FAILED
         transaction.rollback_available = (
             transaction.plan is not None and transaction.prior_content is not None
+            and TransactionProgress.OTA_ATTEMPTED not in transaction.progress
         )
         self._refresh_deadline(transaction)
         _evidence(transaction, TransactionEvidenceCode.WRITE_RECOVERY_REQUIRED)
@@ -1318,14 +1474,30 @@ class ConfigTransactionManager:
                 raise RuntimeError(
                     "install confirmation is not legal in the current state"
                 )
-            if TransactionProgress.OTA_UPLOADED in transaction.progress:
+            if TransactionProgress.OTA_ATTEMPTED in transaction.progress:
+                if transaction.recovered:
+                    source = await self._device_builder.async_get_config(
+                        _meter_record(transaction).config_filename  # type: ignore[arg-type]
+                    )
+                    if not self._adopt_recovered_source(transaction, source):
+                        return self._retain_install_retry(
+                            transaction, TransactionEvidenceCode.SOURCE_CHANGED
+                        )
                 await self._check_configuration_source(transaction, proposed=True)
                 transaction.evidence[:] = [
                     code
                     for code in transaction.evidence
                     if code not in _RETRYABLE_INSTALL_EVIDENCE
+                    and code not in (
+                        TransactionEvidenceCode.SOURCE_CHANGED,
+                        TransactionEvidenceCode.UPLOAD_FAILED,
+                        TransactionEvidenceCode.IDENTITY_MISMATCH,
+                        TransactionEvidenceCode.TOPOLOGY_MISMATCH,
+                    )
                 ]
-                return await self._verify_existing_upload_locked(transaction)
+                if TransactionProgress.OTA_UPLOADED in transaction.progress:
+                    return await self._verify_existing_upload_locked(transaction)
+                return await self._upload_locked(transaction)
             if transaction.verification_id is not None:
                 verified = await self._persistence.async_get_verified_calibration(
                     transaction.mac
@@ -1377,33 +1549,79 @@ class ConfigTransactionManager:
             transaction.communication_failed_cs_pins = ()
             transaction.state = ConfigTransactionState.INSTALLING
             self.publish_status(_status(transaction))
-            plan, _ = _sensitive(transaction)
+            if transaction.offset_preparation is None:
+                try:
+                    _, cancelled = await self._drain_persistence_commit(
+                        transaction,
+                        self._persistence.async_save_install_recovery(
+                            transaction.mac, transaction.transaction_id,
+                            _install_checkpoint(transaction),
+                        ),
+                    )
+                    transaction.checkpoint_saved = True
+                    if cancelled:
+                        raise asyncio.CancelledError
+                except asyncio.CancelledError:
+                    await self._drain_persistence_commit(transaction, self._clear_install_checkpoint(transaction))
+                    self._finish(transaction, ConfigTransactionState.FAILED, TransactionEvidenceCode.CANCELLED)
+                    raise
+                except Exception:  # noqa: BLE001 - durable recovery must precede OTA
+                    return self._finish(transaction, ConfigTransactionState.FAILED,
+                                        TransactionEvidenceCode.PERSISTENCE_FAILED)
+                finally:
+                    transaction.persistence_commit_started = False
+            await self._check_configuration_source(transaction, proposed=True)
+            return await self._upload_locked(transaction)
+
+    async def _upload_locked(self, transaction: _ConfigTransaction) -> TransactionStatus:
+        """Run or explicitly retry an OTA whose prior outcome is unknown."""
+        plan, _ = _sensitive(transaction)
+        transaction.upload_progress.clear()
+        transaction.state = ConfigTransactionState.INSTALLING
+        transaction.rollback_available = False
+        self.publish_status(_status(transaction))
+        _progress(transaction, TransactionProgress.OTA_ATTEMPTED)
+        try:
+            result = await self._device_builder.async_upload(
+                plan.configuration,
+                lambda update: self._publish_upload_progress(transaction, update),
+            )
+        except asyncio.CancelledError:
+            self._retain_install_retry(transaction, TransactionEvidenceCode.UPLOAD_OUTCOME_UNKNOWN)
+            raise
+        except Exception:  # noqa: BLE001 - external transport boundary
+            result = None
+        if result is None or not result.success and result.code is None:
+            return self._retain_install_retry(transaction, TransactionEvidenceCode.UPLOAD_OUTCOME_UNKNOWN)
+        if not result.success:
+            transaction.failure = _job_failure(
+                TransactionFailureStage.INSTALLING, result, TransactionFailureReason.UPLOAD_FAILED,
+                plan.proposed_content,
+            )
+            return await self._finish_terminal_install_failure(
+                transaction, TransactionEvidenceCode.UPLOAD_FAILED
+            )
+        _progress(transaction, TransactionProgress.OTA_UPLOADED)
+        if transaction.checkpoint_saved:
             try:
-                result = await self._device_builder.async_upload(
-                    plan.configuration,
-                    lambda update: self._publish_upload_progress(transaction, update),
+                _, cancelled = await self._drain_persistence_commit(
+                    transaction,
+                    self._persistence.async_save_install_recovery(
+                        transaction.mac, transaction.transaction_id,
+                        _install_checkpoint(transaction),
+                    ),
                 )
             except asyncio.CancelledError:
-                self._finish(
-                    transaction,
-                    ConfigTransactionState.FAILED,
-                    TransactionEvidenceCode.CANCELLED,
-                )
+                self._retain_install_retry(transaction, TransactionEvidenceCode.PERSISTENCE_FAILED)
                 raise
-            except Exception:  # noqa: BLE001 - external transport boundary
-                result = None
-            if result is None or not result.success:
-                transaction.failure = _job_failure(
-                    TransactionFailureStage.INSTALLING, result, TransactionFailureReason.UPLOAD_FAILED,
-                    plan.proposed_content,
-                )
-                return self._finish(
-                    transaction,
-                    ConfigTransactionState.FAILED,
-                    TransactionEvidenceCode.UPLOAD_FAILED,
-                )
-            _progress(transaction, TransactionProgress.OTA_UPLOADED)
-            return await self._verify_existing_upload_locked(transaction)
+            except Exception:  # noqa: BLE001 - recovery must retain acknowledged upload
+                return self._retain_install_retry(transaction, TransactionEvidenceCode.PERSISTENCE_FAILED)
+            finally:
+                transaction.persistence_commit_started = False
+            if cancelled:
+                self._retain_install_retry(transaction, TransactionEvidenceCode.RECONNECT_UNAVAILABLE)
+                raise asyncio.CancelledError
+        return await self._verify_existing_upload_locked(transaction)
 
     async def _verify_existing_upload_locked(
         self, transaction: _ConfigTransaction
@@ -1458,7 +1676,7 @@ class ConfigTransactionManager:
                 if delay:
                     await asyncio.sleep(delay)
         except asyncio.CancelledError:
-            self._finish(transaction, ConfigTransactionState.FAILED, TransactionEvidenceCode.CANCELLED)
+            self._retain_install_retry(transaction, TransactionEvidenceCode.RECONNECT_UNAVAILABLE)
             raise
         if error is not None:
             if error in _RETRYABLE_INSTALL_EVIDENCE:
@@ -1467,7 +1685,7 @@ class ConfigTransactionManager:
                 TransactionFailureStage.VERIFYING_METER,
                 TransactionFailureReason.UNKNOWN,
             )
-            return self._finish(transaction, ConfigTransactionState.FAILED, error)
+            return await self._finish_terminal_install_failure(transaction, error)
         _progress(transaction, TransactionProgress.DEVICE_VERIFIED)
         self.publish_status(_status(transaction))
         try:
@@ -1475,7 +1693,7 @@ class ConfigTransactionManager:
                 transaction, self._persist_verified_metadata(transaction, plan)
             )
         except asyncio.CancelledError:
-            self._finish(transaction, ConfigTransactionState.FAILED, TransactionEvidenceCode.CANCELLED)
+            self._retain_install_retry(transaction, TransactionEvidenceCode.PERSISTENCE_FAILED)
             raise
         except Exception:  # noqa: BLE001 - external storage boundary
             return self._persistence_failure_status(transaction)
@@ -1485,7 +1703,7 @@ class ConfigTransactionManager:
                 raise asyncio.CancelledError
             return status
         if transaction.offset_preparation is not None or transaction.offset_finalization is not None:
-            revoked = cancelled
+            revoked = cancelled and transaction.offset_preparation is not None
             if transaction.preparation_guard is not None:
                 try:
                     transaction.preparation_guard()
@@ -1523,6 +1741,16 @@ class ConfigTransactionManager:
                     raise asyncio.CancelledError
                 return status
         _progress(transaction, TransactionProgress.METADATA_PERSISTED)
+        try:
+            _, cleanup_cancelled = await self._drain_persistence_commit(
+                transaction, self._clear_install_checkpoint(transaction)
+            )
+            cancelled |= cleanup_cancelled
+        except asyncio.CancelledError:
+            self._retain_install_retry(transaction, TransactionEvidenceCode.PERSISTENCE_FAILED)
+            raise
+        except Exception:  # noqa: BLE001 - retain idempotent completion after cleanup failure
+            return self._retain_install_retry(transaction, TransactionEvidenceCode.PERSISTENCE_FAILED)
         status = self._finish(transaction, ConfigTransactionState.VERIFIED)
         if cancelled:
             raise asyncio.CancelledError
@@ -1576,36 +1804,7 @@ class ConfigTransactionManager:
             )
             return True
         if transaction.meter_configuration is not None:
-            configuration = transaction.meter_configuration
-            migration = configuration.totals_migration
-            if migration is not None:
-                reviewed = {
-                    (item.child_id, item.proposed_parent_id)
-                    for item in transaction.totals_change_intent.legacy_parent_decisions
-                }
-                remaining = tuple(
-                    link
-                    for link in migration.legacy_parent_links
-                    if (link.child_id, link.proposed_parent_id) not in reviewed
-                )
-                resolved = (
-                    _source_normalized_default_totals(
-                        ESPHomeConfigDocument.parse(plan.proposed_content),
-                        transaction.topology,
-                    )
-                    is not None
-                )
-                migration = TotalsMigrationRecord(
-                    bool(remaining),
-                    remaining,
-                    migration.native_visibility_confirmation_required and not resolved,
-                )
-            configuration = replace(
-                configuration,
-                totals_migration=migration,
-                totals_managed=configuration.totals_managed
-                or transaction.totals_change_intent.adopt_managed_totals,
-            )
+            configuration = _configuration_to_persist(transaction, plan)
             if transaction.verification_id is None:
                 await self._persistence.async_save_verified_meter_configuration(
                     transaction.mac,
@@ -1661,8 +1860,12 @@ class ConfigTransactionManager:
                 if self._offset_recovery is None or transaction.lease is None:
                     raise ValueError("stock offset preparation is unavailable")
                 if isinstance(preparation, StockOffsetFinalization):
+                    if transaction.recovered:
+                        current = await self._offset_recovery.async_load(transaction.lease)
+                        final_installed = bool(current is not None and current.final_installed)
                     record = await self._offset_recovery.async_require_finalization(
-                        transaction.lease, preparation, installed=final_installed
+                        transaction.lease, preparation, installed=final_installed,
+                        require_confirmed=not transaction.recovered,
                     )
                     if preparation.verification_id != transaction.verification_id:
                         raise ValueError("finalization gain reservation changed")
@@ -1744,7 +1947,10 @@ class ConfigTransactionManager:
     ) -> TransactionStatus:
         transaction.state = ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
         persistence_failed = code is TransactionEvidenceCode.PERSISTENCE_FAILED
-        transaction.rollback_available = not persistence_failed
+        transaction.rollback_available = (
+            not persistence_failed and not transaction.recovered
+            and TransactionProgress.OTA_ATTEMPTED not in transaction.progress
+        )
         transaction.failure = None if persistence_failed else TransactionFailure(
             TransactionFailureStage.VERIFYING_METER,
             TransactionFailureReason.METER_COMMUNICATION_FAILED
@@ -1760,7 +1966,10 @@ class ConfigTransactionManager:
     def _persistence_failure_status(
         self, transaction: _ConfigTransaction
     ) -> TransactionStatus:
-        if transaction.purpose.startswith("offset_"):
+        if transaction.purpose == "offset_preparation" or (
+            transaction.purpose == "offset_finalization"
+            and TransactionEvidenceCode.SOURCE_CHANGED in transaction.evidence
+        ):
             return self._finish(
                 transaction,
                 ConfigTransactionState.FAILED,
@@ -1792,6 +2001,10 @@ class ConfigTransactionManager:
         *,
         expected_current_sha256: str | None = None,
     ) -> TransactionStatus:
+        if transaction.recovered:
+            raise RuntimeError("recovered installation cannot restore the original YAML")
+        if TransactionProgress.OTA_ATTEMPTED in transaction.progress:
+            raise RuntimeError("rollback is unavailable after an OTA attempt")
         transaction.rollback_available = False
         if cause is not None:
             _evidence(transaction, cause)
@@ -1834,6 +2047,16 @@ class ConfigTransactionManager:
             _evidence(transaction, TransactionEvidenceCode.ROLLBACK_FAILED)
             self._retain_write_recovery(transaction)
             raise RollbackFailedError("configuration rollback cleanup failed") from error
+        if transaction.checkpoint_saved:
+            try:
+                await self._clear_install_checkpoint(transaction)
+            except asyncio.CancelledError:
+                self._retain_write_recovery(transaction)
+                raise
+            except Exception as error:
+                _evidence(transaction, TransactionEvidenceCode.ROLLBACK_FAILED)
+                self._retain_write_recovery(transaction)
+                raise RollbackFailedError("configuration rollback cleanup failed") from error
         return self._finish(transaction, ConfigTransactionState.ROLLED_BACK)
 
     async def _rollback_after_cancellation(
@@ -1872,13 +2095,18 @@ class ConfigTransactionManager:
             or self._task_owns(transaction)
         ):
             return
-        recover_write = transaction.write_started and transaction.state not in {
-            ConfigTransactionState.COMPILED,
-            ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED,
-            ConfigTransactionState.INSTALLING,
-            ConfigTransactionState.RECONNECTING,
-            ConfigTransactionState.VERIFIED,
-        }
+        recover_write = (
+            not transaction.recovered
+            and transaction.write_started
+            and TransactionProgress.OTA_ATTEMPTED not in transaction.progress
+            and transaction.state not in {
+                ConfigTransactionState.COMPILED,
+                ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED,
+                ConfigTransactionState.INSTALLING,
+                ConfigTransactionState.RECONNECTING,
+                ConfigTransactionState.VERIFIED,
+            }
+        )
         transaction.state = ConfigTransactionState.FAILED
         if recover_write:
             transaction.rollback_available = True
@@ -2008,6 +2236,162 @@ def _selections_from_document(
     )
 
 
+def _install_checkpoint(transaction: _ConfigTransaction) -> dict[str, Any]:
+    """Retain intended semantics and digests, never YAML or physical readiness."""
+    plan, _ = _sensitive(transaction)
+    return {
+        "version": 2,
+        "ota_uploaded": TransactionProgress.OTA_UPLOADED in transaction.progress,
+        "mac": transaction.mac,
+        "transaction_id": transaction.transaction_id,
+        "record": serialize_meter_record(_meter_record(transaction)),
+        "source_sha256": transaction.source_sha256,
+        "proposed_sha256": sha256(plan.proposed_content.encode()).hexdigest(),
+        "changes": [asdict(item) for item in transaction.changes],
+        "meter_configuration": _serialize_meter_configuration(
+            _configuration_to_persist(transaction, plan), transaction.topology
+        ) if transaction.meter_configuration is not None else None,
+        "selections": [asdict(replace(item, config_sha256=sha256(plan.proposed_content.encode()).hexdigest()))
+                       for item in transaction.selections],
+        "expected_entities": sorted(transaction.expected_sensor_entities),
+        "expected_aggregates": sorted(transaction.expected_aggregate_sensor_entities),
+        "record_fingerprint": transaction.meter_record_fingerprint,
+        "verification_id": transaction.verification_id,
+        "purpose": transaction.purpose,
+    }
+
+
+def _restore_install_checkpoint(raw: dict[str, Any], mac: str) -> _ConfigTransaction:
+    """Validate private persisted input before reconstructing install recovery."""
+    try:
+        fields = {
+            "version", "mac", "transaction_id", "record", "source_sha256",
+            "proposed_sha256", "changes", "meter_configuration", "selections",
+            "expected_entities", "expected_aggregates", "record_fingerprint",
+            "verification_id", "purpose",
+        }
+        version = raw["version"]
+        if (
+            type(version) is not int or version not in {1, 2}
+            or set(raw) != (fields if version == 1 else fields | {"ota_uploaded"})
+            or (version == 2 and type(raw["ota_uploaded"]) is not bool)
+            or raw["mac"] != mac
+        ):
+            raise ValueError("invalid checkpoint schema")
+        for key, size in (("transaction_id", 32), ("source_sha256", 64), ("proposed_sha256", 64)):
+            if not isinstance(raw[key], str) or re.fullmatch(rf"[0-9a-f]{{{size}}}", raw[key]) is None:
+                raise ValueError("invalid checkpoint identity")
+        for key, size in (("record_fingerprint", 64), ("verification_id", 32)):
+            if raw[key] is not None and (
+                not isinstance(raw[key], str) or re.fullmatch(rf"[0-9a-f]{{{size}}}", raw[key]) is None
+            ):
+                raise ValueError("invalid checkpoint reservation")
+        purpose = raw["purpose"]
+        if purpose not in {"install_configuration", "save_calibration", "offset_finalization"}:
+            raise ValueError("unsupported recovery purpose")
+        record = raw["record"]
+        topology = _current_topology(record)
+        topology = replace(topology, evidence=tuple(
+            TopologyEvidence(TopologyEvidenceSource(item["source"]), item["addon_count"], item["detail"])
+            for item in record["topology"]["evidence"]
+        ))
+        if record["mac"] != mac or record["config_sha256"] != raw["source_sha256"]:
+            raise ValueError("checkpoint record identity changed")
+        configuration = record["config_filename"]
+        if not isinstance(configuration, str):
+            raise TypeError("invalid checkpoint configuration")
+        trusted = _trusted_meter_record(mac, topology, ESPHomeConfigSnapshot(configuration, "", raw["source_sha256"]))
+        if record != serialize_meter_record(trusted):
+            raise ValueError("checkpoint contains unexpected meter data")
+        if not isinstance(raw["changes"], list) or len(raw["changes"]) > 100:
+            raise ValueError("invalid checkpoint changes")
+        changes = tuple(SubstitutionChange(**item) for item in raw["changes"])
+        _validate_changes(changes)
+        for key in ("expected_entities", "expected_aggregates"):
+            if not isinstance(raw[key], list) or len(raw[key]) > 1024:
+                raise ValueError("invalid checkpoint entities")
+        entities = frozenset(tuple(item) for item in raw["expected_entities"])
+        aggregates = frozenset(tuple(item) for item in raw["expected_aggregates"])
+        _validate_expected_sensor_entities(entities)
+        _validate_expected_sensor_entities(aggregates)
+        if not aggregates <= entities or len(entities) != len(raw["expected_entities"]) or len(aggregates) != len(raw["expected_aggregates"]):
+            raise ValueError("invalid aggregate checkpoint evidence")
+        if not isinstance(raw["selections"], list) or len(raw["selections"]) > topology.ct_count:
+            raise ValueError("invalid checkpoint selections")
+        selections = tuple(StoredCTSelection(**item) for item in raw["selections"])
+        if len({item.channel for item in selections}) != len(selections) or any(
+            item.channel > topology.ct_count
+            or item.config_sha256 not in {raw["source_sha256"], raw["proposed_sha256"]}
+            for item in selections
+        ):
+            raise ValueError("invalid checkpoint selections")
+        meter_configuration = (
+            _deserialize_meter_configuration(raw["meter_configuration"], topology)
+            if raw["meter_configuration"] is not None else None
+        )
+        if meter_configuration is not None and meter_configuration.config_sha256 != raw["proposed_sha256"]:
+            raise ValueError("checkpoint metadata does not match proposed source")
+        return _ConfigTransaction(
+            raw["transaction_id"], 0, mac, topology, raw["source_sha256"], changes, "",
+            None, None, meter_configuration=meter_configuration,
+            meter_record=trusted, meter_record_fingerprint=raw["record_fingerprint"],
+            _legacy_ct_selections=selections, verification_id=raw["verification_id"],
+            expected_sensor_entities=entities, expected_aggregate_sensor_entities=aggregates,
+            purpose=purpose, recovered=True,
+            recovery_proposed_sha256=raw["proposed_sha256"],
+            state=ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED,
+            evidence=[
+                TransactionEvidenceCode.RECONNECT_UNAVAILABLE
+                if version == 2 and raw["ota_uploaded"]
+                else TransactionEvidenceCode.UPLOAD_OUTCOME_UNKNOWN
+            ],
+            progress=[TransactionProgress.OTA_ATTEMPTED] + (
+                [TransactionProgress.OTA_UPLOADED]
+                if version == 2 and raw["ota_uploaded"] else []
+            ),
+            write_started=True,
+        )
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise ValueError("invalid install recovery checkpoint") from None
+
+
+def _configuration_to_persist(
+    transaction: _ConfigTransaction, plan: ConfigMutationPlan
+) -> StoredMeterConfiguration:
+    assert transaction.meter_configuration is not None
+    configuration = transaction.meter_configuration
+    migration = configuration.totals_migration
+    if migration is not None:
+        reviewed = {
+            (item.child_id, item.proposed_parent_id)
+            for item in transaction.totals_change_intent.legacy_parent_decisions
+        }
+        remaining = tuple(
+            link
+            for link in migration.legacy_parent_links
+            if (link.child_id, link.proposed_parent_id) not in reviewed
+        )
+        resolved = (
+            _source_normalized_default_totals(
+                ESPHomeConfigDocument.parse(plan.proposed_content),
+                transaction.topology,
+            )
+            is not None
+        )
+        migration = TotalsMigrationRecord(
+            bool(remaining),
+            remaining,
+            migration.native_visibility_confirmation_required and not resolved,
+        )
+    configuration = replace(
+        configuration,
+        totals_migration=migration,
+        totals_managed=configuration.totals_managed
+        or transaction.totals_change_intent.adopt_managed_totals,
+    )
+    return configuration
+
+
 def _sensitive(
     transaction: _ConfigTransaction,
 ) -> tuple[ConfigMutationPlan, str]:
@@ -2075,7 +2459,8 @@ def _status(transaction: _ConfigTransaction) -> TransactionStatus:
         tuple(transaction.upload_progress),
         transaction.aggregate_entity_mismatch,
         transaction.meter_configuration is not None
-        and transaction.state is ConfigTransactionState.VERIFIED,
+        and transaction.state is ConfigTransactionState.VERIFIED
+        and TransactionProgress.DEVICE_VERIFIED in transaction.progress,
         transaction.purpose,
         transaction.communication_failed_cs_pins,
         transaction.failure,

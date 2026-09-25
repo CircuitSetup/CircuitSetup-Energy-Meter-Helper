@@ -1360,6 +1360,48 @@ class HelperStore:
             meters[record.mac] = serialized
             await self._store.async_save(data)
 
+    async def async_get_install_recovery(self, mac: str) -> dict[str, Any] | None:
+        """Read a private verification checkpoint, separate from installed metadata."""
+        records = (await self.async_load()).get("install_recovery", {})
+        if not isinstance(records, dict):
+            raise TypeError("invalid install recovery storage")
+        record = records.get(canonical_mac(mac))
+        if record is not None and not isinstance(record, dict):
+            raise ValueError("invalid install recovery record")
+        return deepcopy(record)
+
+    async def async_save_install_recovery(
+        self, mac: str, transaction_id: str, checkpoint: dict[str, Any] | None
+    ) -> None:
+        """Durably replace or remove only this transaction's recovery checkpoint."""
+        mac = canonical_mac(mac)
+        if re.fullmatch(r"[0-9a-f]{32}", transaction_id) is None:
+            raise ValueError("invalid recovery transaction identity")
+        if checkpoint is not None and (
+            checkpoint.get("transaction_id") != transaction_id
+            or checkpoint.get("mac") != mac
+            or len(json.dumps(checkpoint, allow_nan=False).encode()) > 1_048_576
+        ):
+            raise ValueError("invalid install recovery checkpoint")
+        async with self._update_lock:
+            data = await self.async_load()
+            records = data.setdefault("install_recovery", {})
+            if not isinstance(records, dict):
+                raise TypeError("invalid install recovery storage")
+            current = records.get(mac)
+            if checkpoint is None and current is not None and (
+                not isinstance(current, dict)
+                or current.get("transaction_id") != transaction_id
+            ):
+                raise ValueError("another install requires recovery")
+            if checkpoint is None:
+                records.pop(mac, None)
+                if not records:
+                    data.pop("install_recovery")
+            else:
+                records[mac] = deepcopy(checkpoint)
+            await self._store.async_save_verified(data)
+
     async def async_advance_offset_configuration_source(
         self,
         mac: str,
@@ -1418,7 +1460,7 @@ class HelperStore:
             except KeyError, TypeError, ValueError:
                 return False
             if current_hash == proposed_sha256:
-                await self._store.async_save(data)
+                await self._store.async_save_verified(data)
                 return True
             updated = deepcopy(raw)
             updated["config_sha256"] = proposed_sha256
@@ -1430,7 +1472,7 @@ class HelperStore:
                     item["config_sha256"] = proposed_sha256
             if updated != raw:
                 data["meters"][mac] = updated
-                await self._store.async_save(data)
+                await self._store.async_save_verified(data)
             return True
 
     async def async_save_verified_ct_selections(
@@ -1449,7 +1491,7 @@ class HelperStore:
             calibration = meter.get("verified_calibration")
             if isinstance(calibration, dict) and calibration.get("source_handoff_firmware_installed"):
                 meter.pop("verified_calibration")
-            await self._store.async_save(data)
+            await self._store.async_save_verified(data)
 
     async def async_get_ct_selections(self, mac: str) -> tuple[StoredCTSelection, ...]:
         """Load only the safe persisted model selections for one meter."""
@@ -1550,8 +1592,23 @@ class HelperStore:
                     record is None
                     or not isinstance(expected_record_fingerprint, str)
                     or re.fullmatch(r"[0-9a-f]{64}", expected_record_fingerprint) is None
-                    or _meter_record_fingerprint(mac, meters) != expected_record_fingerprint
                 ):
+                    raise ValueError("meter record changed since preview")
+                if (
+                    isinstance(raw_meter, dict)
+                    and record.mac == mac and record.config_sha256 == expected_source_sha256
+                    and raw_meter.get("config_filename") == record.config_filename
+                    and _configuration_hash(raw_meter) == configuration.config_sha256
+                    and _topology_identity(_current_topology(raw_meter))
+                    == _topology_identity(_current_topology(serialize_meter_record(record)))
+                    and raw_meter.get("meter_configuration")
+                    == _serialize_meter_configuration(configuration, _current_topology(raw_meter))
+                ):
+                    # An earlier verified commit may have outlived its acknowledgement.
+                    # Confirm the exact result without overwriting any newer metadata.
+                    await self._store.async_save_verified(data)
+                    return
+                if _meter_record_fingerprint(mac, meters) != expected_record_fingerprint:
                     raise ValueError("meter record changed since preview")
                 if mac in meters and not isinstance(raw_meter, dict):
                     raise ValueError("current meter record is invalid")
@@ -1579,7 +1636,7 @@ class HelperStore:
             calibration = meters[mac].get("verified_calibration")
             if isinstance(calibration, dict) and calibration.get("source_handoff_firmware_installed"):
                 meters[mac].pop("verified_calibration")
-            await self._store.async_save(data)
+            await self._store.async_save_verified(data)
 
     async def async_save_verified_meter_configuration_and_mark_verified_calibration_installed(
         self,
@@ -1627,7 +1684,7 @@ class HelperStore:
                     )
                 except ValueError:
                     return False
-                await self._store.async_save(data)
+                await self._store.async_save_verified(data)
                 return True
             if current_hash != expected_source_sha256:
                 return False
@@ -1645,7 +1702,7 @@ class HelperStore:
                 "source_handoff_firmware_installed"
             ] = True
             meters[mac] = raw_meter
-            await self._store.async_save(data)
+            await self._store.async_save_verified(data)
             return True
 
     async def async_save_verified_ct_selections_and_mark_verified_calibration_installed(
@@ -1704,7 +1761,7 @@ class HelperStore:
                     or "meter_configuration" in raw_meter
                 ):
                     return False
-                await self._store.async_save(data)
+                await self._store.async_save_verified(data)
                 return True
             if current_hash != expected_source_sha256:
                 return False
@@ -1712,7 +1769,7 @@ class HelperStore:
             raw_meter["ct_selections"] = serialized_selections
             raw_meter.pop("meter_configuration", None)
             raw_calibration["source_handoff_firmware_installed"] = True
-            await self._store.async_save(data)
+            await self._store.async_save_verified(data)
             return True
 
     async def async_save_interrupted_session(
@@ -1726,7 +1783,7 @@ class HelperStore:
             meter["interrupted_session"] = (
                 _serialize_interrupted_session(marker) if marker is not None else None
             )
-            await self._store.async_save(data)
+            await self._store.async_save_verified(data)
 
     async def async_get_interrupted_session(
         self, mac: str
@@ -1761,7 +1818,7 @@ class HelperStore:
             meters = data.setdefault("meters", {})
             meter = meters.setdefault(record.mac, {})
             meter["verified_calibration"] = _serialize_verified_calibration(record)
-            await self._store.async_save(data)
+            await self._store.async_save_verified(data)
 
     async def async_finalize_verified_calibration(
         self, record: VerifiedCalibrationRecord
@@ -1772,7 +1829,7 @@ class HelperStore:
             meter = data.setdefault("meters", {}).setdefault(record.mac, {})
             meter["interrupted_session"] = None
             meter["verified_calibration"] = _serialize_verified_calibration(record)
-            await self._store.async_save(data)
+            await self._store.async_save_verified(data)
 
     async def async_get_verified_calibration(
         self, mac: str
@@ -1832,7 +1889,7 @@ class HelperStore:
             raw["source_handoff_available"] = False
             raw["source_handoff_transaction_id"] = transaction_id
             raw["source_handoff_firmware_installed"] = False
-            await self._store.async_save(data)
+            await self._store.async_save_verified(data)
             return True
 
     async def async_revalidate_verified_calibration(
@@ -1873,7 +1930,7 @@ class HelperStore:
             raw["source_handoff_available"] = not record.has_offset_calibration
             raw["source_handoff_transaction_id"] = None
             raw["source_handoff_firmware_installed"] = False
-            await self._store.async_save(data)
+            await self._store.async_save_verified(data)
             return True
 
     async def async_mark_verified_calibration_installed(
@@ -1895,7 +1952,7 @@ class HelperStore:
             ):
                 return False
             raw["source_handoff_firmware_installed"] = True
-            await self._store.async_save(data)
+            await self._store.async_save_verified(data)
             return True
 
     async def async_complete_verified_calibration_handoff(
@@ -1918,5 +1975,5 @@ class HelperStore:
             ):
                 return False
             raw["source_authority"] = CalibrationSourceAuthority.CONFIGURATION.value
-            await self._store.async_save(data)
+            await self._store.async_save_verified(data)
             return True

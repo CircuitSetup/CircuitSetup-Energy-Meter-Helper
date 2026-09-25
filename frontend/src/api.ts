@@ -64,8 +64,8 @@ const UPDATE_INTERVALS = new Set([1, 2, 5, 10, 30, 60]);
 const EVIDENCE_SOURCES = new Set(["config_project", "config_packages", "dashboard_import", "native_project", "native_entity_counts"]);
 const PHASES = new Set(["A", "B", "C"]);
 const JOB_STAGES = new Set(["connecting", "uploading", "writing", "verifying", "completed", "transfer"]);
-const TRANSACTION_EVIDENCE = new Set(["write_failed", "write_not_applied", "write_recovery_required", "source_changed", "validation_failed", "validation_unavailable", "compile_failed", "upload_failed", "reconnect_unavailable", "meter_communication_failed", "identity_mismatch", "topology_mismatch", "entity_mismatch", "sensor_count_mismatch", "persistence_failed", "rollback_failed", "cancelled"]);
-const TRANSACTION_PROGRESS = new Set(["config_written", "config_validated", "firmware_compiled", "ota_uploaded", "device_verified", "metadata_persisted", "config_restored"]);
+const TRANSACTION_EVIDENCE = new Set(["write_failed", "write_not_applied", "write_recovery_required", "source_changed", "validation_failed", "validation_unavailable", "compile_failed", "upload_failed", "upload_outcome_unknown", "reconnect_unavailable", "meter_communication_failed", "identity_mismatch", "topology_mismatch", "entity_mismatch", "sensor_count_mismatch", "persistence_failed", "rollback_failed", "cancelled"]);
+const TRANSACTION_PROGRESS = new Set(["config_written", "config_validated", "firmware_compiled", "ota_attempted", "ota_uploaded", "device_verified", "metadata_persisted", "config_restored"]);
 const TRANSACTION_FAILURE_STAGES = new Set(["validating", "building", "installing", "verifying_meter"]);
 const TRANSACTION_FAILURE_REASONS = new Set(["unknown", "missing_package", "unsupported_component_option", "required_secret", "conflicting_managed_override", "validation_rejected", "compile_rejected", "upload_failed", "verification_incomplete", "meter_communication_failed"]);
 const PREFLIGHT_CODES = new Set(["count_mismatch", "invalid_kind", "invalid_unit", "invalid_range", "invalid_step", "unavailable", "zero_ack", "device_busy"]);
@@ -537,6 +537,15 @@ function session(value: unknown, label: string): SessionStatus {
   if (item.entity_role_counts !== undefined) Object.values(record(item.entity_role_counts, label)).forEach((count) => { if (integer(count, label) < 0) throw new Error(`${label} response is invalid`); });
   if (item.calibration_sources !== undefined) Object.values(record(item.calibration_sources, label)).forEach((source) => enumeration(source, new Set(["flash", "configuration", "unknown"]), label));
   if (item.calibration_plan !== undefined) enumeration(item.calibration_plan, new Set(["standard", "full"]), label);
+  if (item.configured_offset_targets !== undefined) {
+    const targets = array(item.configured_offset_targets, label, 14).map((target) => {
+      const pair = array(target, label, 2);
+      if (pair.length !== 2) throw new Error(`${label} response is invalid`);
+      return [integer(pair[0], label), integer(pair[1], label)] as const;
+    });
+    if (targets.some(([board, stage]) => board < 0 || board > 6 || stage !== 1 && stage !== 2)
+      || new Set(targets.map(([board, stage]) => `${board}:${stage}`)).size !== targets.length) throw new Error(`${label} response is invalid`);
+  }
   const offsetFields = [item.offset_capability, item.offset_disposition, item.offset_boards, item.has_pending_calibration];
   if (offsetFields.every((field) => field === undefined)) return value as SessionStatus;
   if (offsetFields.some((field) => field === undefined)) throw new Error(`${label} response is invalid`);

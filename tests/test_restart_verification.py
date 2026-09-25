@@ -915,7 +915,7 @@ def test_restart_requires_and_consumes_server_owned_complete_origin() -> None:
     asyncio.run(run())
 
 
-def test_real_log_fallback_rejects_complete_unexpected_restore_block() -> None:
+def test_real_log_fallback_accepts_complete_known_unchanged_restore_block() -> None:
     async def run() -> None:
         expected = {"meter_main1": ((7305, 1), (7305, 2), (7305, 3))}
         unexpected = ((7305, 4), (7305, 5), (7305, 6))
@@ -939,11 +939,10 @@ def test_real_log_fallback_rejects_complete_unexpected_restore_block() -> None:
             persist_verified=persist,
             restart_restore_timeout=0.02,
         )
-        with pytest.raises(RestartVerificationError, match="unexpected"):
-            await engine.async_verify_after_restart(
-                "aabbccddeeff", session, binding, substitutions=substitutions(0)
-            )
-        assert saved == []
+        await engine.async_verify_after_restart(
+            "aabbccddeeff", session, binding, substitutions=substitutions(0)
+        )
+        assert len(saved) == 1
 
     asyncio.run(run())
 

@@ -26,7 +26,7 @@ it("shows affected SPI pins and hardware troubleshooting without allowing Contin
   const noop = () => undefined;
   const status = {
     purpose: "install_configuration", transaction_id: "tx", state: "install_confirmation_required", source_sha256: "a".repeat(64),
-    changes: [], redacted_diff: "", rollback_available: true,
+    changes: [], redacted_diff: "", rollback_available: false,
     evidence: ["meter_communication_failed"], communication_failed_cs_pins: [0, 16],
     progress: ["firmware_compiled", "ota_uploaded"], validation_detail: null, upload_progress: [],
     aggregate_entity_mismatch: false, full_meter_configuration_verified: false,
@@ -74,6 +74,35 @@ it("renders purpose-specific configuration installation controls", () => {
 
   render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop, null, null, false, false, "", true), host);
   expect(host.textContent).toContain("Install reviewed helper configuration");
+});
+
+it("confirms an unchanged meter configuration without build or install controls", () => {
+  const host = document.createElement("div");
+  const confirm = vi.fn();
+  const status = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64),
+    changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null,
+    upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false,
+    full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  const noop = () => undefined;
+
+  render(buildInstallStep("install_configuration", status, confirm, noop, noop, noop, noop, noop), host);
+  expect(host.textContent).toContain("Configuration file is unchanged");
+  expect(host.textContent).toContain("Confirm unchanged configuration");
+  expect(host.textContent).not.toContain("Build firmware");
+  expect(host.textContent).not.toContain("Install on meter");
+  expect(host.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(true);
+  [...host.querySelectorAll("button")].find((button) => button.textContent === "Confirm unchanged configuration")?.click();
+  expect(confirm).toHaveBeenCalledOnce();
+
+  render(buildInstallStep("install_configuration", { ...status, state: "verified", progress: ["metadata_persisted"] },
+    confirm, noop, noop, noop, noop, noop), host);
+  expect(host.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(false);
+
+  render(buildInstallStep("install_configuration", { ...status, state: "failed", evidence: ["persistence_failed"] },
+    confirm, noop, noop, noop, noop, noop), host);
+  expect(host.textContent).toContain("Helper settings could not be saved");
+  expect(host.textContent).toContain("No firmware was installed");
+  expect(host.textContent).not.toContain("Firmware installed; Helper data was not saved");
 });
 
 it("uses normal explicit install controls for stock preparation without flash clearing", () => {
@@ -135,7 +164,7 @@ it("does not relabel retained Compile progress while Install starts", () => {
 
 it.each(["entity_mismatch", "reconnect_unavailable"] as const)("shows only the latest determinate Install progress and allows %s retry", (evidence) => {
   const host = document.createElement("div");
-  const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: [evidence], progress: ["firmware_compiled", "ota_uploaded"], validation_detail: null, upload_progress: [{ stage: "uploading", percentage: 99 }, { stage: "uploading", percentage: 100 }, { stage: "uploading", percentage: null }], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [evidence], progress: ["firmware_compiled", "ota_uploaded"], validation_detail: null, upload_progress: [{ stage: "uploading", percentage: 99 }, { stage: "uploading", percentage: 100 }, { stage: "uploading", percentage: null }], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
   const noop = () => undefined;
   render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop), host);
 
@@ -143,7 +172,61 @@ it.each(["entity_mismatch", "reconnect_unavailable"] as const)("shows only the l
   expect(host.querySelectorAll(".upload-progress li")).toHaveLength(0);
   expect(host.querySelector<HTMLProgressElement>("progress")?.value).toBe(100);
   expect([...host.querySelectorAll("button")].find((button) => button.textContent === "Retry verification")?.disabled).toBe(false);
-  expect([...host.querySelectorAll("button")].some((button) => button.textContent === "Rollback")).toBe(true);
+  expect([...host.querySelectorAll("button")].some((button) => button.textContent === "Rollback")).toBe(false);
+});
+
+it("offers an explicit install retry for uncertain uploads without claiming installation", () => {
+  const host = document.createElement("div");
+  const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64),
+    changes: [], redacted_diff: "", rollback_available: false, evidence: ["upload_outcome_unknown"],
+    progress: ["ota_attempted"], validation_detail: null, upload_progress: [], purpose: "install_configuration",
+    aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  const noop = () => undefined;
+  render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop), host);
+  expect(host.textContent).toContain("Installation outcome is unknown");
+  expect(host.textContent).toContain("firmware again");
+  expect(host.textContent).not.toContain("Firmware installed");
+  expect([...host.querySelectorAll("button")].find((button) => button.textContent === "Retry installation")?.disabled).toBe(false);
+  expect([...host.querySelectorAll("button")].some((button) => button.textContent === "Rollback")).toBe(false);
+
+  render(buildInstallStep("install_configuration", { ...status, evidence: ["upload_outcome_unknown", "source_changed"] },
+    noop, noop, noop, noop, noop, noop), host);
+  expect(host.textContent).toContain("Reviewed configuration source changed");
+  expect(host.textContent).toContain("Restore the exact reviewed YAML");
+});
+
+it("describes a rejected upload with failed checkpoint cleanup accurately", () => {
+  const host = document.createElement("div");
+  const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64),
+    changes: [], redacted_diff: "", rollback_available: false, evidence: ["upload_failed", "persistence_failed"],
+    progress: ["ota_attempted"], validation_detail: null, upload_progress: [], purpose: "install_configuration",
+    aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  const noop = () => undefined;
+  render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop), host);
+
+  expect(host.textContent).toContain("Firmware upload was rejected");
+  expect(host.textContent).not.toContain("Installation outcome is unknown");
+  expect(host.textContent).not.toContain("Firmware installed");
+  expect([...host.querySelectorAll("button")].find((button) => button.textContent === "Retry installation")?.disabled).toBe(false);
+
+  render(buildInstallStep("install_configuration", { ...status, state: "failed", evidence: ["upload_failed"] },
+    noop, noop, noop, noop, noop, noop), host);
+  expect(host.textContent).toContain("Go Back and review");
+  expect(host.textContent).not.toContain("Retry installation sends");
+});
+
+it("retries verification when a failed verification leaves a checkpoint", () => {
+  const host = document.createElement("div");
+  const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64),
+    changes: [], redacted_diff: "", rollback_available: false, evidence: ["entity_mismatch", "persistence_failed"],
+    progress: ["ota_attempted", "ota_uploaded"], validation_detail: null, upload_progress: [], purpose: "install_configuration",
+    aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  const noop = () => undefined;
+  render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop), host);
+
+  expect(host.textContent).toContain("Firmware uploaded; verification did not complete");
+  expect(host.textContent).not.toContain("Firmware installed; Helper data was not saved");
+  expect([...host.querySelectorAll("button")].find((button) => button.textContent === "Retry verification")?.disabled).toBe(false);
 });
 
 it("offers metadata completion without another upload or rollback", () => {
@@ -376,6 +459,24 @@ describe("explicit totals adoption and migration transactions", () => {
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
   });
 
+  it("continues after an unchanged confirmation without claiming firmware installation", async () => {
+    const unchanged = { ...reviewed(), redacted_diff: "", full_meter_configuration_verified: false };
+    const { state, panel, calls } = await prepare({ apply_ct_config: {
+      ...unchanged, state: "verified", progress: ["metadata_persisted"],
+    } });
+    state.canonicalConfigurationChanged = true;
+    state.transaction = unchanged;
+    await state.transactionAction("apply");
+
+    expect(calls.some((call) => String(call.type).endsWith("apply_ct_config"))).toBe(true);
+    expect(calls.some((call) => /compile_ct_config|install_ct_config/.test(String(call.type)))).toBe(false);
+    expect(state.configurationInstalled).toBe(false);
+    expect(state.canonicalConfigurationChanged).toBe(false);
+    expect(state.verifiedMeterConfiguration).toBeNull();
+    panel.showState("calibration-plan"); await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Calibration Plan");
+  });
+
   it.each(["adoption", "keep independent"])("retains metadata-only %s after a failed install and clears it only on verified retry", async (choice) => {
     const installResult = { ...reviewed(), state: "install_confirmation_required",
       full_meter_configuration_verified: false, evidence: ["entity_mismatch"] };
@@ -435,6 +536,22 @@ describe("explicit totals adoption and migration transactions", () => {
     expect(text(panel)).toContain("Installed configuration is verified, but fresh totals inventory could not be loaded");
     expect([...panel.shadowRoot!.querySelectorAll("button")].some((button) => button.textContent === "Retry totals inventory refresh")).toBe(true);
     expect(state.meterConfiguration.configuration.totals_change_intent.adopt_managed_totals).toBe(false);
+  });
+
+  it("offers inventory retry after unchanged Helper settings are saved", async () => {
+    const confirmed = { ...reviewed(), state: "verified" as const, redacted_diff: "", progress: ["metadata_persisted"] };
+    const { state, panel, calls } = await prepare({ apply_ct_config: confirmed, get_meter_configuration: new Error("offline") });
+    state.transaction = { ...reviewed(), redacted_diff: "" };
+    await state.transactionAction("apply");
+    await panel.updateComplete;
+    expect(state.configurationInstalled).toBe(false);
+    expect(state.transaction?.state).toBe("verified");
+    expect(text(panel)).toContain("Helper settings were saved, but fresh totals inventory could not be loaded");
+    const retry = [...panel.shadowRoot!.querySelectorAll("button")].find((button) => button.textContent === "Retry totals inventory refresh");
+    expect(retry).toBeDefined();
+    const inventoryCalls = calls.filter((call) => String(call.type).endsWith("get_meter_configuration")).length;
+    retry?.click();
+    await vi.waitFor(() => expect(calls.filter((call) => String(call.type).endsWith("get_meter_configuration")).length).toBe(inventoryCalls + 1));
   });
 
   it("ignores a late installed inventory response after device selection changes", async () => {
@@ -552,7 +669,7 @@ const contrastRatio = (first: string, second: string): number => {
 it("offers verification retry after reconnect verification is exhausted", () => {
   const root = document.createElement("div");
   const status = { purpose: "install_configuration", transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64),
-    changes: [], redacted_diff: "", rollback_available: true, evidence: ["reconnect_unavailable"], progress: ["firmware_compiled", "ota_uploaded"],
+    changes: [], redacted_diff: "", rollback_available: false, evidence: ["reconnect_unavailable"], progress: ["firmware_compiled", "ota_uploaded"],
     validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
   const noop = () => undefined;
 
@@ -560,7 +677,7 @@ it("offers verification retry after reconnect verification is exhausted", () => 
 
   expect(root.textContent).toContain("Build or install needs attention");
   expect([...root.querySelectorAll("button")].find((button) => button.textContent === "Retry verification")?.disabled).toBe(false);
-  expect([...root.querySelectorAll("button")].some((button) => button.textContent === "Rollback")).toBe(true);
+  expect([...root.querySelectorAll("button")].some((button) => button.textContent === "Rollback")).toBe(false);
 });
 
 beforeEach(() => vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(firmwareResponse()))));
@@ -742,6 +859,63 @@ describe("server-authoritative total graph", () => {
     overall.click(); await panel.updateComplete;
     expect(state.meterConfiguration.configuration.default_totals.overall.watts).toBe(false);
     expect(panel.shadowRoot!.querySelectorAll(".default-total-card")).toHaveLength(1);
+  });
+
+  it("skips configuration review after a Main Board total edit is undone on Back", async () => {
+    const meter = meterResponse();
+    meter.topology = { ...meter.topology, addon_count: 1, board_count: 2, ct_count: 12, group_count: 4 };
+    meter.configuration.channels.push(...meter.configuration.channels.map((channel) => ({ ...channel, channel: channel.channel + 6 })));
+    meter.channels.push(...meter.channels.map((channel) => ({ ...channel, channel: channel.channel + 6,
+      address: { ...channel.address, channel: channel.channel + 6, board_index: 1 } })));
+    meter.configuration.meter.voltage_references[0]!.group_keys.push("addon1_1", "addon1_2");
+    meter.voltage_topology.references[0]![1].push("addon1_1", "addon1_2");
+    meter.configuration.power_quality.push(true); meter.configuration.status_fields.push(false);
+    meter.configuration.default_totals.boards = [0, 1].map((board_index) => ({ board_index,
+      outputs: { watts: true, amps: board_index !== 0, kwh: true } }));
+    meter.configuration_impact = { ...meter.configuration_impact, enabled_channel_count: 12,
+      numeric_entity_count: 79, approximate_publications_per_second: 79 / 5 };
+    const overall = meter.totals.native_sources[0]!;
+    meter.totals.native_sources = [
+      { ...overall, leaf_channels: Array.from({ length: 12 }, (_, index) => index + 1) },
+      { ...overall, source_id: "board-main", label: "Main Board total" },
+      { ...overall, source_id: "board-addon-1", label: "Add-on 1 total", leaf_channels: [7, 8, 9, 10, 11, 12] },
+    ];
+    const preview = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: meter.source_sha256,
+      changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null,
+      upload_progress: [], purpose: "install_configuration", aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    let reviews = 0;
+    const hass = makeHass({ setup_status: { state: "no_device", devices: [] }, get_meter_configuration: meter,
+      preview_meter_configuration: preview, abandon_ct_config: preview,
+      preview_total_graph: { plan_id: meter.plan_id, source_sha256: meter.source_sha256,
+        automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [],
+        configuration_impact: meter.configuration_impact,
+        graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } } });
+    const call = hass.callWS.bind(hass);
+    hass.callWS = async <T>(message: Record<string, unknown>): Promise<T> => {
+      if (String(message.type).endsWith("/preview_meter_configuration")) reviews += 1;
+      return call<T>(message);
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as { selectedDeviceId: string; setMeterConfiguration(value: typeof meter): void;
+      continueFromCt(): Promise<void>; backFromBuild(): Promise<void>; step: string };
+    state.selectedDeviceId = "meter-1"; state.setMeterConfiguration(meter); panel.showInventory(meter);
+    await panel.updateComplete;
+
+    panel.shadowRoot!.querySelector<HTMLInputElement>('[aria-label="Main Board total Amps"]')!.click();
+    await tick();
+    await state.continueFromCt();
+    expect(state.step).toBe("install-configuration");
+    expect(reviews).toBe(1);
+
+    await state.backFromBuild(); await panel.updateComplete;
+    expect(state.step).toBe("ct");
+    expect(panel.shadowRoot!.querySelector<HTMLInputElement>('[aria-label="Main Board total Amps"]')!.checked).toBe(true);
+    panel.shadowRoot!.querySelector<HTMLInputElement>('[aria-label="Main Board total Amps"]')!.click();
+    await tick();
+    await state.continueFromCt();
+
+    expect(reviews).toBe(1);
+    expect(state.step).toBe("calibration-plan");
   });
 
   it.each([
@@ -1699,6 +1873,76 @@ describe("CircuitSetup panel", () => {
     expect((state.meterConfiguration as import("../src/types").MeterConfiguration).configuration.meter.friendly_name).toBe("Installed configuration");
     expect(state.announcement).toContain("Installed configuration was reloaded");
     expect(state.step).toBe("ct");
+  });
+
+  it.each(["upload_failed", "topology_mismatch", "identity_mismatch"])("reloads the live configuration after terminal %s", async (code) => {
+    const calls: string[] = [];
+    const fresh = meterResponse(); fresh.source_sha256 = "c".repeat(64);
+    const failed = { transaction_id: "1".repeat(32), state: "failed" as const,
+      source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false,
+      evidence: [code], progress: ["firmware_compiled", "ota_attempted", ...(code === "topology_mismatch" ? ["ota_uploaded"] : [])],
+      validation_detail: null, upload_progress: [], purpose: "install_configuration" as const,
+      aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    const hass = makeHass({ setup_status: { state: "no_device", devices: [] }, get_meter_configuration: fresh });
+    const call = hass.callWS;
+    hass.callWS = async <T>(message: Record<string, unknown>) => {
+      calls.push(String(message.type).split("/").at(-1) ?? "");
+      return call<T>(message);
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & { backFromBuild(): Promise<void> };
+    state.selectedDeviceId = "meter-1";
+    state.meterConfiguration = meterResponse();
+    state.transaction = failed;
+    state.step = "install-configuration";
+
+    await state.backFromBuild();
+
+    expect(calls).not.toContain("abandon_ct_config");
+    expect(calls).toContain("get_meter_configuration");
+    expect(state.transaction).toBeNull();
+    expect((state.meterConfiguration as import("../src/types").MeterConfiguration).source_sha256).toBe("c".repeat(64));
+    expect(state.step).toBe("ct");
+  });
+
+  it("keeps an unresolved write recovery on the install screen", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    const state = panel as unknown as Record<string, unknown> & { backFromBuild(): Promise<void> };
+    const unresolved = { transaction_id: "1".repeat(32), state: "failed" as const,
+      source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false,
+      evidence: ["write_recovery_required"], progress: ["ota_attempted"], validation_detail: null,
+      upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false,
+      full_meter_configuration_verified: false };
+    state.selectedDeviceId = "meter-1";
+    state.meterConfiguration = meterResponse();
+    state.transaction = unresolved;
+    state.step = "install-configuration";
+
+    await state.backFromBuild();
+
+    expect(state.transaction).toBe(unresolved);
+    expect(state.step).toBe("install-configuration");
+  });
+
+  it("returns to review after an unchanged Helper save fails", async () => {
+    const fresh = meterResponse();
+    const failed = { transaction_id: "1".repeat(32), state: "failed" as const,
+      source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false,
+      evidence: ["persistence_failed"], progress: [], validation_detail: null, upload_progress: [],
+      purpose: "install_configuration" as const, aggregate_entity_mismatch: false,
+      full_meter_configuration_verified: false };
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] }, get_meter_configuration: fresh }));
+    const state = panel as unknown as Record<string, unknown> & { backFromBuild(): Promise<void> };
+    state.selectedDeviceId = "meter-1";
+    state.meterConfiguration = fresh;
+    state.transaction = failed;
+    state.step = "install-configuration";
+
+    await state.backFromBuild();
+
+    expect(state.transaction).toBeNull();
+    expect(state.step).toBe("ct");
+    expect(state.announcement).toContain("Configuration was reloaded");
   });
 
   it("keeps a failed review cancellation visible and does not discard edits", async () => {
@@ -2968,15 +3212,104 @@ describe("CircuitSetup panel", () => {
       preflight: { issues: [], zeroed_roles: [] }, entity_role_counts: {},
       offset_capability: { status: "invalid", repair_reason: "duplicate run control" }, offset_disposition: "not_started",
       offset_boards: [{ board_index: 0, stages: [{ stage: 1, state: "not_started" }, { stage: 2, state: "not_started" }] }],
-      has_pending_calibration: false };
+      has_pending_calibration: false, configured_offset_targets: [[0, 1]] };
 
     panel.showState("offset" as never);
     await panel.updateComplete;
 
     expect(text(panel)).toContain("duplicate run control");
+    expect(panel.shadowRoot?.querySelector("[data-offset-config-warning] strong")).not.toBeNull();
     expect(panel.shadowRoot?.querySelector("[data-action='check-offset']")).toBeNull();
     expect(panel.shadowRoot?.querySelector("[data-action='calibrate-offset']")).toBeNull();
     expect(panel.shadowRoot?.querySelector("[data-action='skip-offset']")).not.toBeNull();
+  });
+
+  it("warns in bold and blocks a rerun when config offsets exist", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] },
+      calibrate_offset: { state: "applied_pending_restart_verification", board_index: 0, stage: 2,
+        expected_tables: [["main_1", [[1, -1], [2, -2], [3, -3]]], ["main_2", [[4, -4], [5, -5], [6, -6]]]],
+        unfinished_group_keys: [], retry_allowed: false, error: null } }));
+    const state = panel as unknown as Record<string, unknown>;
+    state.configurationMode = "runtime_only";
+    state.topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name, evidence: [] };
+    state.session = { session_id: "session", device_id: "meter-1", state: "ready", safety_acknowledged: true,
+      preflight: { issues: [], zeroed_roles: [] }, entity_role_counts: {},
+      offset_capability: { status: "available", repair_reason: null }, offset_disposition: "not_started",
+      offset_boards: [{ board_index: 0, stages: [{ stage: 1, state: "not_started" }, { stage: 2, state: "not_started" }] }],
+      has_pending_calibration: false, configured_offset_targets: [[0, 1]] };
+
+    panel.showState("offset" as never);
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector("[data-offset-config-warning] strong")?.textContent)
+      .toContain("offset values in the config file must be removed before re-running this calibration");
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action='calibrate-offset']")?.disabled).toBe(true);
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-offset-stage='2']")?.disabled).toBe(true);
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".offset-footer .primary")?.disabled).toBe(true);
+
+    state.session = { ...(state.session as Record<string, unknown>), offset_boards: [
+      { board_index: 0, stages: [{ stage: 1, state: "completed" }, { stage: 2, state: "not_started" }] },
+    ] };
+    panel.requestUpdate(); await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".offset-footer .primary")?.disabled).toBe(false);
+    panel.shadowRoot?.querySelector<HTMLButtonElement>(".offset-footer .primary")?.click();
+    await panel.updateComplete;
+    expect(text(panel)).toContain("Stage 2 · Main Board");
+    state.offsetAcknowledged = [false, true];
+    const readiness = { stage: 2, ready: true, connection_generation: 4,
+      entities: offsetReadinessEntities(), reasons: [], thresholds: { sample_count: 3, zero_voltage_peak_volts: 1,
+        zero_voltage_spread_volts: 0.5, zero_current_peak_amps: 0.25, zero_current_spread_amps: 0.1,
+        voltage_present_minimum_volts: 90, voltage_present_spread_volts: 2 } };
+    state.offsetReadinessByTarget = new Map([["0:2", readiness]]);
+    panel.requestUpdate();
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("[data-offset-config-warning]")).toBeNull();
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-offset-stage='2']")?.disabled).toBe(false);
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action='calibrate-offset']")?.disabled).toBe(false);
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action='calibrate-offset']")?.click();
+    await tick(); await panel.updateComplete;
+    expect((state.session as { offset_disposition: string }).offset_disposition).toBe("completed");
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".offset-footer .primary")?.disabled).toBe(false);
+
+    state.topology = { ...(state.topology as Record<string, unknown>), addon_count: 1, board_count: 2,
+      ct_count: 12, group_count: 4 };
+    state.session = { ...(state.session as Record<string, unknown>), offset_boards: [
+      { board_index: 0, stages: [{ stage: 1, state: "completed" }, { stage: 2, state: "not_started" }] },
+      { board_index: 1, stages: [{ stage: 1, state: "not_started" }, { stage: 2, state: "not_started" }] },
+    ] };
+    state.board = 1;
+    state.offsetStage = 1;
+    state.offsetAcknowledged = [true, false];
+    state.offsetReadinessByTarget = new Map([["1:1", readiness]]);
+    panel.requestUpdate();
+    await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("[data-offset-config-warning]")).toBeNull();
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action='calibrate-offset']")?.disabled).toBe(false);
+  });
+
+  it("labels previously configured offset stages without claiming a new calibration", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const state = panel as unknown as Record<string, unknown>;
+    state.configurationMode = "runtime_only";
+    state.topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name, evidence: [] };
+    state.session = { session_id: "session", device_id: "meter-1", state: "ready", safety_acknowledged: true,
+      preflight: { issues: [], zeroed_roles: [] }, entity_role_counts: {},
+      offset_capability: { status: "available", repair_reason: null }, offset_disposition: "in_progress",
+      offset_boards: [{ board_index: 0, stages: [{ stage: 1, state: "completed" }, { stage: 2, state: "not_started" }] }],
+      has_pending_calibration: false, configured_offset_targets: [[0, 1]] };
+    panel.showState("offset" as never);
+    await panel.updateComplete;
+
+    expect(text(panel)).toContain("Already configured in YAML");
+    expect(text(panel)).not.toContain("Saved; restart verification required");
+    state.offsetReadinessByTarget = new Map([["0:1", { stage: 1, ready: true, connection_generation: 4,
+      entities: offsetReadinessEntities(), reasons: [], thresholds: { sample_count: 3, zero_voltage_peak_volts: 1,
+        zero_voltage_spread_volts: 0.5, zero_current_peak_amps: 0.25, zero_current_spread_amps: 0.1,
+        voltage_present_minimum_volts: 90, voltage_present_spread_volts: 2 } }]]);
+    panel.requestUpdate(); await panel.updateComplete;
+    expect(text(panel)).not.toContain("Fresh calibration saved during this session");
   });
 
   it("runs measured readiness and requires confirmation before retrying an unfinished chip", async () => {
@@ -4780,6 +5113,20 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Install Configuration");
   });
 
+  it("explains an unreachable meter when calibration cannot start", async () => {
+    const failure = Object.assign(new Error("private connection detail"), { code: "meter_unavailable" });
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] },
+      get_active_work: { session: null, transaction: null, verified_calibration: null }, start_session: failure }));
+    const state = panel as unknown as { selectedDeviceId: string; topology: MeterTopology; startSession(plan: "full"): Promise<void> };
+    state.selectedDeviceId = "meter-1";
+    state.topology = meterResponse().topology;
+
+    await state.startSession("full"); await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector('[role="alert"]')?.textContent).toContain("meter is offline or its ESPHome API is unreachable");
+    expect(text(panel)).not.toContain("private connection detail");
+  });
+
   it("revokes replaced transaction and session subscriptions and ignores captured old callbacks", async () => {
     const callbacks: Array<(message: unknown) => void> = [];
     const unsubscriptions: number[] = [];
@@ -5069,6 +5416,35 @@ describe("CircuitSetup panel", () => {
     expect(operations).toEqual(expect.arrayContaining(["cancel_session", "get_active_work", "start_session"]));
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Safety");
     expect(text(panel)).not.toContain("Calibration session could not be started");
+  });
+
+  it("allows retrying the same calibration plan after cancelling at Safety", async () => {
+    const cancelled = { session_id: "session", device_id: "meter-1", state: "cancelled",
+      safety_acknowledged: false, preflight: { issues: [], zeroed_roles: [] } };
+    let cancelCalls = 0;
+    const hass = makeHass({ setup_status: { state: "device_discovered", devices: [device] }, cancel_session: cancelled });
+    const callWS = hass.callWS;
+    hass.callWS = async <T>(message: Record<string, unknown>) => {
+      if (String(message.type).endsWith("/cancel_session") && ++cancelCalls > 1)
+        throw Object.assign(new Error("removed"), { code: "stale_handle" });
+      return callWS<T>(message);
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown>;
+    state.session = { ...cancelled, state: "safety_required" };
+    state.calibrationPlan = "full";
+    state.skipCircuitChanges = true;
+    panel.showState("safety"); await panel.updateComplete;
+
+    panel.shadowRoot?.querySelector<HTMLButtonElement>("button.danger")?.click();
+    await vi.waitFor(() => expect((state.session as typeof cancelled).state).toBe("cancelled"));
+    panel.shadowRoot?.querySelector<HTMLButtonElement>(".action-footer .secondary")?.click();
+    await tick(); await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Calibration Plan");
+    expect([...panel.shadowRoot!.querySelectorAll<HTMLInputElement>('input[name="calibration-plan"]')].at(-1)?.checked).toBe(false);
+    expect(cancelCalls).toBe(1);
+    expect(text(panel)).not.toContain("The selected device changed or is no longer available");
   });
 
   it("renders unavailable validation counts without contradictory wording", async () => {

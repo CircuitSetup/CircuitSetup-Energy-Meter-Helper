@@ -37,6 +37,7 @@ from custom_components.circuitsetup_energy_meter_helper.topology import (
     package_graph_owner_is_official,
 )
 from custom_components.circuitsetup_energy_meter_helper.workflow import EntryWorkflow
+from tests.test_config_transaction import Persistence as TransactionPersistence
 
 
 def test_unresolved_local_package_does_not_inherit_official_authority() -> None:
@@ -417,7 +418,7 @@ def test_verified_transaction_verifier_uses_authorized_custom_source() -> None:
         async def async_upload(self, _configuration: str, _progress: object = None) -> SimpleNamespace:
             return SimpleNamespace(success=True)
 
-    class Persistence:
+    class Persistence(TransactionPersistence):
         async def async_revoke_installed_calibration(
             self, _mac: str, *, expected_record_fingerprint: str | None = None
         ) -> str | None:

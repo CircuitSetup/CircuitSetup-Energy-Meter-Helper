@@ -15,12 +15,15 @@ from homeassistant.core import HomeAssistant
 
 from .log_parser import (
     CalibrationLogLine,
+    GainRunEvidence,
     MeterCommunicationError,
     MeterCommunicationParser,
     OffsetTableSnapshot,
     parse_calibration_sources,
+    parse_gain_run,
     parse_offset_configuration_selection,
     parse_offset_table_snapshot,
+    parse_restore,
 )
 from .models import canonical_mac
 from .state_tracker import (
@@ -151,6 +154,9 @@ class ESPHomeApiSession:
         self._unsubscribe_logs: Callable[[], None] | None = None
         self._log_lines: deque[str] = deque()
         self._log_bytes = 0
+        self._gain_captures: dict[object, tuple[list[CalibrationLogLine], int, bool]] = {}
+        self._gain_capture_operations: dict[object, tuple[int, int]] = {}
+        self._gain_capture_client: Any | None = None
         self._state_tracker = StateTracker(history_size=100)
         self.key_resolutions: dict[str, EntityKey] = {}
         self.entities: tuple[Any, ...] = ()
@@ -548,6 +554,175 @@ class ESPHomeApiSession:
             connection_generation=generation,
             expected_instance_ids=expected_instance_ids,
         )
+
+    async def async_wait_for_restore(
+        self,
+        *,
+        connection_generation: int,
+        expected_instance_ids: set[str],
+        expected_categories: dict[
+            str, set[Literal["gain", "offset", "power_offset"]]
+        ],
+        operation_sequence: int,
+        started_after: float,
+        timeout: float,
+        allowed_instance_ids: set[str] | None = None,
+    ) -> dict[str, object]:
+        """Capture the complete restart dump before judging restore evidence."""
+        generation, captured = await self._async_offset_dump(timeout)
+        if generation != connection_generation:
+            raise ESPHomeSessionDisconnectedError(
+                "connection generation changed during restore verification"
+            )
+        return dict(
+            parse_restore(
+                tuple(
+                    CalibrationLogLine(
+                        generation, operation_sequence, item.arrived_at, item.line
+                    )
+                    for item in captured
+                ),
+                connection_generation=generation,
+                expected_instance_ids=expected_instance_ids,
+                allowed_instance_ids=allowed_instance_ids,
+                started_after=started_after,
+                operation_sequence=operation_sequence,
+                expected_categories=expected_categories,
+            )
+        )
+
+    def expect_gain_run(
+        self,
+        *,
+        connection_generation: int,
+        operation_sequence: int,
+        target_instance_id: str,
+        button_name: str,
+        dispatched_after: float,
+        timeout: float,
+    ) -> asyncio.Task[GainRunEvidence]:
+        """Start a bounded raw gain capture before dispatching the button."""
+        client = self._ready_client()
+        if connection_generation != self.connection_generation:
+            raise ESPHomeSessionDisconnectedError(
+                "connection generation changed before gain capture"
+            )
+        capture = object()
+        self._gain_captures[capture] = ([], 0, False)
+        self._gain_capture_operations[capture] = (
+            connection_generation,
+            operation_sequence,
+        )
+        if self._gain_capture_client is None:
+            self._gain_capture_client = client
+
+            def on_log(message: Any) -> None:
+                self._on_log(client, message)
+                if client is not self._client or not self.connected:
+                    return
+                raw = message.message
+                text = (
+                    raw.decode("utf-8", "replace")
+                    if isinstance(raw, bytes)
+                    else str(raw)
+                )
+                for raw_line in _strip_terminal_sequences(text).splitlines():
+                    line = _SECRET.sub(
+                        r"\1=<redacted>", sanitize_control_text(raw_line).strip()
+                    )
+                    if not line:
+                        continue
+                    size = len(line.encode("utf-8"))
+                    for key, (lines, captured_bytes, overflowed) in tuple(
+                        self._gain_captures.items()
+                    ):
+                        if overflowed or (
+                            len(lines) >= _MAX_OFFSET_SNAPSHOT_LINES
+                            or captured_bytes + size > _MAX_OFFSET_SNAPSHOT_BYTES
+                        ):
+                            self._gain_captures[key] = (lines, captured_bytes, True)
+                        else:
+                            capture_generation, capture_sequence = (
+                                self._gain_capture_operations[key]
+                            )
+                            lines.append(
+                                CalibrationLogLine(
+                                    capture_generation,
+                                    capture_sequence,
+                                    monotonic(),
+                                    line,
+                                )
+                            )
+                            self._gain_captures[key] = (
+                                lines,
+                                captured_bytes + size,
+                                False,
+                            )
+
+            try:
+                self._clear_log_subscription()
+                self._unsubscribe_logs = client.subscribe_logs(
+                    on_log, self._log_level("LOG_LEVEL_DEBUG")
+                )
+            except Exception:
+                self._gain_captures.pop(capture, None)
+                self._gain_capture_operations.pop(capture, None)
+                self._gain_capture_client = None
+                if client is self._client and self.connected:
+                    with suppress(Exception):
+                        self._subscribe_normal_logs(client)
+                raise
+
+        async def wait() -> GainRunEvidence:
+            try:
+                await asyncio.sleep(0)
+                deadline = monotonic() + timeout
+                while monotonic() < deadline:
+                    if (
+                        client is not self._client
+                        or not self.connected
+                        or self.connection_generation != connection_generation
+                    ):
+                        raise ESPHomeSessionDisconnectedError(
+                            "connection generation changed during gain capture"
+                        )
+                    _lines, _size, overflowed = self._gain_captures[capture]
+                    if overflowed:
+                        raise ESPHomeApiRepairRequired(
+                            "bounded gain capture exceeded its capture limit"
+                        )
+                    await asyncio.sleep(min(0.05, max(0.0, deadline - monotonic())))
+                lines, _size, overflowed = self._gain_captures[capture]
+                if (
+                    client is not self._client
+                    or not self.connected
+                    or self.connection_generation != connection_generation
+                ):
+                    raise ESPHomeSessionDisconnectedError(
+                        "connection generation changed during gain capture"
+                    )
+                if overflowed:
+                    raise ESPHomeApiRepairRequired(
+                        "bounded gain capture exceeded its capture limit"
+                    )
+                return parse_gain_run(
+                    tuple(lines),
+                    connection_generation=connection_generation,
+                    operation_sequence=operation_sequence,
+                    target_instance_id=target_instance_id,
+                    button_name=button_name,
+                    dispatched_after=dispatched_after,
+                )
+            finally:
+                self._gain_captures.pop(capture, None)
+                self._gain_capture_operations.pop(capture, None)
+                if not self._gain_captures and self._gain_capture_client is client:
+                    self._gain_capture_client = None
+                    self._clear_log_subscription()
+                    if client is self._client and self.connected:
+                        self._subscribe_normal_logs(client)
+
+        return asyncio.create_task(wait())
 
     async def _async_offset_dump(
         self, timeout: float

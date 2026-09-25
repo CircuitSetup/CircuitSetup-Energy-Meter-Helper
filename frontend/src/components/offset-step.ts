@@ -32,6 +32,7 @@ export function offsetStep(
   const boards = session?.offset_boards ?? [];
   const finalized = session?.offset_disposition === "completed" || session?.offset_disposition === "skipped"
     || session?.offset_disposition === "partial" && session.state === "applied_pending_restart_verification";
+  const configuredTargets = session?.configured_offset_targets ?? [];
   const stageTwoReady = boards.length > 0 && boards.every((item) => item.stages[0]?.state === "completed");
   const stageState = boards[board]?.stages[stage - 1]?.state ?? "not_started";
   const boardCount = topology?.board_count ?? boards.length;
@@ -48,12 +49,15 @@ export function offsetStep(
   const recovery = Boolean(result?.retry_allowed) || stageState === "partial" || stageState === "indeterminate" || attempted && stageState !== "completed";
   const actionReady = !stock || Boolean(matching && preparation?.action_ready && !attempted);
   const unavailable = capability?.status !== "available";
+  const configuredOffsets = configuredTargets.some(([targetBoard, targetStage]) => targetBoard === board && targetStage === stage);
+  const configuredStage = configuredOffsets && stageState === "completed" && !result;
   const keys = groupKeys(board);
   const tableByGroup = new Map(result?.expected_tables ?? []);
   const savedSources = new Map(readiness?.saved_offset_sources ?? []);
 
   return html`
     <section class="step-content offset-step" aria-labelledby="step-heading">
+      ${configuredOffsets ? html`<p class="warning-band" data-offset-config-warning><strong>Existing offset values in the config file must be removed before re-running this calibration.</strong></p>` : nothing}
       ${unavailable ? html`
         <div class="warning-band" role="status">
           <strong>Offset calibration is ${capability?.status === "invalid" ? "not safely available" : "not available on this firmware"}.</strong>
@@ -107,7 +111,7 @@ export function offsetStep(
               ${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Checking measured readiness…` : "Check measured readiness"}
             </button>
             <button class="primary" data-action="calibrate-offset"
-              ?disabled=${busy || !actionReady || !acknowledged || !readiness?.ready || stageState === "completed" || !stock && recovery && !retryConfirmed}
+              ?disabled=${busy || configuredOffsets || !actionReady || !acknowledged || !readiness?.ready || stageState === "completed" || !stock && recovery && !retryConfirmed}
               @click=${calibrate}>${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Running Stage ${stage} calibration…` : result?.retry_allowed ? "Retry unfinished chip" : `Run Stage ${stage} calibration`}</button>
           </div>
           ${readiness ? html`
@@ -136,12 +140,15 @@ export function offsetStep(
             <h3>Per-chip progress</h3>
             <table><thead><tr><th>Chip</th><th>Previously saved offsets</th><th>This run</th><th>Backend evidence</th></tr></thead><tbody>
               ${keys.map((key) => html`<tr><td>${key}</td>
-                <td>${!readiness ? "Check measured readiness to inspect saved offsets."
-                  : tableByGroup.has(key) || stageState === "completed" ? "Fresh calibration saved during this session."
+                <td>${tableByGroup.has(key) ? "Fresh calibration saved during this session."
+                  : configuredStage ? "Configured offset values recorded before this session."
+                    : !readiness ? "Check measured readiness to inspect saved offsets."
                     : savedSources.get(key) === "flash" ? "Saved offsets detected; this run will recalibrate this chip."
                       : savedSources.get(key) === "configuration" ? "Configuration offsets reported; this run will calibrate this chip."
                         : "Saved-offset status unknown; this run still requires fresh calibration."}</td>
-                <td>${tableByGroup.has(key) || stageState === "completed" ? stock ? "Captured; pending configuration installation." : "Saved; restart verification required." : result?.unfinished_group_keys.includes(key) ? "Unfinished" : stageState.replaceAll("_", " ")}</td>
+                <td>${tableByGroup.has(key) ? stock ? "Captured; pending configuration installation." : "Saved; restart verification required."
+                  : configuredStage ? "Already configured in YAML."
+                    : result?.unfinished_group_keys.includes(key) ? "Unfinished" : stageState.replaceAll("_", " ")}</td>
                 <td>${tableByGroup.has(key) ? tableByGroup.get(key)!.map(([first, second]) => `${first}/${second}`).join(", ") : "—"}</td></tr>`)}
             </tbody></table>
           </section>

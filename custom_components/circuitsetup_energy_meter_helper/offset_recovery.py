@@ -1265,6 +1265,7 @@ class OffsetRecovery:
         final: StockOffsetFinalization,
         *,
         installed: bool,
+        require_confirmed: bool = True,
     ) -> OffsetRecoveryRecord:
         record = await self.async_load(lease)
         if (
@@ -1277,6 +1278,7 @@ class OffsetRecovery:
             + int(record.final_installed)
             + int(record.configuration_selected)
             or installed
+            and require_confirmed
             and not self.is_finalization_ready(record)
         ):
             raise ValueError("stock offset finalization is stale or unavailable")
@@ -1285,6 +1287,13 @@ class OffsetRecovery:
     async def async_mark_final_installed(
         self, lease: ConfigLease, final: StockOffsetFinalization
     ) -> None:
+        record = await self.async_load(lease)
+        if record is not None and record.finalization == final and record.final_installed:
+            await self.async_require_finalization(
+                lease, final, installed=True, require_confirmed=False
+            )
+            self._confirmed_final_receipts[lease.mac] = final
+            return
         record = await self.async_require_finalization(lease, final, installed=False)
         try:
             await self._save(
@@ -1293,10 +1302,6 @@ class OffsetRecovery:
             )
         except Exception, asyncio.CancelledError:
             self._confirmed_final_receipts.pop(lease.mac, None)
-            await self._save(
-                lease,
-                replace(record, final_cancelled=True, revision=record.revision + 1),
-            )
             raise
         self._confirmed_final_receipts[lease.mac] = final
 
@@ -1330,7 +1335,9 @@ class OffsetRecovery:
         timeout: float = 5.0,
     ) -> OffsetRecoveryRecord:
         """Require normal installed receipt and fresh native selection of exact YAML."""
-        record = await self.async_require_finalization(lease, final, installed=True)
+        record = await self.async_require_finalization(
+            lease, final, installed=True, require_confirmed=False
+        )
 
         async def check_source() -> ESPHomeConfigSnapshot:
             claim_guard()
@@ -1354,11 +1361,14 @@ class OffsetRecovery:
         async with api.hold_connection_generation(generation):
             await check_source()
             if (
-                await self.async_require_finalization(lease, final, installed=True)
+                await self.async_require_finalization(
+                    lease, final, installed=True, require_confirmed=False
+                )
                 != record
             ):
                 raise ValueError("final offset recovery changed")
             if record.configuration_selected:
+                self._confirmed_final_receipts[lease.mac] = final
                 return record
             updated = replace(
                 record, configuration_selected=True, revision=record.revision + 1
@@ -1369,13 +1379,16 @@ class OffsetRecovery:
                 if not api.connected or api.connection_generation != generation:
                     raise ValueError("final offset connection changed")
                 if (
-                    await self.async_require_finalization(lease, final, installed=True)
+                    await self.async_require_finalization(
+                        lease, final, installed=True, require_confirmed=False
+                    )
                     != updated
                 ):
                     raise ValueError("final offset recovery changed")
             except Exception, asyncio.CancelledError:
                 await self.async_cancel_finalization(lease, final)
                 raise
+            self._confirmed_final_receipts[lease.mac] = final
             return updated
 
     async def async_load_archive(

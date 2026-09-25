@@ -650,6 +650,29 @@ def test_wrong_generation_offset_evidence_is_indeterminate_and_not_retained() ->
     asyncio.run(run())
 
 
+def test_stage_two_accepts_configured_stage_one() -> None:
+    async def run() -> None:
+        meter = binding_with_offset_controls()
+        session = FakeOffsetSession(
+            meter, 2,
+            dict(zip(("meter_main1", "meter_main2"), POWER_TABLES, strict=True)),
+        )
+        markers, persist = _marker_writer(session.events)
+        engine = CalibrationEngine(SessionManager(), persist)
+
+        result = await engine.async_calibrate_offset_board(
+            MAC, session, meter, 0, 2, stage_one_configured=True,
+        )
+
+        assert result.state.value == "applied_pending_restart_verification"
+        assert [event[1] for event in session.events if event[0] == "button"] == list(
+            _button_keys(meter, 2, 0)
+        )
+        assert markers
+
+    asyncio.run(run())
+
+
 def test_offset_cancellation_keeps_marker_zeros_references_and_releases_lease() -> None:
     async def run() -> None:
         meter = binding_with_offset_controls()

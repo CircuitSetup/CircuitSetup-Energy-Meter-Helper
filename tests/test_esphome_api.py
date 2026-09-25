@@ -7,6 +7,7 @@ import sys
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from enum import IntEnum
+from pathlib import Path
 from time import monotonic
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -35,6 +36,9 @@ except ModuleNotFoundError:
     aioesphomeapi.LogLevel = LogLevel  # type: ignore[attr-defined]
     sys.modules["aioesphomeapi"] = aioesphomeapi
 
+from custom_components.circuitsetup_energy_meter_helper.calibration_engine import (
+    CalibrationEngine,
+)
 from custom_components.circuitsetup_energy_meter_helper.esphome_api import (
     ESPHomeApiRepairRequired,
     ESPHomeApiSession,
@@ -45,8 +49,12 @@ from custom_components.circuitsetup_energy_meter_helper.esphome_api import (
     sanitize_control_text,
 )
 from custom_components.circuitsetup_energy_meter_helper.log_parser import (
+    LogEvidenceError,
     MeterCommunicationError,
     OffsetTableSnapshot,
+)
+from custom_components.circuitsetup_energy_meter_helper.session_manager import (
+    SessionManager,
 )
 from custom_components.circuitsetup_energy_meter_helper.state_tracker import (
     FreshWindowError,
@@ -560,6 +568,191 @@ def test_log_buffer_retains_exact_offset_button_dispatch_lines() -> None:
             "[I][atm90e32.button:037] 1. Run Main Meter 1 Offset Cal",
             "[I][atm90e32.button:060] 2. Run Main Meter 1 Power Offset Cal",
         )
+
+    asyncio.run(run())
+
+
+def _restore_dump(instance_ids: tuple[str, ...]) -> str:
+    return "\n".join(
+        line
+        for instance_id in instance_ids
+        for line in (
+            f"[I] [CALIBRATION][{instance_id}] Restoring saved gain calibrations to registers",
+            f"[I] [CALIBRATION][{instance_id}] | Phase | voltage_gain | current_gain |",
+            f"[I] [CALIBRATION][{instance_id}] | A | 7305 | 27518 |",
+            f"[I] [CALIBRATION][{instance_id}] | B | 7305 | 28312 |",
+            f"[I] [CALIBRATION][{instance_id}] | C | 7305 | 27518 |",
+            f"[I] [CALIBRATION][{instance_id}] Gain calibration loaded and verified successfully.",
+        )
+    )
+
+
+def test_restore_capture_survives_public_ring_rollover_and_checks_late_failure() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client], max_log_lines=2, max_log_bytes=120)
+        await session.async_connect()
+        instance_ids = (
+            "meter_main1",
+            "meter_main2",
+            *(f"addon{board}_{group}" for board in range(1, 7) for group in (1, 2)),
+        )
+        pending = asyncio.create_task(
+            session.async_wait_for_restore(
+                connection_generation=session.connection_generation,
+                expected_instance_ids=set(instance_ids),
+                allowed_instance_ids=set(instance_ids),
+                expected_categories={instance_id: {"gain"} for instance_id in instance_ids},
+                operation_sequence=7,
+                started_after=0.0,
+                timeout=0.02,
+            )
+        )
+        await asyncio.sleep(0)
+        assert client.on_log is not None
+        client.on_log(SimpleNamespace(message=_restore_dump(instance_ids)))
+        for index in range(250):
+            client.on_log(SimpleNamespace(message=f"[CALIBRATION][noise] gain diagnostic {index}"))
+
+        restored = await pending
+        assert set(restored) == set(instance_ids)
+        assert len(session.log_lines) <= 2
+
+        delayed = asyncio.create_task(
+            session.async_wait_for_restore(
+                connection_generation=session.connection_generation,
+                expected_instance_ids={"addon1_1"},
+                allowed_instance_ids={"addon1_1"},
+                expected_categories={"addon1_1": {"gain"}},
+                operation_sequence=8,
+                started_after=0.0,
+                timeout=0.02,
+            )
+        )
+        await asyncio.sleep(0)
+        assert client.on_log is not None
+        client.on_log(SimpleNamespace(message=_restore_dump(("addon1_1",))))
+        await asyncio.sleep(0.005)
+        client.on_log(
+            SimpleNamespace(
+                message="[E] [CALIBRATION][addon1_1] Gain verification failed!"
+            )
+        )
+        with pytest.raises(LogEvidenceError, match="verification failed"):
+            await delayed
+
+    asyncio.run(run())
+
+
+def test_restore_capture_rejects_connection_discontinuity_and_overflow() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        disconnected = asyncio.create_task(
+            session.async_wait_for_restore(
+                connection_generation=session.connection_generation,
+                expected_instance_ids={"meter_main1"},
+                expected_categories={"meter_main1": {"gain"}},
+                operation_sequence=7,
+                started_after=0.0,
+                timeout=0.02,
+            )
+        )
+        await asyncio.sleep(0)
+        assert client.on_stop is not None
+        await client.on_stop(False)
+        with pytest.raises(ESPHomeSessionDisconnectedError, match="generation"):
+            await disconnected
+
+        overflow_client = FakeClient()
+        overflow_session = make_session([overflow_client])
+        await overflow_session.async_connect()
+        overflow = asyncio.create_task(
+            overflow_session.async_wait_for_restore(
+                connection_generation=overflow_session.connection_generation,
+                expected_instance_ids={"meter_main1"},
+                expected_categories={"meter_main1": {"gain"}},
+                operation_sequence=7,
+                started_after=0.0,
+                timeout=0.02,
+            )
+        )
+        await asyncio.sleep(0)
+        assert overflow_client.on_log is not None
+        overflow_client.on_log(
+            SimpleNamespace(
+                message="\n".join(
+                    f"[CALIBRATION][meter_main1] gain diagnostic {index}"
+                    for index in range(4097)
+                )
+            )
+        )
+        with pytest.raises(ESPHomeApiRepairRequired, match="capture limit"):
+            await overflow
+
+    asyncio.run(run())
+
+
+def test_gain_capture_survives_public_ring_rollover() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client], max_log_lines=2, max_log_bytes=120)
+        await session.async_connect()
+        dispatched_after = monotonic()
+        pending = session.expect_gain_run(
+            connection_generation=session.connection_generation,
+            operation_sequence=7,
+            target_instance_id="meter_main1",
+            button_name="3. Run Main Meter 1 Gain Cal",
+            dispatched_after=dispatched_after,
+            timeout=0.02,
+        )
+        assert client.on_log is not None
+        client.on_log(
+            SimpleNamespace(
+                message=(
+                    Path(__file__).parent / "fixtures" / "logs" / "gain_success.log"
+                ).read_text(encoding="utf-8")
+            )
+        )
+        for index in range(250):
+            client.on_log(SimpleNamespace(message=f"gain diagnostic {index}"))
+
+        assert (await pending).instance_id == "meter_main1"
+        assert len(session.log_lines) <= 2
+
+    asyncio.run(run())
+
+
+def test_engine_gain_waiter_uses_real_session_capture_signature() -> None:
+    async def ignore_marker(mac: str, marker: object) -> None:
+        del mac, marker
+
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client], max_log_lines=2, max_log_bytes=120)
+        await session.async_connect()
+        engine = CalibrationEngine(SessionManager(), ignore_marker, evidence_timeout=0.02)
+        dispatched_after = monotonic()
+        pending = engine._gain_waiter(
+            session,
+            generation=session.connection_generation,
+            sequence=7,
+            instance_id="meter_main1",
+            button_name="3. Run Main Meter 1 Gain Cal",
+            dispatched_after=dispatched_after,
+            timeout=0.02,
+        )
+        assert client.on_log is not None
+        client.on_log(
+            SimpleNamespace(
+                message=(
+                    Path(__file__).parent / "fixtures" / "logs" / "gain_success.log"
+                ).read_text(encoding="utf-8")
+            )
+        )
+        assert (await pending).instance_id == "meter_main1"
 
     asyncio.run(run())
 

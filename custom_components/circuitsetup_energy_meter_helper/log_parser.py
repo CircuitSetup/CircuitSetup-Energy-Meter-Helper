@@ -847,8 +847,13 @@ def parse_restore(
     expected_categories: dict[str, set[Literal["gain", "offset", "power_offset"]]]
     | None = None,
     allow_unverified_offset_tables: bool = False,
+    allowed_instance_ids: set[str] | None = None,
 ) -> dict[str, RestoreEvidence]:
     """Parse verified flash restore evidence for every expected category."""
+    if allowed_instance_ids is None:
+        allowed_instance_ids = expected_instance_ids
+    elif not expected_instance_ids <= allowed_instance_ids:
+        raise ValueError("restore instances must be within the bound topology")
     if expected_categories is None:
         expected_categories = {
             instance_id: {"gain"} for instance_id in expected_instance_ids
@@ -924,22 +929,57 @@ def parse_restore(
             raise LogEvidenceError(
                 "restore evidence must contain exactly one instance tag"
             )
-        if tags[0].group("instance") not in expected_instance_ids:
+        if tags[0].group("instance") not in allowed_instance_ids:
             raise LogEvidenceError(
                 f"unexpected restore instance {tags[0].group('instance')}"
             )
 
-    observed_instance_ids = {
-        instance_id
-        for item in matching
-        if is_restore_evidence(item)
-        if (instance_id := _instance(item.line)) is not None
-    }
-    for instance_id in expected_instance_ids | observed_instance_ids:
+    for instance_id in allowed_instance_ids:
         instance_lines = [
             item for item in matching if _instance(item.line) == instance_id
         ]
-        categories = expected_categories.get(instance_id, {"gain"})
+        if instance_id not in expected_instance_ids:
+            restore_block = _gain_table(
+                instance_lines,
+                "Restoring saved gain calibrations to registers",
+            )
+            compare_block = _gain_table(
+                instance_lines, "Gain mismatch: using flash values"
+            )
+            if restore_block is not None:
+                if _phase_pairs(restore_block, _RESTORE_ROW_RE) is None:
+                    raise LogEvidenceError(
+                        f"unexpected incomplete restore evidence for {instance_id}"
+                    )
+            elif compare_block is not None:
+                if _comparison_rows(compare_block) is None:
+                    raise LogEvidenceError(
+                        f"unexpected incomplete restore evidence for {instance_id}"
+                    )
+            elif any(
+                pattern.search(item.line) is not None
+                for item in instance_lines
+                for pattern in (_RESTORE_ROW_RE, _COMPARE_ROW_RE)
+            ):
+                raise LogEvidenceError(
+                    f"unexpected incomplete restore evidence for {instance_id}"
+                )
+            _restore_offset_category(
+                instance_lines,
+                expected=False,
+                power=False,
+                instance_id=instance_id,
+                allow_unverified=allow_unverified_offset_tables,
+            )
+            _restore_offset_category(
+                instance_lines,
+                expected=False,
+                power=True,
+                instance_id=instance_id,
+                allow_unverified=allow_unverified_offset_tables,
+            )
+            continue
+        categories = expected_categories[instance_id]
         gain_expected = "gain" in categories
         if gain_expected and any(
             "Gain verification failed!" in item.line
@@ -989,10 +1029,6 @@ def parse_restore(
             basis = "offset_tables"
             differs = False
         else:
-            if instance_id not in expected_instance_ids:
-                raise LogEvidenceError(
-                    f"unexpected incomplete restore evidence for {instance_id}"
-                )
             raise LogEvidenceError(f"missing restore evidence for {instance_id}")
 
         phase_offsets, offset_verified, offset_differs = _restore_offset_category(

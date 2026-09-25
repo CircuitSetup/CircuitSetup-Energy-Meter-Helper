@@ -147,6 +147,92 @@ def test_noop_preserves_every_byte() -> None:
     assert "wifi_password" not in repr(doc)
 
 
+def test_detects_nonzero_configured_offsets_outside_comments_and_block_scalars() -> None:
+    document = ESPHomeConfigDocument.parse(
+        """sensor:
+  - platform: atm90e32
+    phase_a:
+      offset_voltage: -928
+      offset_current: 0
+    phase_b:
+      offset_active_power: ${power_offset}
+# offset_reactive_power: 17
+text_sensor:
+  - platform: template
+    lambda: |-
+      offset_reactive_power: 8
+"""
+    )
+
+    assert document.configured_offset_fields == (
+        "offset_active_power",
+        "offset_voltage",
+    )
+
+
+def test_attributes_configured_offsets_to_meter_instance() -> None:
+    document = ESPHomeConfigDocument.parse(
+        """sensor:
+  - id: !extend meter_main1
+    phase_a:
+      offset_voltage: -928
+  - id: !extend addon1_2
+    phase_b:
+      offset_active_power: -4
+"""
+    )
+
+    assert document.configured_offset_entries == (
+        ("meter_main1", "offset_voltage"),
+        ("addon1_2", "offset_active_power"),
+    )
+
+
+def test_attributes_configured_offsets_through_meter_id_substitution() -> None:
+    document = ESPHomeConfigDocument.parse(
+        """substitutions:
+  main_meter_id1: meter_main1
+sensor:
+  - id: !extend ${main_meter_id1}
+    phase_a:
+      offset_voltage: -928
+"""
+    )
+
+    assert document.configured_offset_entries == (("meter_main1", "offset_voltage"),)
+
+
+def test_tracks_explicit_phase_offsets_including_zero_values() -> None:
+    document = ESPHomeConfigDocument.parse(
+        """sensor:
+  - id: !extend meter_main1
+    phase_a:
+      offset_voltage: -928
+      offset_current: 0
+    phase_b:
+      offset_voltage: 0
+      offset_current: 0
+    phase_c:
+      offset_voltage: 0
+      offset_current: 0
+text_sensor:
+  - platform: template
+    lambda: |-
+      offset_voltage: 123
+"""
+    )
+
+    assert document.configured_offset_phase_entries == (
+        ("meter_main1", "a", "offset_voltage"),
+        ("meter_main1", "a", "offset_current"),
+        ("meter_main1", "b", "offset_voltage"),
+        ("meter_main1", "b", "offset_current"),
+        ("meter_main1", "c", "offset_voltage"),
+        ("meter_main1", "c", "offset_current"),
+    )
+    assert document.configured_offset_entries == (("meter_main1", "offset_voltage"),)
+
+
 def test_extracts_bounded_meter_substitutions_and_managed_blocks() -> None:
     content = fixture("meter_configuration.yaml").replace("\n", "\r\n")
     doc = ESPHomeConfigDocument.parse(content)
