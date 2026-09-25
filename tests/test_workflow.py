@@ -2586,7 +2586,10 @@ def test_configured_offset_stage_counts_as_satisfied_for_completion() -> None:
         workflow, handle, _sessions, _api = _workflow()
         handle.configured_offset_targets = ((0, 1),)
         handle.completed_configured_offset_targets = ((0, 1),)
-        assert (await workflow.async_get_session(handle.session_id)).offset_disposition == "not_started"
+        pending = await workflow.async_get_session(handle.session_id)
+        assert pending.offset_boards[0]["stages"][0]["state"] == "completed"
+        assert pending.offset_boards[0]["stages"][1]["state"] == "not_started"
+        assert pending.offset_disposition == "in_progress"
         handle.offset_results[(0, 2)] = OffsetCalibrationResult(
             OffsetCalibrationState.APPLIED_PENDING_RESTART_VERIFICATION,
             0, 2, (("meter_main1", POWER_OFFSET_TABLE),), (), False,

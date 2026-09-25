@@ -460,7 +460,7 @@ class _SessionHandle:
             for stage in board["stages"]
         ):
             disposition = "completed"
-        elif self.offset_active is not None or self.offset_results:
+        elif self.offset_active is not None or self.offset_results or self.completed_configured_offset_targets:
             disposition = "in_progress"
         else:
             disposition = "not_started"
