@@ -5240,7 +5240,7 @@ describe("CircuitSetup panel", () => {
     expect(text(panel)).not.toContain("Calibration session could not be started");
   });
 
-  it("returns from Safety after cancellation without cancelling the removed session again", async () => {
+  it("allows retrying the same calibration plan after cancelling at Safety", async () => {
     const cancelled = { session_id: "session", device_id: "meter-1", state: "cancelled",
       safety_acknowledged: false, preflight: { issues: [], zeroed_roles: [] } };
     let cancelCalls = 0;
@@ -5254,6 +5254,7 @@ describe("CircuitSetup panel", () => {
     const panel = await mount(hass);
     const state = panel as unknown as Record<string, unknown>;
     state.session = { ...cancelled, state: "safety_required" };
+    state.calibrationPlan = "full";
     state.skipCircuitChanges = true;
     panel.showState("safety"); await panel.updateComplete;
 
@@ -5263,6 +5264,7 @@ describe("CircuitSetup panel", () => {
     await tick(); await panel.updateComplete;
 
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Calibration Plan");
+    expect([...panel.shadowRoot!.querySelectorAll<HTMLInputElement>('input[name="calibration-plan"]')].at(-1)?.checked).toBe(false);
     expect(cancelCalls).toBe(1);
     expect(text(panel)).not.toContain("The selected device changed or is no longer available");
   });

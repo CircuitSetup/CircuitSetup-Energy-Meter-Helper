@@ -697,6 +697,7 @@ export class CircuitSetupPanel extends LitElement {
       this.fail(new Error(), "That workflow step is not available for the selected meter.");
       return;
     }
+    if (step === "calibration-plan") this.calibrationPlan = null;
     this.step = step;
     this.error = "";
     this.mobileStepsOpen = false;
