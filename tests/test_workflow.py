@@ -59,6 +59,7 @@ from custom_components.circuitsetup_energy_meter_helper.workflow import (
     EntryWorkflow,
     WorkflowCapabilityUnavailable,
     WorkflowHandleError,
+    _configured_offset_targets,
     _selections_for_topology,
     _SessionHandle,
 )
@@ -66,6 +67,37 @@ from custom_components.circuitsetup_energy_meter_helper.workflow import (
 MAC = "aabbccddeeff"
 OFFSET_TABLE = ((1, 2), (3, 4), (5, 6))
 POWER_OFFSET_TABLE = ((7, 8), (9, 10), (11, 12))
+
+
+def test_configured_offset_stage_requires_both_chips() -> None:
+    partial = (("meter_main1", "offset_voltage"),)
+    complete = (*partial, ("meter_main2", "offset_current"))
+    assert _configured_offset_targets(partial, 1) == ((0, 1),)
+    assert _configured_offset_targets(partial, 1, require_both=True) == ()
+    assert _configured_offset_targets(complete, 1, require_both=True) == ((0, 1),)
+    assert _configured_offset_targets(((None, "offset_voltage"),), 1, require_both=True) == ()
+
+
+def test_partial_config_offset_blocks_rerun_without_completing_stage() -> None:
+    async def run() -> None:
+        workflow, handle, _sessions, _api = _workflow()
+        handle.configured_offset_targets = ((0, 1),)
+        handle.offset_results[(0, 2)] = OffsetCalibrationResult(
+            OffsetCalibrationState.APPLIED_PENDING_RESTART_VERIFICATION,
+            0, 2, (("meter_main1", POWER_OFFSET_TABLE),), (), False,
+        )
+        partial = await workflow.async_get_session(handle.session_id)
+        assert partial.configured_offset_targets == ((0, 1),)
+        assert partial.offset_boards[0]["stages"][0]["state"] == "not_started"
+        assert partial.offset_disposition != "completed"
+
+        handle.completed_configured_offset_targets = ((0, 1),)
+        complete = await workflow.async_get_session(handle.session_id)
+        assert complete.offset_boards[0]["stages"][0]["state"] == "completed"
+        assert complete.offset_disposition == "completed"
+        await workflow.async_close()
+
+    asyncio.run(run())
 
 
 def test_stale_ct_selections_are_bounded_to_live_topology() -> None:
@@ -2553,6 +2585,7 @@ def test_configured_offset_stage_counts_as_satisfied_for_completion() -> None:
     async def run() -> None:
         workflow, handle, _sessions, _api = _workflow()
         handle.configured_offset_targets = ((0, 1),)
+        handle.completed_configured_offset_targets = ((0, 1),)
         assert (await workflow.async_get_session(handle.session_id)).offset_disposition == "not_started"
         handle.offset_results[(0, 2)] = OffsetCalibrationResult(
             OffsetCalibrationState.APPLIED_PENDING_RESTART_VERIFICATION,

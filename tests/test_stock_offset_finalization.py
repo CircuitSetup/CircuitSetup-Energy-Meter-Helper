@@ -1174,7 +1174,7 @@ def test_fresh_verifier_can_renew_matching_durable_final_receipt(tmp_path):
 
 
 @pytest.mark.parametrize("upload_outcome", (None, "lost", "cancel"))
-def test_finalization_checkpoint_recovers_metadata_retry_without_reupload(
+def test_finalization_checkpoint_retries_unknown_upload_once(
     tmp_path, upload_outcome
 ):
     from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
@@ -1244,7 +1244,7 @@ def test_finalization_checkpoint_recovers_metadata_retry_without_reupload(
         assert status is not None
         status = await manager.async_confirm_install(status.transaction_id, "admin")
         assert status.state is ConfigTransactionState.VERIFIED
-        assert builder.calls.count("upload") == uploads
+        assert builder.calls.count("upload") == uploads + (upload_outcome is not None)
         assert builder.calls.count("write") == writes
         assert await manager.async_recover_install(MAC) is None
         lease = await owner.async_acquire_calibration(MAC)

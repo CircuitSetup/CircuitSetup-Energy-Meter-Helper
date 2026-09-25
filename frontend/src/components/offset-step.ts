@@ -33,16 +33,13 @@ export function offsetStep(
   const finalized = session?.offset_disposition === "completed" || session?.offset_disposition === "skipped"
     || session?.offset_disposition === "partial" && session.state === "applied_pending_restart_verification";
   const configuredTargets = session?.configured_offset_targets ?? [];
-  const stageTwoReady = boards.length > 0 && boards.every((item) => item.stages[0]?.state === "completed"
-    || configuredTargets.some(([targetBoard, targetStage]) => targetBoard === item.board_index && targetStage === 1));
+  const stageTwoReady = boards.length > 0 && boards.every((item) => item.stages[0]?.state === "completed");
   const stageState = boards[board]?.stages[stage - 1]?.state ?? "not_started";
   const boardCount = topology?.board_count ?? boards.length;
   const continueLabel = finalized ? "Continue to Voltage"
     : board + 1 < boardCount ? `Continue to Add-on ${board + 1}`
       : stage === 1 ? "Continue to Stage 2" : "Continue to Voltage";
-  const canContinue = finalized || stageState === "completed" || configuredTargets.some(
-    ([targetBoard, targetStage]) => targetBoard === board && targetStage === stage,
-  );
+  const canContinue = finalized || stageState === "completed";
   const preparation = stock?.preparation;
   const nativePreparation = Boolean(stock && (preparation?.mode ?? "native") === "native");
   const selectedInstances = groupKeys(board).map((id) => id.replace("main_", "meter_main"));

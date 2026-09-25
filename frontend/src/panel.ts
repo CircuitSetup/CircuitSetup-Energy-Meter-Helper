@@ -1037,7 +1037,7 @@ export class CircuitSetupPanel extends LitElement {
     const calibrationPreparation = current !== null && this.isCalibrationPreparationTransaction(current);
     const appliedInstallRetry = current?.purpose === "install_configuration"
       && current.state === "install_confirmation_required"
-      && current.evidence.some((code) => ["upload_outcome_unknown", "reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed"].includes(code));
+      && current.evidence.some((code) => ["upload_outcome_unknown", "reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed", "source_changed"].includes(code));
     const terminalPersistenceFailure = current?.purpose === "install_configuration"
       && current.state === "failed" && !current.rollback_available
       && current.evidence.includes("persistence_failed");
@@ -2169,8 +2169,7 @@ export class CircuitSetupPanel extends LitElement {
           })),
         }));
         const states = boards.flatMap((item) => item.stages.map((entry) => entry.state));
-        const completed = boards.every((item) => item.stages.every((entry) => entry.state === "completed"
-          || this.session?.configured_offset_targets?.some(([board, stage]) => board === item.board_index && stage === entry.stage)));
+        const completed = boards.every((item) => item.stages.every((entry) => entry.state === "completed"));
         const disposition = completed ? "completed" as const
           : states.some((state) => state === "partial" || state === "indeterminate") ? "partial" as const : "in_progress" as const;
         this.session = { ...this.session, offset_boards: boards, offset_disposition: disposition,
@@ -2213,8 +2212,7 @@ export class CircuitSetupPanel extends LitElement {
       || this.session.offset_disposition === "skipped"
       || this.session.offset_disposition === "partial" && this.session.state === "applied_pending_restart_verification";
     if (finalized) { this.navigate("voltage"); return; }
-    if (this.session.offset_boards?.[this.board]?.stages[this.offsetStage - 1]?.state !== "completed"
-      && !this.session.configured_offset_targets?.some(([board, stage]) => board === this.board && stage === this.offsetStage)) return;
+    if (this.session.offset_boards?.[this.board]?.stages[this.offsetStage - 1]?.state !== "completed") return;
     const boardCount = this.topology?.board_count ?? this.session.offset_boards?.length ?? 1;
     if (this.board + 1 < boardCount) this.board += 1;
     else if (this.offsetStage === 1) { this.offsetStage = 2; this.board = 0; }
@@ -2690,8 +2688,7 @@ export class CircuitSetupPanel extends LitElement {
       this.offsetReadinessByTarget.get(this.offsetKey()) ?? null, this.offsetResultByTarget.get(this.offsetKey()) ?? null,
       this.offsetBusy,
       (value) => { this.board = value; this.offsetRetryConfirmed = false; this.requestUpdate(); },
-      (value) => { if (value === 1 || this.session?.offset_boards?.every((item) => item.stages[0]?.state === "completed"
-        || this.session?.configured_offset_targets?.some(([board, stage]) => board === item.board_index && stage === 1))) {
+      (value) => { if (value === 1 || this.session?.offset_boards?.every((item) => item.stages[0]?.state === "completed")) {
         this.offsetStage = value; this.board = 0; this.offsetRetryConfirmed = false; this.requestUpdate();
       } },
       (value) => { this.offsetAcknowledged = this.offsetAcknowledged.map((current, index) => index === this.offsetStage - 1 ? value : current); this.requestUpdate(); },
@@ -2789,7 +2786,9 @@ export class CircuitSetupPanel extends LitElement {
           ${this.totalsIntentNeedsResolution() || this.hasUnsupportedCalibrationChanges() && (this.session?.has_pending_calibration || this.restartResult)
             && ["restart", "save-calibration", "summary"].includes(this.step) ? html`<button class="secondary"
               ?disabled=${Boolean(this.pendingAction)} @click=${() => this.discardUnsupportedCalibrationChanges()}>Discard local configuration choices and continue calibration</button>` : nothing}
-          ${this.configurationInstalled && this.transaction?.state === "verified" && this.transaction.full_meter_configuration_verified
+          ${this.transaction?.state === "verified"
+            && (this.configurationInstalled && this.transaction.full_meter_configuration_verified
+              || this.transaction.redacted_diff === "" && this.transaction.progress.includes("metadata_persisted"))
             && !this.verifiedMeterConfiguration && this.configurationMode !== "runtime_only" ? html`<button class="secondary"
               ?disabled=${this.totalGraphState === "pending"} @click=${() => void this.refreshInstalledConfiguration()}>Retry totals inventory refresh</button>` : nothing}
           ${this.stepBody()}

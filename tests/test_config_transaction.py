@@ -720,7 +720,8 @@ def test_new_upload_revokes_previous_flash_clear_authority_before_side_effects(f
         else:
             result = await manager.async_confirm_install(preview.transaction_id, "admin")
             if failure == "reconnect_timeout":
-                await manager.async_rollback(preview.transaction_id)
+                assert not result.rollback_available
+                await manager.async_abandon(preview.transaction_id)
             elif failure == "metadata_save":
                 assert result.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
                 backend.fail = False
@@ -749,10 +750,10 @@ def test_new_upload_revokes_previous_flash_clear_authority_before_side_effects(f
 
 
 @pytest.mark.parametrize("restart", (False, True))
-def test_real_store_swallowed_post_upload_failure_retries_without_reupload(
+def test_real_store_swallowed_ack_checkpoint_failure_retries_safely(
     tmp_path, monkeypatch: pytest.MonkeyPatch, restart: bool,
 ) -> None:
-    """A lost receipt stays retryable and cannot report a verified install."""
+    """An unpersisted upload acknowledgement needs another upload after restart."""
     from types import SimpleNamespace
 
     from homeassistant.core import CoreState
@@ -793,9 +794,13 @@ def test_real_store_swallowed_post_upload_failure_retries_without_reupload(
             raise WriteError("disk full")
 
         class UploadBuilder(Builder):
+            fault_injected = False
+
             async def async_upload(self, configuration, progress=None):
                 result = await super().async_upload(configuration, progress)
-                monkeypatch.setattr(store._store, "_async_write_data", failed_write)
+                if not self.fault_injected:
+                    monkeypatch.setattr(store._store, "_async_write_data", failed_write)
+                    self.fault_injected = True
                 return result
 
         builder = UploadBuilder()
@@ -823,7 +828,7 @@ def test_real_store_swallowed_post_upload_failure_retries_without_reupload(
             assert recovered is not None and recovered.transaction_id == preview.transaction_id
         retry = await manager.async_confirm_install(preview.transaction_id, "admin")
         assert retry.state is ConfigTransactionState.VERIFIED
-        assert builder.calls.count("upload") == 1
+        assert builder.calls.count("upload") == (2 if restart else 1)
 
     asyncio.run(run())
 
@@ -1206,8 +1211,8 @@ def test_chip_failure_abandon_rejects_external_source_changes() -> None:
             await manager.async_abandon(preview.transaction_id)
 
         status = manager.status(preview.transaction_id)
-        assert status.state is ConfigTransactionState.FAILED
-        assert status.rollback_available
+        assert status.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        assert not status.rollback_available
         assert manager.sessions.is_config_locked("aabbccddeeff")
         assert "restore" not in builder.calls
         await manager.sessions.async_unload()
@@ -1567,10 +1572,10 @@ def test_calibration_handoff_saves_full_metadata_and_install_marker_together() -
     asyncio.run(run())
 
 
-def test_missing_full_reconnect_entity_retains_rollbackable_retry_without_persisting() -> (
+def test_missing_full_reconnect_entity_retains_retry_without_persisting() -> (
     None
 ):
-    """Transient reconnect failure stays bounded, private, and rollbackable."""
+    """Transient reconnect failure keeps the upload retryable without metadata."""
 
     async def run() -> None:
         plan = _managed_entity_plan()
@@ -1616,12 +1621,15 @@ def test_missing_full_reconnect_entity_retains_rollbackable_retry_without_persis
         assert internal.plan is not None and internal.prior_content is not None
         assert internal.meter_configuration is not None
         assert internal.expected_sensor_entities
-        assert status.rollback_available
+        assert not status.rollback_available
         assert manager.sessions.is_config_locked("aabbccddeeff")
         assert "top-secret" not in repr(status) and "top-secret" not in repr(internal)
 
-        rolled_back = await manager.async_rollback(preview.transaction_id)
-        assert rolled_back.state is ConfigTransactionState.ROLLED_BACK
+        with pytest.raises(RuntimeError, match="rollback"):
+            await manager.async_rollback(preview.transaction_id)
+        abandoned = await manager.async_abandon(preview.transaction_id)
+        assert abandoned.state is ConfigTransactionState.FAILED
+        assert "restore" not in manager._device_builder.calls
 
     asyncio.run(run())
 
@@ -3063,7 +3071,7 @@ def test_reconnect_exhaustion_preserves_manual_install_retry() -> None:
         assert verifier.calls >= 1
         assert retry.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
         assert retry.evidence == (TransactionEvidenceCode.RECONNECT_UNAVAILABLE,)
-        assert retry.rollback_available
+        assert not retry.rollback_available
         assert sessions.is_config_locked("aabbccddeeff")
 
         exhausted_calls = verifier.calls
@@ -3288,7 +3296,7 @@ def test_spi_failure_retains_pin_evidence_and_blocks_verified_persistence() -> N
         assert status.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
         assert status.evidence == (TransactionEvidenceCode.METER_COMMUNICATION_FAILED,)
         assert status.communication_failed_cs_pins == (0, 16)
-        assert status.rollback_available
+        assert not status.rollback_available
         assert not persistence.saved
         assert "device_verified" not in status.progress
         assert sanitize_payload(status)["communication_failed_cs_pins"] == [0, 16]

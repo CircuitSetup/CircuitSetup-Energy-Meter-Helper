@@ -1,4 +1,4 @@
-"""An uncertain OTA is recovered by verification, including after Core restart."""
+"""Install recovery keeps uncertain OTA outcomes from claiming installed firmware."""
 
 import asyncio
 import json
@@ -8,6 +8,7 @@ import pytest
 
 from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
     ConfigTransactionState,
+    RollbackFailedError,
 )
 from custom_components.circuitsetup_energy_meter_helper.store import HelperStore
 from tests.test_config_transaction import (
@@ -31,15 +32,21 @@ def _store(backend):
     return store
 
 
-@pytest.mark.parametrize("boundary", ("upload_response", "upload_cancel", "verify_cancel", "metadata"))
+@pytest.mark.parametrize("boundary", ("upload_response", "upload_cancel", "verify_cancel", "ack_checkpoint", "metadata"))
 @pytest.mark.parametrize("restart", (False, True))
-def test_uncertain_upload_recovers_without_reupload(boundary, restart):
+def test_install_recovery_requires_acknowledged_upload(boundary, restart):
     class Storage(_CopyingStorage):
         fail = False
+        ack_persisted = False
 
         async def async_save(self, data):
             if self.fail:
-                raise OSError("disk unavailable")
+                if boundary == "metadata" and not self.ack_persisted and data.get(
+                    "install_recovery", {}
+                ).get("aabbccddeeff", {}).get("ota_uploaded") is True:
+                    self.ack_persisted = True
+                else:
+                    raise OSError("disk unavailable")
             # Exercise the actual JSON boundary, not retained dataclass objects.
             await super().async_save(json.loads(json.dumps(data)))
 
@@ -48,9 +55,13 @@ def test_uncertain_upload_recovers_without_reupload(boundary, restart):
         store = _store(backend)
 
         class Upload(Builder):
+            fault_injected = False
+
             async def async_upload(self, configuration, progress=None):
                 result = await super().async_upload(configuration, progress)
-                backend.fail = boundary == "metadata"
+                if boundary in {"metadata", "ack_checkpoint"} and not self.fault_injected:
+                    backend.fail = True
+                    self.fault_injected = True
                 return result
 
         builder = Upload(upload=(
@@ -69,6 +80,14 @@ def test_uncertain_upload_recovers_without_reupload(boundary, restart):
         else:
             status = await manager.async_confirm_install(preview.transaction_id, "admin")
             assert status.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+
+        pending = manager.status(preview.transaction_id)
+        assert not pending.rollback_available
+        assert not await store.async_get_ct_selections("aabbccddeeff")
+        checkpoint = await store.async_get_install_recovery("aabbccddeeff")
+        assert checkpoint["ota_uploaded"] is (boundary in {"verify_cancel", "metadata"})
+        if boundary in {"upload_response", "upload_cancel"}:
+            builder.upload = Job(True)
         backend.fail = False
         if restart:
             await manager.sessions.async_unload()
@@ -82,7 +101,10 @@ def test_uncertain_upload_recovers_without_reupload(boundary, restart):
             assert "device_verified" not in status.progress
         status = await manager.async_confirm_install(status.transaction_id, "admin")
         assert status.state is ConfigTransactionState.VERIFIED
-        assert builder.calls.count("upload") == 1
+        assert builder.calls.count("upload") == (
+            2 if boundary in {"upload_response", "upload_cancel"}
+            or boundary == "ack_checkpoint" and restart else 1
+        )
         assert builder.calls.count("write") == 1
         assert "restore" not in builder.calls
         assert await store.async_get_ct_selections("aabbccddeeff")
@@ -91,17 +113,152 @@ def test_uncertain_upload_recovers_without_reupload(boundary, restart):
     asyncio.run(run())
 
 
+def test_uncertain_upload_source_failure_never_enables_rollback():
+    async def run():
+        store = _store(_CopyingStorage())
+        builder = Builder(upload=ConnectionError("response lost"))
+        manager = _manager(builder, store)
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        proposed = manager._transaction(preview.transaction_id).plan.proposed_content
+        builder.remote_content = "source changed after upload attempt"
+        with pytest.raises(ValueError):
+            await manager.async_confirm_install(preview.transaction_id, "admin")
+        pending = manager.status(preview.transaction_id)
+        assert pending.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        assert not pending.rollback_available
+        with pytest.raises(RuntimeError, match="rollback"):
+            await manager.async_rollback(preview.transaction_id)
+        assert "restore" not in builder.calls
+
+        builder.remote_content = proposed
+        builder.upload = Job(True)
+        verified = await manager.async_confirm_install(preview.transaction_id, "admin")
+        assert verified.state is ConfigTransactionState.VERIFIED
+        assert builder.calls.count("upload") == 2
+
+    asyncio.run(run())
+
+
+def test_legacy_checkpoint_retries_upload_before_verification():
+    async def run():
+        store = _store(_CopyingStorage())
+        builder = Builder(upload=ConnectionError("response lost"))
+        manager = _manager(builder, store)
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        checkpoint = await store.async_get_install_recovery("aabbccddeeff")
+        checkpoint["version"] = 1
+        checkpoint.pop("ota_uploaded")
+        await store.async_save_install_recovery(
+            "aabbccddeeff", preview.transaction_id, checkpoint
+        )
+        await manager.sessions.async_unload()
+
+        builder.upload = Job(True)
+        manager = _manager(builder, store)
+        recovered = await manager.async_recover_install("aabbccddeeff")
+        assert recovered is not None
+        assert "ota_uploaded" not in recovered.progress
+        verified = await manager.async_confirm_install(recovered.transaction_id, "admin")
+        assert verified.state is ConfigTransactionState.VERIFIED
+        assert builder.calls.count("upload") == 2
+
+    asyncio.run(run())
+
+
+def test_uncertain_upload_expiry_preserves_checkpoint_without_restoring_yaml():
+    async def run():
+        store = _store(_CopyingStorage())
+        builder = Builder(upload=ConnectionError("response lost"))
+        manager = _manager(builder, store)
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        manager._transaction(preview.transaction_id).expires_at = 0
+        with pytest.raises(KeyError, match="expired"):
+            manager.status(preview.transaction_id)
+        assert "restore" not in builder.calls
+        assert await store.async_get_install_recovery("aabbccddeeff") is not None
+        recovered = await _manager(builder, store).async_recover_install("aabbccddeeff")
+        assert recovered is not None
+        assert not recovered.rollback_available
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("clear_fails_once", (False, True))
+def test_pre_upload_rollback_clears_recovery_checkpoint(clear_fails_once):
+    async def run():
+        class Storage(_CopyingStorage):
+            fail_clear = False
+
+            async def async_save(self, data):
+                if self.fail_clear and not data.get("install_recovery"):
+                    self.fail_clear = False
+                    raise OSError("checkpoint clear unavailable")
+                await super().async_save(data)
+
+        backend = Storage()
+        store = _store(backend)
+
+        class LostSource(Builder):
+            failed = False
+
+            async def async_get_config(self, configuration):
+                if not self.failed and await store.async_get_install_recovery("aabbccddeeff"):
+                    self.failed = True
+                    raise ConnectionError("source read unavailable")
+                return await super().async_get_config(configuration)
+
+        builder = LostSource()
+        manager = _manager(builder, store)
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        with pytest.raises(ValueError):
+            await manager.async_confirm_install(preview.transaction_id, "admin")
+        assert await store.async_get_install_recovery("aabbccddeeff") is not None
+        assert manager.status(preview.transaction_id).rollback_available
+
+        backend.fail_clear = clear_fails_once
+        if clear_fails_once:
+            with pytest.raises(RollbackFailedError):
+                await manager.async_rollback(preview.transaction_id)
+            assert manager.status(preview.transaction_id).rollback_available
+            assert await store.async_get_install_recovery("aabbccddeeff") is not None
+        rolled_back = await manager.async_rollback(preview.transaction_id)
+        assert rolled_back.state is ConfigTransactionState.ROLLED_BACK
+        assert await store.async_get_install_recovery("aabbccddeeff") is None
+        assert await _manager(builder, store).async_recover_install("aabbccddeeff") is None
+        assert "upload" not in builder.calls
+        assert builder.calls.count("restore") == 1
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("boundary", ("metadata", "checkpoint_cleanup"))
 def test_full_configuration_metadata_completion_survives_restart(boundary):
     class Storage(_CopyingStorage):
         fail = False
+        ack_saved = False
 
         async def async_save(self, data):
-            if self.fail and (
-                boundary == "metadata"
-                or not data.get("install_recovery", {}).get("aabbccddeeff")
-            ):
-                raise OSError("save interrupted")
+            if self.fail:
+                if boundary == "metadata":
+                    if self.ack_saved:
+                        raise OSError("save interrupted")
+                    self.ack_saved = True
+                elif not data.get("install_recovery", {}).get("aabbccddeeff"):
+                    raise OSError("save interrupted")
             await super().async_save(json.loads(json.dumps(data)))
 
     async def run():

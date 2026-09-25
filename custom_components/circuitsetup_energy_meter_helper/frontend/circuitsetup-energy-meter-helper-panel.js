@@ -2072,8 +2072,9 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
   const unchanged = purpose === "install_configuration" && status.redacted_diff === "" && ["previewed", "verified", "failed"].includes(state) && !status.progress.includes("ota_attempted") && !status.progress.includes("firmware_compiled");
   const retryClear = purpose === "save_calibration" && state === "verified";
   const busy = Boolean(pendingAction);
-  const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) => ["upload_outcome_unknown", "reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed"].includes(code)) === true;
+  const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) => ["upload_outcome_unknown", "reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed", "source_changed"].includes(code)) === true;
   const uploadUnknown = status.progress.includes("ota_attempted") && !status.progress.includes("ota_uploaded") && !status.progress.includes("device_verified");
+  const sourceChanged = status.evidence.includes("source_changed");
   const communicationFailure = status?.evidence.includes("meter_communication_failed") === true;
   const persistenceFailure = status?.evidence.includes("persistence_failed") === true;
   const failedPins = status?.communication_failed_cs_pins ?? [];
@@ -2094,8 +2095,8 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
       ${meterInventory ? totalsMigrationReview(meterInventory, () => void 0, totalPreview, impact !== null, true) : ""}
       ${state === "failed" || retryableInstall ? b`
         <div class="recovery-panel" role="status">
-          <strong>${communicationFailure ? "Meter chip communication failed" : uploadUnknown ? "Installation outcome needs verification" : persistenceFailure ? unchanged ? "Helper settings could not be saved" : "Firmware installed; Helper data was not saved" : failureMessage ?? "Build or install needs attention"}</strong>
-          ${communicationFailure ? b`<p>The ESP32 reconnected but could not establish SPI communication with
+          <strong>${sourceChanged ? "Reviewed configuration source changed" : communicationFailure ? "Meter chip communication failed" : uploadUnknown ? "Installation outcome is unknown" : persistenceFailure ? unchanged ? "Helper settings could not be saved" : "Firmware installed; Helper data was not saved" : failureMessage ?? "Build or install needs attention"}</strong>
+          ${sourceChanged ? b`<p>Restore the exact reviewed YAML in ESPHome Device Builder before retrying or going Back. This review cannot verify a different source.</p>` : communicationFailure ? b`<p>The ESP32 reconnected but could not establish SPI communication with
             ${failedPins.length ? "the meter chip(s) on CS pin(s) " + failedPins.map((pin) => "GPIO" + pin).join(", ") : "one or more meter chips (CS pin unavailable)"}.
             This is an ESP32–meter-chip link, not a Wi-Fi or Home Assistant problem.</p>
             <ol>
@@ -2106,8 +2107,8 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
               <li>If an add-on still fails, move its CS jumper to an unused supported pin and update the configuration before rebuilding and installing. A fault that follows the GPIO points to the ESP32 or link; one that stays with the add-on points to that board or meter chip.</li>
             </ol>
             <p>Fix the hardware or configuration, power up, and Retry verification. It rechecks installed firmware without another upload.</p>
-            <p>Back keeps this saved configuration for editing; rollback is optional.</p>
-          ` : uploadUnknown ? b`<p>The upload may have reached the meter. Retry verification checks the source and meter without uploading again.</p>` : persistenceFailure ? unchanged ? b`<p>No firmware was installed. Go Back, reload the configuration, and confirm again.</p>` : b`<p>The meter accepted and verified the firmware. Retry completion to save the Helper data without uploading again, or use Back to reload the installed configuration.</p>` : b`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
+            <p>Back keeps this saved configuration for editing.</p>
+          ` : uploadUnknown ? b`<p>The upload may have reached the meter. Retry installation sends the reviewed firmware again so completion can be confirmed. The saved YAML cannot be rolled back after an OTA attempt.</p>` : persistenceFailure ? unchanged ? b`<p>No firmware was installed. Go Back, reload the configuration, and confirm again.</p>` : b`<p>The meter accepted and verified the firmware. Retry completion to save the Helper data without uploading again, or use Back to reload the installed configuration.</p>` : b`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
           ${status?.rollback_available ? b`<button class="danger" @click=${rollback} ?disabled=${busy}>${pendingAction === "rollback" ? "Rolling back…" : "Rollback"}</button>` : ""}
         </div>
       ` : ""}
@@ -2125,7 +2126,7 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
       </div>` : b`<div class="confirmation-actions">
         <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : labels.apply}</button>
         <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : labels.compile}</button>
-        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "install_confirmation_required" && !retryClear}>${pendingAction === "install" ? retryableInstall ? "Checking…" : "Installing…" : retryClear ? "Retry clearing saved flash values" : persistenceFailure ? "Retry completion" : retryableInstall ? "Retry verification" : labels.install}</button>
+        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "install_confirmation_required" && !retryClear}>${pendingAction === "install" ? retryableInstall && !uploadUnknown ? "Checking…" : "Installing…" : retryClear ? "Retry clearing saved flash values" : uploadUnknown ? "Retry installation" : persistenceFailure ? "Retry completion" : retryableInstall ? "Retry verification" : labels.install}</button>
       </div>`}
       ${status?.validation_detail ? b`<dl class="status-list evidence-list">
         <div><dt>Validation code</dt><dd>${status.validation_detail.code ?? "unavailable"}</dd></div>
@@ -3441,13 +3442,11 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
   const boards = session2?.offset_boards ?? [];
   const finalized = session2?.offset_disposition === "completed" || session2?.offset_disposition === "skipped" || session2?.offset_disposition === "partial" && session2.state === "applied_pending_restart_verification";
   const configuredTargets = session2?.configured_offset_targets ?? [];
-  const stageTwoReady = boards.length > 0 && boards.every((item) => item.stages[0]?.state === "completed" || configuredTargets.some(([targetBoard, targetStage]) => targetBoard === item.board_index && targetStage === 1));
+  const stageTwoReady = boards.length > 0 && boards.every((item) => item.stages[0]?.state === "completed");
   const stageState = boards[board]?.stages[stage - 1]?.state ?? "not_started";
   const boardCount = topology2?.board_count ?? boards.length;
   const continueLabel = finalized ? "Continue to Voltage" : board + 1 < boardCount ? `Continue to Add-on ${board + 1}` : stage === 1 ? "Continue to Stage 2" : "Continue to Voltage";
-  const canContinue = finalized || stageState === "completed" || configuredTargets.some(
-    ([targetBoard, targetStage]) => targetBoard === board && targetStage === stage
-  );
+  const canContinue = finalized || stageState === "completed";
   const preparation = stock?.preparation;
   const nativePreparation = Boolean(stock && (preparation?.mode ?? "native") === "native");
   const selectedInstances = groupKeys(board).map((id2) => id2.replace("main_", "meter_main"));
@@ -5215,7 +5214,7 @@ class CircuitSetupPanel extends i$2 {
     const deviceId = this.selectedDeviceId;
     const current = this.transaction;
     const calibrationPreparation2 = current !== null && this.isCalibrationPreparationTransaction(current);
-    const appliedInstallRetry = current?.purpose === "install_configuration" && current.state === "install_confirmation_required" && current.evidence.some((code) => ["upload_outcome_unknown", "reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed"].includes(code));
+    const appliedInstallRetry = current?.purpose === "install_configuration" && current.state === "install_confirmation_required" && current.evidence.some((code) => ["upload_outcome_unknown", "reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed", "source_changed"].includes(code));
     const terminalPersistenceFailure = current?.purpose === "install_configuration" && current.state === "failed" && !current.rollback_available && current.evidence.includes("persistence_failed");
     if (current?.purpose.startsWith("offset_")) {
       if (!["previewed", "rolled_back", "failed"].includes(current.state)) {
@@ -6447,7 +6446,7 @@ class CircuitSetupPanel extends i$2 {
             })
           });
           const states = boards.flatMap((item) => item.stages.map((entry) => entry.state));
-          const completed = boards.every((item) => item.stages.every((entry) => entry.state === "completed" || this.session?.configured_offset_targets?.some(([board2, stage2]) => board2 === item.board_index && stage2 === entry.stage)));
+          const completed = boards.every((item) => item.stages.every((entry) => entry.state === "completed"));
           const disposition = completed ? "completed" : states.some((state) => state === "partial" || state === "indeterminate") ? "partial" : "in_progress";
           this.session = {
             ...this.session,
@@ -6497,7 +6496,7 @@ class CircuitSetupPanel extends i$2 {
       this.navigate("voltage");
       return;
     }
-    if (this.session.offset_boards?.[this.board]?.stages[this.offsetStage - 1]?.state !== "completed" && !this.session.configured_offset_targets?.some(([board, stage]) => board === this.board && stage === this.offsetStage)) return;
+    if (this.session.offset_boards?.[this.board]?.stages[this.offsetStage - 1]?.state !== "completed") return;
     const boardCount = this.topology?.board_count ?? this.session.offset_boards?.length ?? 1;
     if (this.board + 1 < boardCount) this.board += 1;
     else if (this.offsetStage === 1) {
@@ -7083,7 +7082,7 @@ class CircuitSetupPanel extends i$2 {
         this.requestUpdate();
       },
       (value) => {
-        if (value === 1 || this.session?.offset_boards?.every((item) => item.stages[0]?.state === "completed" || this.session?.configured_offset_targets?.some(([board, stage]) => board === item.board_index && stage === 1))) {
+        if (value === 1 || this.session?.offset_boards?.every((item) => item.stages[0]?.state === "completed")) {
           this.offsetStage = value;
           this.board = 0;
           this.offsetRetryConfirmed = false;
@@ -7284,7 +7283,7 @@ class CircuitSetupPanel extends i$2 {
           ${this.error ? b`<div class="error-panel" role="alert" tabindex="-1"><strong>${this.error}</strong></div>` : A}
           ${this.totalsIntentNeedsResolution() || this.hasUnsupportedCalibrationChanges() && (this.session?.has_pending_calibration || this.restartResult) && ["restart", "save-calibration", "summary"].includes(this.step) ? b`<button class="secondary"
               ?disabled=${Boolean(this.pendingAction)} @click=${() => this.discardUnsupportedCalibrationChanges()}>Discard local configuration choices and continue calibration</button>` : A}
-          ${this.configurationInstalled && this.transaction?.state === "verified" && this.transaction.full_meter_configuration_verified && !this.verifiedMeterConfiguration && this.configurationMode !== "runtime_only" ? b`<button class="secondary"
+          ${this.transaction?.state === "verified" && (this.configurationInstalled && this.transaction.full_meter_configuration_verified || this.transaction.redacted_diff === "" && this.transaction.progress.includes("metadata_persisted")) && !this.verifiedMeterConfiguration && this.configurationMode !== "runtime_only" ? b`<button class="secondary"
               ?disabled=${this.totalGraphState === "pending"} @click=${() => void this.refreshInstalledConfiguration()}>Retry totals inventory refresh</button>` : A}
           ${this.stepBody()}
           ${!["setup", "legacy-review", "meter", "voltage", "current", "summary"].includes(this.step) ? technicalDetails(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult, this.completedWithoutChanges) : A}

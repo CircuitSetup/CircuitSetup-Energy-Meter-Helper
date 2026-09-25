@@ -444,6 +444,7 @@ class _ConfigTransaction:
     purpose: TransactionPurpose = "install_configuration"
 
     recovered: bool = field(default=False, repr=False)
+    checkpoint_saved: bool = field(default=False, repr=False)
 
     async def async_release_reservation(self) -> None:
         """Drain an exact pre-write release even if this caller is cancelled."""
@@ -565,7 +566,7 @@ class ConfigTransactionManager:
         return None
 
     async def async_recover_install(self, mac: str) -> TransactionStatus | None:
-        """Reopen only verification; a checkpoint never authorizes another upload."""
+        """Reopen confirmed installs for verification or uncertain installs for retry."""
         mac = canonical_mac(mac)
         active = self.active_status(mac)
         if active is not None:
@@ -576,6 +577,7 @@ class ConfigTransactionManager:
         lease = await self.sessions.async_acquire_config(mac)
         try:
             transaction = _restore_install_checkpoint(checkpoint, mac)
+            transaction.checkpoint_saved = True
             source = await self._device_builder.async_get_config(
                 _meter_record(transaction).config_filename  # type: ignore[arg-type]
             )
@@ -620,6 +622,7 @@ class ConfigTransactionManager:
             await self._persistence.async_save_install_recovery(
                 transaction.mac, transaction.transaction_id, None
             )
+            transaction.checkpoint_saved = False
 
     def _is_proposed_source_authorized(
         self,
@@ -1094,6 +1097,7 @@ class ConfigTransactionManager:
                         TransactionEvidenceCode.SENSOR_COUNT_MISMATCH,
                         TransactionEvidenceCode.METER_COMMUNICATION_FAILED,
                         TransactionEvidenceCode.PERSISTENCE_FAILED,
+                        TransactionEvidenceCode.SOURCE_CHANGED,
                     )
                 )
             )
@@ -1362,9 +1366,12 @@ class ConfigTransactionManager:
             return _status(transaction)
         if transaction.recovered:
             return self._retain_install_retry(transaction, TransactionEvidenceCode.RECONNECT_UNAVAILABLE)
+        if TransactionProgress.OTA_ATTEMPTED in transaction.progress:
+            return self._retain_install_retry(transaction, TransactionEvidenceCode.SOURCE_CHANGED)
         transaction.state = ConfigTransactionState.FAILED
         transaction.rollback_available = (
             transaction.plan is not None and transaction.prior_content is not None
+            and TransactionProgress.OTA_ATTEMPTED not in transaction.progress
         )
         self._refresh_deadline(transaction)
         _evidence(transaction, TransactionEvidenceCode.WRITE_RECOVERY_REQUIRED)
@@ -1439,7 +1446,9 @@ class ConfigTransactionManager:
                     if code not in _RETRYABLE_INSTALL_EVIDENCE
                     and code is not TransactionEvidenceCode.SOURCE_CHANGED
                 ]
-                return await self._verify_existing_upload_locked(transaction)
+                if TransactionProgress.OTA_UPLOADED in transaction.progress:
+                    return await self._verify_existing_upload_locked(transaction)
+                return await self._upload_locked(transaction)
             if transaction.verification_id is not None:
                 verified = await self._persistence.async_get_verified_calibration(
                     transaction.mac
@@ -1491,7 +1500,6 @@ class ConfigTransactionManager:
             transaction.communication_failed_cs_pins = ()
             transaction.state = ConfigTransactionState.INSTALLING
             self.publish_status(_status(transaction))
-            plan, _ = _sensitive(transaction)
             if transaction.offset_preparation is None:
                 try:
                     _, cancelled = await self._drain_persistence_commit(
@@ -1501,6 +1509,7 @@ class ConfigTransactionManager:
                             _install_checkpoint(transaction),
                         ),
                     )
+                    transaction.checkpoint_saved = True
                     if cancelled:
                         raise asyncio.CancelledError
                 except asyncio.CancelledError:
@@ -1513,32 +1522,60 @@ class ConfigTransactionManager:
                 finally:
                     transaction.persistence_commit_started = False
             await self._check_configuration_source(transaction, proposed=True)
-            _progress(transaction, TransactionProgress.OTA_ATTEMPTED)
+            return await self._upload_locked(transaction)
+
+    async def _upload_locked(self, transaction: _ConfigTransaction) -> TransactionStatus:
+        """Run or explicitly retry an OTA whose prior outcome is unknown."""
+        plan, _ = _sensitive(transaction)
+        transaction.upload_progress.clear()
+        transaction.state = ConfigTransactionState.INSTALLING
+        transaction.rollback_available = False
+        self.publish_status(_status(transaction))
+        _progress(transaction, TransactionProgress.OTA_ATTEMPTED)
+        try:
+            result = await self._device_builder.async_upload(
+                plan.configuration,
+                lambda update: self._publish_upload_progress(transaction, update),
+            )
+        except asyncio.CancelledError:
+            self._retain_install_retry(transaction, TransactionEvidenceCode.UPLOAD_OUTCOME_UNKNOWN)
+            raise
+        except Exception:  # noqa: BLE001 - external transport boundary
+            result = None
+        if result is None or not result.success and result.code is None:
+            return self._retain_install_retry(transaction, TransactionEvidenceCode.UPLOAD_OUTCOME_UNKNOWN)
+        if not result.success:
+            transaction.failure = _job_failure(
+                TransactionFailureStage.INSTALLING, result, TransactionFailureReason.UPLOAD_FAILED,
+                plan.proposed_content,
+            )
+            await self._clear_install_checkpoint(transaction)
+            return self._finish(
+                transaction,
+                ConfigTransactionState.FAILED,
+                TransactionEvidenceCode.UPLOAD_FAILED,
+            )
+        _progress(transaction, TransactionProgress.OTA_UPLOADED)
+        if transaction.checkpoint_saved:
             try:
-                result = await self._device_builder.async_upload(
-                    plan.configuration,
-                    lambda update: self._publish_upload_progress(transaction, update),
+                _, cancelled = await self._drain_persistence_commit(
+                    transaction,
+                    self._persistence.async_save_install_recovery(
+                        transaction.mac, transaction.transaction_id,
+                        _install_checkpoint(transaction),
+                    ),
                 )
             except asyncio.CancelledError:
-                self._retain_install_retry(transaction, TransactionEvidenceCode.UPLOAD_OUTCOME_UNKNOWN)
+                self._retain_install_retry(transaction, TransactionEvidenceCode.PERSISTENCE_FAILED)
                 raise
-            except Exception:  # noqa: BLE001 - external transport boundary
-                result = None
-            if result is None or not result.success and result.code is None:
-                return self._retain_install_retry(transaction, TransactionEvidenceCode.UPLOAD_OUTCOME_UNKNOWN)
-            if not result.success:
-                transaction.failure = _job_failure(
-                    TransactionFailureStage.INSTALLING, result, TransactionFailureReason.UPLOAD_FAILED,
-                    plan.proposed_content,
-                )
-                await self._clear_install_checkpoint(transaction)
-                return self._finish(
-                    transaction,
-                    ConfigTransactionState.FAILED,
-                    TransactionEvidenceCode.UPLOAD_FAILED,
-                )
-            _progress(transaction, TransactionProgress.OTA_UPLOADED)
-            return await self._verify_existing_upload_locked(transaction)
+            except Exception:  # noqa: BLE001 - recovery must retain acknowledged upload
+                return self._retain_install_retry(transaction, TransactionEvidenceCode.PERSISTENCE_FAILED)
+            finally:
+                transaction.persistence_commit_started = False
+            if cancelled:
+                self._retain_install_retry(transaction, TransactionEvidenceCode.RECONNECT_UNAVAILABLE)
+                raise asyncio.CancelledError
+        return await self._verify_existing_upload_locked(transaction)
 
     async def _verify_existing_upload_locked(
         self, transaction: _ConfigTransaction
@@ -1865,7 +1902,10 @@ class ConfigTransactionManager:
     ) -> TransactionStatus:
         transaction.state = ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
         persistence_failed = code is TransactionEvidenceCode.PERSISTENCE_FAILED
-        transaction.rollback_available = not persistence_failed and not transaction.recovered
+        transaction.rollback_available = (
+            not persistence_failed and not transaction.recovered
+            and TransactionProgress.OTA_ATTEMPTED not in transaction.progress
+        )
         transaction.failure = None if persistence_failed else TransactionFailure(
             TransactionFailureStage.VERIFYING_METER,
             TransactionFailureReason.METER_COMMUNICATION_FAILED
@@ -1917,7 +1957,9 @@ class ConfigTransactionManager:
         expected_current_sha256: str | None = None,
     ) -> TransactionStatus:
         if transaction.recovered:
-            raise RuntimeError("recovered installation permits verification only")
+            raise RuntimeError("recovered installation cannot restore the original YAML")
+        if TransactionProgress.OTA_ATTEMPTED in transaction.progress:
+            raise RuntimeError("rollback is unavailable after an OTA attempt")
         transaction.rollback_available = False
         if cause is not None:
             _evidence(transaction, cause)
@@ -1960,8 +2002,16 @@ class ConfigTransactionManager:
             _evidence(transaction, TransactionEvidenceCode.ROLLBACK_FAILED)
             self._retain_write_recovery(transaction)
             raise RollbackFailedError("configuration rollback cleanup failed") from error
-        if TransactionProgress.OTA_ATTEMPTED in transaction.progress:
-            await self._clear_install_checkpoint(transaction)
+        if transaction.checkpoint_saved:
+            try:
+                await self._clear_install_checkpoint(transaction)
+            except asyncio.CancelledError:
+                self._retain_write_recovery(transaction)
+                raise
+            except Exception as error:
+                _evidence(transaction, TransactionEvidenceCode.ROLLBACK_FAILED)
+                self._retain_write_recovery(transaction)
+                raise RollbackFailedError("configuration rollback cleanup failed") from error
         return self._finish(transaction, ConfigTransactionState.ROLLED_BACK)
 
     async def _rollback_after_cancellation(
@@ -2000,13 +2050,18 @@ class ConfigTransactionManager:
             or self._task_owns(transaction)
         ):
             return
-        recover_write = not transaction.recovered and transaction.write_started and transaction.state not in {
-            ConfigTransactionState.COMPILED,
-            ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED,
-            ConfigTransactionState.INSTALLING,
-            ConfigTransactionState.RECONNECTING,
-            ConfigTransactionState.VERIFIED,
-        }
+        recover_write = (
+            not transaction.recovered
+            and transaction.write_started
+            and TransactionProgress.OTA_ATTEMPTED not in transaction.progress
+            and transaction.state not in {
+                ConfigTransactionState.COMPILED,
+                ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED,
+                ConfigTransactionState.INSTALLING,
+                ConfigTransactionState.RECONNECTING,
+                ConfigTransactionState.VERIFIED,
+            }
+        )
         transaction.state = ConfigTransactionState.FAILED
         if recover_write:
             transaction.rollback_available = True
@@ -2140,7 +2195,8 @@ def _install_checkpoint(transaction: _ConfigTransaction) -> dict[str, Any]:
     """Retain intended semantics and digests, never YAML or physical readiness."""
     plan, _ = _sensitive(transaction)
     return {
-        "version": 1,
+        "version": 2,
+        "ota_uploaded": TransactionProgress.OTA_UPLOADED in transaction.progress,
         "mac": transaction.mac,
         "transaction_id": transaction.transaction_id,
         "record": serialize_meter_record(_meter_record(transaction)),
@@ -2161,14 +2217,21 @@ def _install_checkpoint(transaction: _ConfigTransaction) -> dict[str, Any]:
 
 
 def _restore_install_checkpoint(raw: dict[str, Any], mac: str) -> _ConfigTransaction:
-    """Validate private persisted input before reconstructing verification-only work."""
+    """Validate private persisted input before reconstructing install recovery."""
     try:
-        if set(raw) != {
+        fields = {
             "version", "mac", "transaction_id", "record", "source_sha256",
             "proposed_sha256", "changes", "meter_configuration", "selections",
             "expected_entities", "expected_aggregates", "record_fingerprint",
             "verification_id", "purpose",
-        } or type(raw["version"]) is not int or raw["version"] != 1 or raw["mac"] != mac:
+        }
+        version = raw["version"]
+        if (
+            type(version) is not int or version not in {1, 2}
+            or set(raw) != (fields if version == 1 else fields | {"ota_uploaded"})
+            or (version == 2 and type(raw["ota_uploaded"]) is not bool)
+            or raw["mac"] != mac
+        ):
             raise ValueError("invalid checkpoint schema")
         for key, size in (("transaction_id", 32), ("source_sha256", 64), ("proposed_sha256", 64)):
             if not isinstance(raw[key], str) or re.fullmatch(rf"[0-9a-f]{{{size}}}", raw[key]) is None:
@@ -2231,8 +2294,16 @@ def _restore_install_checkpoint(raw: dict[str, Any], mac: str) -> _ConfigTransac
             expected_sensor_entities=entities, expected_aggregate_sensor_entities=aggregates,
             purpose=purpose, recovered=True,
             state=ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED,
-            evidence=[TransactionEvidenceCode.UPLOAD_OUTCOME_UNKNOWN],
-            progress=[TransactionProgress.OTA_ATTEMPTED], write_started=True,
+            evidence=[
+                TransactionEvidenceCode.RECONNECT_UNAVAILABLE
+                if version == 2 and raw["ota_uploaded"]
+                else TransactionEvidenceCode.UPLOAD_OUTCOME_UNKNOWN
+            ],
+            progress=[TransactionProgress.OTA_ATTEMPTED] + (
+                [TransactionProgress.OTA_UPLOADED]
+                if version == 2 and raw["ota_uploaded"] else []
+            ),
+            write_started=True,
         )
     except (KeyError, TypeError, ValueError, AttributeError):
         raise ValueError("invalid install recovery checkpoint") from None

@@ -112,7 +112,7 @@ def test_native_run_blocks_only_stage_with_config_offsets(tmp_path: Path) -> Non
         builder = workflow._builder
         source = await builder.async_get_config("meter.yaml")
         plan = build_offset_table_mutation(
-            source, handle.topology, {"meter_main1": OLD}, {},
+            source, handle.topology, {"meter_main1": OLD, "meter_main2": OLD}, {},
         )
         builder.remote_content = plan.proposed_content
         handle.configuration_sha256 = sha256(builder.remote_content.encode()).hexdigest()

@@ -38,8 +38,9 @@ export function buildInstallStep(
   const retryClear = purpose === "save_calibration" && state === "verified";
   const busy = Boolean(pendingAction);
   const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) =>
-    ["upload_outcome_unknown", "reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed"].includes(code)) === true;
+    ["upload_outcome_unknown", "reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed", "source_changed"].includes(code)) === true;
   const uploadUnknown = status.progress.includes("ota_attempted") && !status.progress.includes("ota_uploaded") && !status.progress.includes("device_verified");
+  const sourceChanged = status.evidence.includes("source_changed");
   const communicationFailure = status?.evidence.includes("meter_communication_failed") === true;
   const persistenceFailure = status?.evidence.includes("persistence_failed") === true;
   const failedPins = status?.communication_failed_cs_pins ?? [];
@@ -64,8 +65,8 @@ export function buildInstallStep(
       ${meterInventory ? totalsMigrationReview(meterInventory, () => undefined, totalPreview, impact !== null, true) : ""}
       ${state === "failed" || retryableInstall ? html`
         <div class="recovery-panel" role="status">
-          <strong>${communicationFailure ? "Meter chip communication failed" : uploadUnknown ? "Installation outcome needs verification" : persistenceFailure ? unchanged ? "Helper settings could not be saved" : "Firmware installed; Helper data was not saved" : failureMessage ?? "Build or install needs attention"}</strong>
-          ${communicationFailure ? html`<p>The ESP32 reconnected but could not establish SPI communication with
+          <strong>${sourceChanged ? "Reviewed configuration source changed" : communicationFailure ? "Meter chip communication failed" : uploadUnknown ? "Installation outcome is unknown" : persistenceFailure ? unchanged ? "Helper settings could not be saved" : "Firmware installed; Helper data was not saved" : failureMessage ?? "Build or install needs attention"}</strong>
+          ${sourceChanged ? html`<p>Restore the exact reviewed YAML in ESPHome Device Builder before retrying or going Back. This review cannot verify a different source.</p>` : communicationFailure ? html`<p>The ESP32 reconnected but could not establish SPI communication with
             ${failedPins.length ? "the meter chip(s) on CS pin(s) " + failedPins.map((pin) => "GPIO" + pin).join(", ") : "one or more meter chips (CS pin unavailable)"}.
             This is an ESP32–meter-chip link, not a Wi-Fi or Home Assistant problem.</p>
             <ol>
@@ -76,8 +77,8 @@ export function buildInstallStep(
               <li>If an add-on still fails, move its CS jumper to an unused supported pin and update the configuration before rebuilding and installing. A fault that follows the GPIO points to the ESP32 or link; one that stays with the add-on points to that board or meter chip.</li>
             </ol>
             <p>Fix the hardware or configuration, power up, and Retry verification. It rechecks installed firmware without another upload.</p>
-            <p>Back keeps this saved configuration for editing; rollback is optional.</p>
-          ` : uploadUnknown ? html`<p>The upload may have reached the meter. Retry verification checks the source and meter without uploading again.</p>` : persistenceFailure ? unchanged ? html`<p>No firmware was installed. Go Back, reload the configuration, and confirm again.</p>` : html`<p>The meter accepted and verified the firmware. Retry completion to save the Helper data without uploading again, or use Back to reload the installed configuration.</p>`
+            <p>Back keeps this saved configuration for editing.</p>
+          ` : uploadUnknown ? html`<p>The upload may have reached the meter. Retry installation sends the reviewed firmware again so completion can be confirmed. The saved YAML cannot be rolled back after an OTA attempt.</p>` : persistenceFailure ? unchanged ? html`<p>No firmware was installed. Go Back, reload the configuration, and confirm again.</p>` : html`<p>The meter accepted and verified the firmware. Retry completion to save the Helper data without uploading again, or use Back to reload the installed configuration.</p>`
             : html`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
           ${status?.rollback_available ? html`<button class="danger" @click=${rollback} ?disabled=${busy}>${pendingAction === "rollback" ? "Rolling back…" : "Rollback"}</button>` : ""}
         </div>
@@ -96,7 +97,7 @@ export function buildInstallStep(
       </div>` : html`<div class="confirmation-actions">
         <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : labels.apply}</button>
         <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : labels.compile}</button>
-        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || (state !== "install_confirmation_required" && !retryClear)}>${pendingAction === "install" ? retryableInstall ? "Checking…" : "Installing…" : retryClear ? "Retry clearing saved flash values" : persistenceFailure ? "Retry completion" : retryableInstall ? "Retry verification" : labels.install}</button>
+        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || (state !== "install_confirmation_required" && !retryClear)}>${pendingAction === "install" ? retryableInstall && !uploadUnknown ? "Checking…" : "Installing…" : retryClear ? "Retry clearing saved flash values" : uploadUnknown ? "Retry installation" : persistenceFailure ? "Retry completion" : retryableInstall ? "Retry verification" : labels.install}</button>
       </div>`}
       ${status?.validation_detail ? html`<dl class="status-list evidence-list">
         <div><dt>Validation code</dt><dd>${status.validation_detail.code ?? "unavailable"}</dd></div>

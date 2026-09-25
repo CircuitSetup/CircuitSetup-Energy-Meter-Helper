@@ -26,7 +26,7 @@ it("shows affected SPI pins and hardware troubleshooting without allowing Contin
   const noop = () => undefined;
   const status = {
     purpose: "install_configuration", transaction_id: "tx", state: "install_confirmation_required", source_sha256: "a".repeat(64),
-    changes: [], redacted_diff: "", rollback_available: true,
+    changes: [], redacted_diff: "", rollback_available: false,
     evidence: ["meter_communication_failed"], communication_failed_cs_pins: [0, 16],
     progress: ["firmware_compiled", "ota_uploaded"], validation_detail: null, upload_progress: [],
     aggregate_entity_mismatch: false, full_meter_configuration_verified: false,
@@ -164,7 +164,7 @@ it("does not relabel retained Compile progress while Install starts", () => {
 
 it.each(["entity_mismatch", "reconnect_unavailable"] as const)("shows only the latest determinate Install progress and allows %s retry", (evidence) => {
   const host = document.createElement("div");
-  const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: true, evidence: [evidence], progress: ["firmware_compiled", "ota_uploaded"], validation_detail: null, upload_progress: [{ stage: "uploading", percentage: 99 }, { stage: "uploading", percentage: 100 }, { stage: "uploading", percentage: null }], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false, evidence: [evidence], progress: ["firmware_compiled", "ota_uploaded"], validation_detail: null, upload_progress: [{ stage: "uploading", percentage: 99 }, { stage: "uploading", percentage: 100 }, { stage: "uploading", percentage: null }], purpose: "install_configuration" as const, aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
   const noop = () => undefined;
   render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop), host);
 
@@ -172,10 +172,10 @@ it.each(["entity_mismatch", "reconnect_unavailable"] as const)("shows only the l
   expect(host.querySelectorAll(".upload-progress li")).toHaveLength(0);
   expect(host.querySelector<HTMLProgressElement>("progress")?.value).toBe(100);
   expect([...host.querySelectorAll("button")].find((button) => button.textContent === "Retry verification")?.disabled).toBe(false);
-  expect([...host.querySelectorAll("button")].some((button) => button.textContent === "Rollback")).toBe(true);
+  expect([...host.querySelectorAll("button")].some((button) => button.textContent === "Rollback")).toBe(false);
 });
 
-it("offers verification for uncertain uploads without claiming installation", () => {
+it("offers an explicit install retry for uncertain uploads without claiming installation", () => {
   const host = document.createElement("div");
   const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64),
     changes: [], redacted_diff: "", rollback_available: false, evidence: ["upload_outcome_unknown"],
@@ -183,11 +183,16 @@ it("offers verification for uncertain uploads without claiming installation", ()
     aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
   const noop = () => undefined;
   render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop), host);
-  expect(host.textContent).toContain("Installation outcome needs verification");
-  expect(host.textContent).toContain("without uploading again");
+  expect(host.textContent).toContain("Installation outcome is unknown");
+  expect(host.textContent).toContain("firmware again");
   expect(host.textContent).not.toContain("Firmware installed");
-  expect([...host.querySelectorAll("button")].find((button) => button.textContent === "Retry verification")?.disabled).toBe(false);
+  expect([...host.querySelectorAll("button")].find((button) => button.textContent === "Retry installation")?.disabled).toBe(false);
   expect([...host.querySelectorAll("button")].some((button) => button.textContent === "Rollback")).toBe(false);
+
+  render(buildInstallStep("install_configuration", { ...status, evidence: ["upload_outcome_unknown", "source_changed"] },
+    noop, noop, noop, noop, noop, noop), host);
+  expect(host.textContent).toContain("Reviewed configuration source changed");
+  expect(host.textContent).toContain("Restore the exact reviewed YAML");
 });
 
 it("offers metadata completion without another upload or rollback", () => {
@@ -499,6 +504,22 @@ describe("explicit totals adoption and migration transactions", () => {
     expect(state.meterConfiguration.configuration.totals_change_intent.adopt_managed_totals).toBe(false);
   });
 
+  it("offers inventory retry after unchanged Helper settings are saved", async () => {
+    const confirmed = { ...reviewed(), state: "verified" as const, redacted_diff: "", progress: ["metadata_persisted"] };
+    const { state, panel, calls } = await prepare({ apply_ct_config: confirmed, get_meter_configuration: new Error("offline") });
+    state.transaction = { ...reviewed(), redacted_diff: "" };
+    await state.transactionAction("apply");
+    await panel.updateComplete;
+    expect(state.configurationInstalled).toBe(false);
+    expect(state.transaction?.state).toBe("verified");
+    expect(text(panel)).toContain("Helper settings were saved, but fresh totals inventory could not be loaded");
+    const retry = [...panel.shadowRoot!.querySelectorAll("button")].find((button) => button.textContent === "Retry totals inventory refresh");
+    expect(retry).toBeDefined();
+    const inventoryCalls = calls.filter((call) => String(call.type).endsWith("get_meter_configuration")).length;
+    retry?.click();
+    await vi.waitFor(() => expect(calls.filter((call) => String(call.type).endsWith("get_meter_configuration")).length).toBe(inventoryCalls + 1));
+  });
+
   it("ignores a late installed inventory response after device selection changes", async () => {
     let resolve!: (value: ReturnType<typeof meterResponse>) => void;
     const pending = new Promise<ReturnType<typeof meterResponse>>((done) => { resolve = done; });
@@ -614,7 +635,7 @@ const contrastRatio = (first: string, second: string): number => {
 it("offers verification retry after reconnect verification is exhausted", () => {
   const root = document.createElement("div");
   const status = { purpose: "install_configuration", transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64),
-    changes: [], redacted_diff: "", rollback_available: true, evidence: ["reconnect_unavailable"], progress: ["firmware_compiled", "ota_uploaded"],
+    changes: [], redacted_diff: "", rollback_available: false, evidence: ["reconnect_unavailable"], progress: ["firmware_compiled", "ota_uploaded"],
     validation_detail: null, upload_progress: [], aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
   const noop = () => undefined;
 
@@ -622,7 +643,7 @@ it("offers verification retry after reconnect verification is exhausted", () => 
 
   expect(root.textContent).toContain("Build or install needs attention");
   expect([...root.querySelectorAll("button")].find((button) => button.textContent === "Retry verification")?.disabled).toBe(false);
-  expect([...root.querySelectorAll("button")].some((button) => button.textContent === "Rollback")).toBe(true);
+  expect([...root.querySelectorAll("button")].some((button) => button.textContent === "Rollback")).toBe(false);
 });
 
 beforeEach(() => vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(firmwareResponse()))));
@@ -3084,7 +3105,13 @@ describe("CircuitSetup panel", () => {
     expect(panel.shadowRoot?.querySelector("[data-offset-config-warning] strong")?.textContent)
       .toContain("offset values in the config file must be removed before re-running this calibration");
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action='calibrate-offset']")?.disabled).toBe(true);
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-offset-stage='2']")?.disabled).toBe(true);
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".offset-footer .primary")?.disabled).toBe(true);
 
+    state.session = { ...(state.session as Record<string, unknown>), offset_boards: [
+      { board_index: 0, stages: [{ stage: 1, state: "completed" }, { stage: 2, state: "not_started" }] },
+    ] };
+    panel.requestUpdate(); await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".offset-footer .primary")?.disabled).toBe(false);
     panel.shadowRoot?.querySelector<HTMLButtonElement>(".offset-footer .primary")?.click();
     await panel.updateComplete;

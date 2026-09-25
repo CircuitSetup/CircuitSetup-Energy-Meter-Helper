@@ -157,21 +157,21 @@ _OFFSET_FIELDS_BY_STAGE = {
 
 
 def _configured_offset_targets(
-    entries: tuple[tuple[str | None, str], ...], board_count: int
+    entries: tuple[tuple[str | None, str], ...], board_count: int,
+    *, require_both: bool = False,
 ) -> tuple[tuple[int, int], ...]:
-    return tuple(
-        (board, stage)
-        for board in range(board_count)
-        for stage, names in _OFFSET_FIELDS_BY_STAGE.items()
-        if any(
-            field in names
-            and (owner is None or owner in (
-                _instance_id_for_channel(board * 6 + 1),
-                _instance_id_for_channel(board * 6 + 4),
-            ))
-            for owner, field in entries
-        )
-    )
+    targets = []
+    for board in range(board_count):
+        chips = {
+            _instance_id_for_channel(board * 6 + 1),
+            _instance_id_for_channel(board * 6 + 4),
+        }
+        for stage, names in _OFFSET_FIELDS_BY_STAGE.items():
+            owners = {owner for owner, field in entries if field in names}
+            configured = chips <= owners if require_both else None in owners or bool(chips & owners)
+            if configured:
+                targets.append((board, stage))
+    return tuple(targets)
 
 
 def _configured_current_sensors(
@@ -423,6 +423,7 @@ class _SessionHandle:
     configuration_sha256: str | None = None
     configuration_authoritative: bool = True
     configured_offset_targets: tuple[tuple[int, int], ...] = ()
+    completed_configured_offset_targets: tuple[tuple[int, int], ...] = ()
     timing_policy: CalibrationTimingPolicy = field(
         default_factory=lambda: CalibrationTimingPolicy(5, 3)
     )
@@ -455,7 +456,6 @@ class _SessionHandle:
             disposition = "partial"
         elif stage_states and all(
             stage["state"] == "completed"
-            or (board["board_index"], stage["stage"]) in self.configured_offset_targets
             for board in boards
             for stage in board["stages"]
         ):
@@ -506,7 +506,13 @@ class _SessionHandle:
             ):
                 return "completed"
             return result.state.value
-        return "skipped" if self.offset_skipped else "not_started"
+        if self.offset_skipped:
+            return "skipped"
+        return (
+            "completed"
+            if (board_index, stage) in self.completed_configured_offset_targets
+            else "not_started"
+        )
 
     def scrub(self) -> None:
         self.substitutions.clear()
@@ -1476,7 +1482,15 @@ class EntryWorkflow:
             ),
             configured_offset_targets=(
                 _configured_offset_targets(
-                    document.configured_offset_entries, topology.board_count
+                    document.configured_offset_entries, topology.board_count,
+                )
+                if snapshot is not None
+                else ()
+            ),
+            completed_configured_offset_targets=(
+                _configured_offset_targets(
+                    document.configured_offset_entries, topology.board_count,
+                    require_both=True,
                 )
                 if snapshot is not None
                 else ()
@@ -1665,15 +1679,19 @@ class EntryWorkflow:
                     or snapshot.sha256 != handle.configuration_sha256
                 ):
                     raise WorkflowHandleError("calibration configuration is stale")
+                entries = ESPHomeConfigDocument.parse(snapshot.content).configured_offset_entries
                 targets = _configured_offset_targets(
-                    ESPHomeConfigDocument.parse(snapshot.content).configured_offset_entries,
+                    entries,
                     handle.topology.board_count,
                 )
                 if (board_index, stage) in targets:
                     raise WorkflowHandleError(
                         "Config offset values must be removed before re-running this calibration"
                     )
-                stage_one_configured = (board_index, 1) in targets
+                stage_one_configured = (board_index, 1) in _configured_offset_targets(
+                    entries,
+                    handle.topology.board_count, require_both=True,
+                )
             handle.offset_active = (board_index, stage)
             active = True
             self._publish(handle)
@@ -2522,8 +2540,9 @@ class EntryWorkflow:
                     handle.configuration
                 )
                 _validate_source(source, handle.topology)
+                entries = ESPHomeConfigDocument.parse(source.content).configured_offset_entries
                 targets = _configured_offset_targets(
-                    ESPHomeConfigDocument.parse(source.content).configured_offset_entries,
+                    entries,
                     handle.topology.board_count,
                 )
                 if (board_index, stage) in targets:
@@ -2569,7 +2588,10 @@ class EntryWorkflow:
                 ),
                 claim_guard=lambda: self._assert_claim(handle, revision),
                 timing_policy=handle.timing_policy,
-                stage_one_configured=(board_index, 1) in targets,
+                stage_one_configured=(board_index, 1) in _configured_offset_targets(
+                    entries,
+                    handle.topology.board_count, require_both=True,
+                ),
             )
             self._assert_claim(handle, revision)
             handle.offset_results[(board_index, stage)] = result
