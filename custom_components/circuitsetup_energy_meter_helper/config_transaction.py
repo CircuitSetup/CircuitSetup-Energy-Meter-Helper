@@ -445,6 +445,7 @@ class _ConfigTransaction:
 
     recovered: bool = field(default=False, repr=False)
     checkpoint_saved: bool = field(default=False, repr=False)
+    recovery_proposed_sha256: str | None = field(default=None, repr=False)
 
     async def async_release_reservation(self) -> None:
         """Drain an exact pre-write release even if this caller is cancelled."""
@@ -581,18 +582,7 @@ class ConfigTransactionManager:
             source = await self._device_builder.async_get_config(
                 _meter_record(transaction).config_filename  # type: ignore[arg-type]
             )
-            if (
-                source.configuration_authoritative is not True
-                or source.configuration != _meter_record(transaction).config_filename
-                or source.sha256 != checkpoint["proposed_sha256"]
-                or sha256(source.content.encode()).hexdigest() != source.sha256
-            ):
-                raise ValueError("recovery configuration source changed")
-            transaction.plan = ConfigMutationPlan(
-                source.configuration, transaction.source_sha256,
-                transaction.changes, "", source.content,
-            )
-            transaction.prior_content = ""  # Recovery cannot restore absent original YAML.
+            self._adopt_recovered_source(transaction, source)
             transaction.lease = lease
             if transaction.purpose == "offset_finalization":
                 if self._offset_recovery is None:
@@ -601,7 +591,7 @@ class ConfigTransactionManager:
                 if (
                     record is None or record.finalization is None
                     or record.finalization.transaction_id != transaction.transaction_id
-                    or record.finalization.proposed_sha256 != source.sha256
+                    or record.finalization.proposed_sha256 != transaction.recovery_proposed_sha256
                     or record.finalization.source_sha256 != transaction.source_sha256
                     or record.finalization.verification_id != transaction.verification_id
                     or record.final_cancelled
@@ -617,12 +607,58 @@ class ConfigTransactionManager:
             lease.release()
             raise
 
+    @staticmethod
+    def _adopt_recovered_source(
+        transaction: _ConfigTransaction, source: ESPHomeConfigSnapshot
+    ) -> bool:
+        """Restore a plan only from the exact YAML named by the checkpoint."""
+        if (
+            source.configuration_authoritative is not True
+            or source.configuration != _meter_record(transaction).config_filename
+            or source.sha256 != transaction.recovery_proposed_sha256
+            or sha256(source.content.encode()).hexdigest() != source.sha256
+        ):
+            transaction.plan = None
+            transaction.prior_content = None
+            _evidence(transaction, TransactionEvidenceCode.SOURCE_CHANGED)
+            return False
+        transaction.plan = ConfigMutationPlan(
+            source.configuration, transaction.source_sha256,
+            transaction.changes, "", source.content,
+        )
+        transaction.prior_content = ""  # Recovery cannot restore absent original YAML.
+        return True
+
     async def _clear_install_checkpoint(self, transaction: _ConfigTransaction) -> None:
         if transaction.offset_preparation is None:
             await self._persistence.async_save_install_recovery(
                 transaction.mac, transaction.transaction_id, None
             )
             transaction.checkpoint_saved = False
+
+    async def _finish_terminal_install_failure(
+        self, transaction: _ConfigTransaction, code: TransactionEvidenceCode
+    ) -> TransactionStatus:
+        """Keep an install retryable if its durable checkpoint cannot be cleared."""
+        try:
+            _, cancelled = await self._drain_persistence_commit(
+                transaction, self._clear_install_checkpoint(transaction)
+            )
+        except asyncio.CancelledError:
+            _evidence(transaction, code)
+            self._retain_install_retry(transaction, TransactionEvidenceCode.PERSISTENCE_FAILED)
+            raise
+        except Exception:  # noqa: BLE001 - failed cleanup must retain the recovery handle
+            _evidence(transaction, code)
+            return self._retain_install_retry(
+                transaction, TransactionEvidenceCode.PERSISTENCE_FAILED
+            )
+        finally:
+            transaction.persistence_commit_started = False
+        status = self._finish(transaction, ConfigTransactionState.FAILED, code)
+        if cancelled:
+            raise asyncio.CancelledError
+        return status
 
     def _is_proposed_source_authorized(
         self,
@@ -1439,12 +1475,25 @@ class ConfigTransactionManager:
                     "install confirmation is not legal in the current state"
                 )
             if TransactionProgress.OTA_ATTEMPTED in transaction.progress:
+                if transaction.recovered:
+                    source = await self._device_builder.async_get_config(
+                        _meter_record(transaction).config_filename  # type: ignore[arg-type]
+                    )
+                    if not self._adopt_recovered_source(transaction, source):
+                        return self._retain_install_retry(
+                            transaction, TransactionEvidenceCode.SOURCE_CHANGED
+                        )
                 await self._check_configuration_source(transaction, proposed=True)
                 transaction.evidence[:] = [
                     code
                     for code in transaction.evidence
                     if code not in _RETRYABLE_INSTALL_EVIDENCE
-                    and code is not TransactionEvidenceCode.SOURCE_CHANGED
+                    and code not in (
+                        TransactionEvidenceCode.SOURCE_CHANGED,
+                        TransactionEvidenceCode.UPLOAD_FAILED,
+                        TransactionEvidenceCode.IDENTITY_MISMATCH,
+                        TransactionEvidenceCode.TOPOLOGY_MISMATCH,
+                    )
                 ]
                 if TransactionProgress.OTA_UPLOADED in transaction.progress:
                     return await self._verify_existing_upload_locked(transaction)
@@ -1549,11 +1598,8 @@ class ConfigTransactionManager:
                 TransactionFailureStage.INSTALLING, result, TransactionFailureReason.UPLOAD_FAILED,
                 plan.proposed_content,
             )
-            await self._clear_install_checkpoint(transaction)
-            return self._finish(
-                transaction,
-                ConfigTransactionState.FAILED,
-                TransactionEvidenceCode.UPLOAD_FAILED,
+            return await self._finish_terminal_install_failure(
+                transaction, TransactionEvidenceCode.UPLOAD_FAILED
             )
         _progress(transaction, TransactionProgress.OTA_UPLOADED)
         if transaction.checkpoint_saved:
@@ -1639,8 +1685,7 @@ class ConfigTransactionManager:
                 TransactionFailureStage.VERIFYING_METER,
                 TransactionFailureReason.UNKNOWN,
             )
-            await self._clear_install_checkpoint(transaction)
-            return self._finish(transaction, ConfigTransactionState.FAILED, error)
+            return await self._finish_terminal_install_failure(transaction, error)
         _progress(transaction, TransactionProgress.DEVICE_VERIFIED)
         self.publish_status(_status(transaction))
         try:
@@ -2293,6 +2338,7 @@ def _restore_install_checkpoint(raw: dict[str, Any], mac: str) -> _ConfigTransac
             _legacy_ct_selections=selections, verification_id=raw["verification_id"],
             expected_sensor_entities=entities, expected_aggregate_sensor_entities=aggregates,
             purpose=purpose, recovered=True,
+            recovery_proposed_sha256=raw["proposed_sha256"],
             state=ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED,
             evidence=[
                 TransactionEvidenceCode.RECONNECT_UNAVAILABLE

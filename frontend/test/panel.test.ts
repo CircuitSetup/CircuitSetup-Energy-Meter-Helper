@@ -195,6 +195,40 @@ it("offers an explicit install retry for uncertain uploads without claiming inst
   expect(host.textContent).toContain("Restore the exact reviewed YAML");
 });
 
+it("describes a rejected upload with failed checkpoint cleanup accurately", () => {
+  const host = document.createElement("div");
+  const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64),
+    changes: [], redacted_diff: "", rollback_available: false, evidence: ["upload_failed", "persistence_failed"],
+    progress: ["ota_attempted"], validation_detail: null, upload_progress: [], purpose: "install_configuration",
+    aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  const noop = () => undefined;
+  render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop), host);
+
+  expect(host.textContent).toContain("Firmware upload was rejected");
+  expect(host.textContent).not.toContain("Installation outcome is unknown");
+  expect(host.textContent).not.toContain("Firmware installed");
+  expect([...host.querySelectorAll("button")].find((button) => button.textContent === "Retry installation")?.disabled).toBe(false);
+
+  render(buildInstallStep("install_configuration", { ...status, state: "failed", evidence: ["upload_failed"] },
+    noop, noop, noop, noop, noop, noop), host);
+  expect(host.textContent).toContain("Go Back and review");
+  expect(host.textContent).not.toContain("Retry installation sends");
+});
+
+it("retries verification when a failed verification leaves a checkpoint", () => {
+  const host = document.createElement("div");
+  const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64),
+    changes: [], redacted_diff: "", rollback_available: false, evidence: ["entity_mismatch", "persistence_failed"],
+    progress: ["ota_attempted", "ota_uploaded"], validation_detail: null, upload_progress: [], purpose: "install_configuration",
+    aggregate_entity_mismatch: false, full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  const noop = () => undefined;
+  render(buildInstallStep("install_configuration", status, noop, noop, noop, noop, noop, noop), host);
+
+  expect(host.textContent).toContain("Firmware uploaded; verification did not complete");
+  expect(host.textContent).not.toContain("Firmware installed; Helper data was not saved");
+  expect([...host.querySelectorAll("button")].find((button) => button.textContent === "Retry verification")?.disabled).toBe(false);
+});
+
 it("offers metadata completion without another upload or rollback", () => {
   const host = document.createElement("div");
   const status = { transaction_id: "1".repeat(32), state: "install_confirmation_required", source_sha256: "a".repeat(64),
@@ -1841,6 +1875,55 @@ describe("CircuitSetup panel", () => {
     expect(state.step).toBe("ct");
   });
 
+  it.each(["upload_failed", "topology_mismatch", "identity_mismatch"])("reloads the live configuration after terminal %s", async (code) => {
+    const calls: string[] = [];
+    const fresh = meterResponse(); fresh.source_sha256 = "c".repeat(64);
+    const failed = { transaction_id: "1".repeat(32), state: "failed" as const,
+      source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false,
+      evidence: [code], progress: ["firmware_compiled", "ota_attempted", ...(code === "topology_mismatch" ? ["ota_uploaded"] : [])],
+      validation_detail: null, upload_progress: [], purpose: "install_configuration" as const,
+      aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    const hass = makeHass({ setup_status: { state: "no_device", devices: [] }, get_meter_configuration: fresh });
+    const call = hass.callWS;
+    hass.callWS = async <T>(message: Record<string, unknown>) => {
+      calls.push(String(message.type).split("/").at(-1) ?? "");
+      return call<T>(message);
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as Record<string, unknown> & { backFromBuild(): Promise<void> };
+    state.selectedDeviceId = "meter-1";
+    state.meterConfiguration = meterResponse();
+    state.transaction = failed;
+    state.step = "install-configuration";
+
+    await state.backFromBuild();
+
+    expect(calls).not.toContain("abandon_ct_config");
+    expect(calls).toContain("get_meter_configuration");
+    expect(state.transaction).toBeNull();
+    expect((state.meterConfiguration as import("../src/types").MeterConfiguration).source_sha256).toBe("c".repeat(64));
+    expect(state.step).toBe("ct");
+  });
+
+  it("keeps an unresolved write recovery on the install screen", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
+    const state = panel as unknown as Record<string, unknown> & { backFromBuild(): Promise<void> };
+    const unresolved = { transaction_id: "1".repeat(32), state: "failed" as const,
+      source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false,
+      evidence: ["write_recovery_required"], progress: ["ota_attempted"], validation_detail: null,
+      upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false,
+      full_meter_configuration_verified: false };
+    state.selectedDeviceId = "meter-1";
+    state.meterConfiguration = meterResponse();
+    state.transaction = unresolved;
+    state.step = "install-configuration";
+
+    await state.backFromBuild();
+
+    expect(state.transaction).toBe(unresolved);
+    expect(state.step).toBe("install-configuration");
+  });
+
   it("returns to review after an unchanged Helper save fails", async () => {
     const fresh = meterResponse();
     const failed = { transaction_id: "1".repeat(32), state: "failed" as const,
@@ -3203,6 +3286,30 @@ describe("CircuitSetup panel", () => {
     await panel.updateComplete;
     expect(panel.shadowRoot?.querySelector("[data-offset-config-warning]")).toBeNull();
     expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("[data-action='calibrate-offset']")?.disabled).toBe(false);
+  });
+
+  it("labels previously configured offset stages without claiming a new calibration", async () => {
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
+    const state = panel as unknown as Record<string, unknown>;
+    state.configurationMode = "runtime_only";
+    state.topology = { addon_count: 0, board_count: 1, ct_count: 6, group_count: 2,
+      connection_type: "wifi", voltage_layout: "two_groups", project_name: device.project_name, evidence: [] };
+    state.session = { session_id: "session", device_id: "meter-1", state: "ready", safety_acknowledged: true,
+      preflight: { issues: [], zeroed_roles: [] }, entity_role_counts: {},
+      offset_capability: { status: "available", repair_reason: null }, offset_disposition: "in_progress",
+      offset_boards: [{ board_index: 0, stages: [{ stage: 1, state: "completed" }, { stage: 2, state: "not_started" }] }],
+      has_pending_calibration: false, configured_offset_targets: [[0, 1]] };
+    panel.showState("offset" as never);
+    await panel.updateComplete;
+
+    expect(text(panel)).toContain("Already configured in YAML");
+    expect(text(panel)).not.toContain("Saved; restart verification required");
+    state.offsetReadinessByTarget = new Map([["0:1", { stage: 1, ready: true, connection_generation: 4,
+      entities: offsetReadinessEntities(), reasons: [], thresholds: { sample_count: 3, zero_voltage_peak_volts: 1,
+        zero_voltage_spread_volts: 0.5, zero_current_peak_amps: 0.25, zero_current_spread_amps: 0.1,
+        voltage_present_minimum_volts: 90, voltage_present_spread_volts: 2 } }]]);
+    panel.requestUpdate(); await panel.updateComplete;
+    expect(text(panel)).not.toContain("Fresh calibration saved during this session");
   });
 
   it("runs measured readiness and requires confirmation before retrying an unfinished chip", async () => {

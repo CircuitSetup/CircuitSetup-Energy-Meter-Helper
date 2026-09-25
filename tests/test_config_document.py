@@ -202,6 +202,37 @@ sensor:
     assert document.configured_offset_entries == (("meter_main1", "offset_voltage"),)
 
 
+def test_tracks_explicit_phase_offsets_including_zero_values() -> None:
+    document = ESPHomeConfigDocument.parse(
+        """sensor:
+  - id: !extend meter_main1
+    phase_a:
+      offset_voltage: -928
+      offset_current: 0
+    phase_b:
+      offset_voltage: 0
+      offset_current: 0
+    phase_c:
+      offset_voltage: 0
+      offset_current: 0
+text_sensor:
+  - platform: template
+    lambda: |-
+      offset_voltage: 123
+"""
+    )
+
+    assert document.configured_offset_phase_entries == (
+        ("meter_main1", "a", "offset_voltage"),
+        ("meter_main1", "a", "offset_current"),
+        ("meter_main1", "b", "offset_voltage"),
+        ("meter_main1", "b", "offset_current"),
+        ("meter_main1", "c", "offset_voltage"),
+        ("meter_main1", "c", "offset_current"),
+    )
+    assert document.configured_offset_entries == (("meter_main1", "offset_voltage"),)
+
+
 def test_extracts_bounded_meter_substitutions_and_managed_blocks() -> None:
     content = fixture("meter_configuration.yaml").replace("\n", "\r\n")
     doc = ESPHomeConfigDocument.parse(content)

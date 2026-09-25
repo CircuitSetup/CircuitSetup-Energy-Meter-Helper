@@ -1039,9 +1039,9 @@ export class CircuitSetupPanel extends LitElement {
     const appliedInstallRetry = current?.purpose === "install_configuration"
       && current.state === "install_confirmation_required"
       && current.evidence.some((code) => ["upload_outcome_unknown", "reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed", "source_changed"].includes(code));
-    const terminalPersistenceFailure = current?.purpose === "install_configuration"
+    const terminalInstallFailure = current?.purpose === "install_configuration"
       && current.state === "failed" && !current.rollback_available
-      && current.evidence.includes("persistence_failed");
+      && current.evidence.some((code) => ["persistence_failed", "upload_failed", "identity_mismatch", "topology_mismatch"].includes(code));
     if (current?.purpose.startsWith("offset_")) {
       if (!["previewed", "rolled_back", "failed"].includes(current.state)) {
         this.fail(new Error(), "This review has already advanced. Complete or roll back this transaction first."); return;
@@ -1059,7 +1059,7 @@ export class CircuitSetupPanel extends LitElement {
       }, "The review could not be cancelled. Recovery and captured values are retained.", () => this.ownsOperation(generation, api, deviceId));
       this.pendingAction = ""; this.requestUpdate(); return;
     }
-    if (current && !["previewed", "rolled_back"].includes(current.state) && !appliedInstallRetry && !terminalPersistenceFailure) {
+    if (current && !["previewed", "rolled_back"].includes(current.state) && !appliedInstallRetry && !terminalInstallFailure) {
       this.fail(new Error(), "This review has already advanced. Roll it back before changing the configuration.");
       return;
     }
@@ -1076,7 +1076,7 @@ export class CircuitSetupPanel extends LitElement {
       meterFrequencyTouched: this.meterFrequencyTouched,
       meterNominalVoltageTouched: new Set(this.meterNominalVoltageTouched),
     } : null);
-    if (!appliedInstallRetry && !terminalPersistenceFailure && !this.calibrationHandoff && !calibrationPreparation && !correction) {
+    if (!appliedInstallRetry && !terminalInstallFailure && !this.calibrationHandoff && !calibrationPreparation && !correction) {
       this.fail(new Error(), "The edited configuration is unavailable. Return to setup and reload the meter.");
       return;
     }
@@ -1092,7 +1092,7 @@ export class CircuitSetupPanel extends LitElement {
         this.clearSubscription("transaction");
         this.transaction = null;
         abandoned = true;
-      } else if (current?.state === "rolled_back" || terminalPersistenceFailure) {
+      } else if (current?.state === "rolled_back" || terminalInstallFailure) {
         this.clearSubscription("transaction");
         this.transaction = null;
         abandoned = true;
@@ -1113,7 +1113,7 @@ export class CircuitSetupPanel extends LitElement {
       this.reviewCorrection = correction;
       const fresh = await api.getMeterConfiguration(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
-      if (appliedInstallRetry || terminalPersistenceFailure) {
+      if (appliedInstallRetry || terminalInstallFailure) {
         this.packageOptionsTouched = false;
         this.meterFrequencyTouched = false;
         this.meterNominalVoltageTouched = new Set();

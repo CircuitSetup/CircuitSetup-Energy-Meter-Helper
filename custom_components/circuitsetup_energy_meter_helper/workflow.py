@@ -158,7 +158,6 @@ _OFFSET_FIELDS_BY_STAGE = {
 
 def _configured_offset_targets(
     entries: tuple[tuple[str | None, str], ...], board_count: int,
-    *, require_both: bool = False,
 ) -> tuple[tuple[int, int], ...]:
     targets = []
     for board in range(board_count):
@@ -168,8 +167,30 @@ def _configured_offset_targets(
         }
         for stage, names in _OFFSET_FIELDS_BY_STAGE.items():
             owners = {owner for owner, field in entries if field in names}
-            configured = chips <= owners if require_both else None in owners or bool(chips & owners)
-            if configured:
+            if None in owners or chips & owners:
+                targets.append((board, stage))
+    return tuple(targets)
+
+
+def _completed_configured_offset_targets(
+    nonzero_entries: tuple[tuple[str | None, str], ...],
+    phase_entries: tuple[tuple[str | None, str, str], ...],
+    board_count: int,
+) -> tuple[tuple[int, int], ...]:
+    nonzero = set(nonzero_entries)
+    configured = set(phase_entries)
+    targets = []
+    for board in range(board_count):
+        chips = (
+            _instance_id_for_channel(board * 6 + 1),
+            _instance_id_for_channel(board * 6 + 4),
+        )
+        for stage, names in _OFFSET_FIELDS_BY_STAGE.items():
+            if all(
+                any((chip, field) in nonzero for field in names)
+                and all((chip, phase, field) in configured for phase in ("a", "b", "c") for field in names)
+                for chip in chips
+            ):
                 targets.append((board, stage))
     return tuple(targets)
 
@@ -1488,9 +1509,10 @@ class EntryWorkflow:
                 else ()
             ),
             completed_configured_offset_targets=(
-                _configured_offset_targets(
-                    document.configured_offset_entries, topology.board_count,
-                    require_both=True,
+                _completed_configured_offset_targets(
+                    document.configured_offset_entries,
+                    document.configured_offset_phase_entries,
+                    topology.board_count,
                 )
                 if snapshot is not None
                 else ()
@@ -1679,7 +1701,8 @@ class EntryWorkflow:
                     or snapshot.sha256 != handle.configuration_sha256
                 ):
                     raise WorkflowHandleError("calibration configuration is stale")
-                entries = ESPHomeConfigDocument.parse(snapshot.content).configured_offset_entries
+                document = ESPHomeConfigDocument.parse(snapshot.content)
+                entries = document.configured_offset_entries
                 targets = _configured_offset_targets(
                     entries,
                     handle.topology.board_count,
@@ -1688,9 +1711,9 @@ class EntryWorkflow:
                     raise WorkflowHandleError(
                         "Config offset values must be removed before re-running this calibration"
                     )
-                stage_one_configured = (board_index, 1) in _configured_offset_targets(
-                    entries,
-                    handle.topology.board_count, require_both=True,
+                stage_one_configured = (board_index, 1) in _completed_configured_offset_targets(
+                    entries, document.configured_offset_phase_entries,
+                    handle.topology.board_count,
                 )
             handle.offset_active = (board_index, stage)
             active = True
@@ -2540,7 +2563,8 @@ class EntryWorkflow:
                     handle.configuration
                 )
                 _validate_source(source, handle.topology)
-                entries = ESPHomeConfigDocument.parse(source.content).configured_offset_entries
+                document = ESPHomeConfigDocument.parse(source.content)
+                entries = document.configured_offset_entries
                 targets = _configured_offset_targets(
                     entries,
                     handle.topology.board_count,
@@ -2560,9 +2584,7 @@ class EntryWorkflow:
                     )
                 substitutions = {
                     key: scalar.value
-                    for key, scalar in ESPHomeConfigDocument.parse(
-                        source.content
-                    ).substitutions.items()
+                    for key, scalar in document.substitutions.items()
                 }
                 if handle.binding.connection_generation != api.connection_generation:
                     handle.binding = self._calibration._rebind_after_reconnect(
@@ -2588,9 +2610,9 @@ class EntryWorkflow:
                 ),
                 claim_guard=lambda: self._assert_claim(handle, revision),
                 timing_policy=handle.timing_policy,
-                stage_one_configured=(board_index, 1) in _configured_offset_targets(
-                    entries,
-                    handle.topology.board_count, require_both=True,
+                stage_one_configured=(board_index, 1) in _completed_configured_offset_targets(
+                    entries, document.configured_offset_phase_entries,
+                    handle.topology.board_count,
                 ),
             )
             self._assert_claim(handle, revision)

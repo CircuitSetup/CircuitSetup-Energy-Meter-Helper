@@ -2073,7 +2073,10 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
   const retryClear = purpose === "save_calibration" && state === "verified";
   const busy = Boolean(pendingAction);
   const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) => ["upload_outcome_unknown", "reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed", "source_changed"].includes(code)) === true;
-  const uploadUnknown = status.progress.includes("ota_attempted") && !status.progress.includes("ota_uploaded") && !status.progress.includes("device_verified");
+  const uploadRejected = status.evidence.includes("upload_failed");
+  const retryUpload = status.progress.includes("ota_attempted") && !status.progress.includes("ota_uploaded");
+  const uploadUnknown = retryUpload && !uploadRejected;
+  const deviceVerified = status.progress.includes("device_verified");
   const sourceChanged = status.evidence.includes("source_changed");
   const communicationFailure = status?.evidence.includes("meter_communication_failed") === true;
   const persistenceFailure = status?.evidence.includes("persistence_failed") === true;
@@ -2095,7 +2098,7 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
       ${meterInventory ? totalsMigrationReview(meterInventory, () => void 0, totalPreview, impact !== null, true) : ""}
       ${state === "failed" || retryableInstall ? b`
         <div class="recovery-panel" role="status">
-          <strong>${sourceChanged ? "Reviewed configuration source changed" : communicationFailure ? "Meter chip communication failed" : uploadUnknown ? "Installation outcome is unknown" : persistenceFailure ? unchanged ? "Helper settings could not be saved" : "Firmware installed; Helper data was not saved" : failureMessage ?? "Build or install needs attention"}</strong>
+          <strong>${sourceChanged ? "Reviewed configuration source changed" : communicationFailure ? "Meter chip communication failed" : uploadRejected ? "Firmware upload was rejected" : uploadUnknown ? "Installation outcome is unknown" : persistenceFailure ? unchanged ? "Helper settings could not be saved" : deviceVerified ? "Firmware installed; Helper data was not saved" : "Firmware uploaded; verification did not complete" : failureMessage ?? "Build or install needs attention"}</strong>
           ${sourceChanged ? b`<p>Restore the exact reviewed YAML in ESPHome Device Builder before retrying or going Back. This review cannot verify a different source.</p>` : communicationFailure ? b`<p>The ESP32 reconnected but could not establish SPI communication with
             ${failedPins.length ? "the meter chip(s) on CS pin(s) " + failedPins.map((pin) => "GPIO" + pin).join(", ") : "one or more meter chips (CS pin unavailable)"}.
             This is an ESP32–meter-chip link, not a Wi-Fi or Home Assistant problem.</p>
@@ -2108,7 +2111,7 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
             </ol>
             <p>Fix the hardware or configuration, power up, and Retry verification. It rechecks installed firmware without another upload.</p>
             <p>Back keeps this saved configuration for editing.</p>
-          ` : uploadUnknown ? b`<p>The upload may have reached the meter. Retry installation sends the reviewed firmware again so completion can be confirmed. The saved YAML cannot be rolled back after an OTA attempt.</p>` : persistenceFailure ? unchanged ? b`<p>No firmware was installed. Go Back, reload the configuration, and confirm again.</p>` : b`<p>The meter accepted and verified the firmware. Retry completion to save the Helper data without uploading again, or use Back to reload the installed configuration.</p>` : b`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
+          ` : uploadRejected ? b`<p>Device Builder rejected the upload. Check its details${persistenceFailure ? "; the recovery record could not be cleared" : ""}. ${state === "failed" ? "Go Back and review before trying again." : "Retry installation sends the reviewed firmware again."}</p>` : uploadUnknown ? b`<p>The upload may have reached the meter. Retry installation sends the reviewed firmware again so completion can be confirmed. The saved YAML cannot be rolled back after an OTA attempt.</p>` : persistenceFailure ? unchanged ? b`<p>No firmware was installed. Go Back, reload the configuration, and confirm again.</p>` : deviceVerified ? b`<p>The meter accepted and verified the firmware. Retry completion to save the Helper data without uploading again, or use Back to reload the installed configuration.</p>` : b`<p>The firmware upload completed, but meter verification failed and the recovery record could not be cleared. Retry verification checks the meter without uploading again.</p>` : b`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
           ${status?.rollback_available ? b`<button class="danger" @click=${rollback} ?disabled=${busy}>${pendingAction === "rollback" ? "Rolling back…" : "Rollback"}</button>` : ""}
         </div>
       ` : ""}
@@ -2126,7 +2129,7 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
       </div>` : b`<div class="confirmation-actions">
         <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : labels.apply}</button>
         <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : labels.compile}</button>
-        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "install_confirmation_required" && !retryClear}>${pendingAction === "install" ? retryableInstall && !uploadUnknown ? "Checking…" : "Installing…" : retryClear ? "Retry clearing saved flash values" : uploadUnknown ? "Retry installation" : persistenceFailure ? "Retry completion" : retryableInstall ? "Retry verification" : labels.install}</button>
+        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "install_confirmation_required" && !retryClear}>${pendingAction === "install" ? retryableInstall && !retryUpload ? "Checking…" : "Installing…" : retryClear ? "Retry clearing saved flash values" : retryUpload && state === "install_confirmation_required" ? "Retry installation" : persistenceFailure && deviceVerified ? "Retry completion" : retryableInstall ? "Retry verification" : labels.install}</button>
       </div>`}
       ${status?.validation_detail ? b`<dl class="status-list evidence-list">
         <div><dt>Validation code</dt><dd>${status.validation_detail.code ?? "unavailable"}</dd></div>
@@ -3457,6 +3460,7 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
   const actionReady = !stock || Boolean(matching && preparation?.action_ready && !attempted);
   const unavailable = capability?.status !== "available";
   const configuredOffsets = configuredTargets.some(([targetBoard, targetStage]) => targetBoard === board && targetStage === stage);
+  const configuredStage = configuredOffsets && stageState === "completed" && !result;
   const keys = groupKeys(board);
   const tableByGroup = new Map(result?.expected_tables ?? []);
   const savedSources = new Map(readiness?.saved_offset_sources ?? []);
@@ -3545,8 +3549,8 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
             <h3>Per-chip progress</h3>
             <table><thead><tr><th>Chip</th><th>Previously saved offsets</th><th>This run</th><th>Backend evidence</th></tr></thead><tbody>
               ${keys.map((key) => b`<tr><td>${key}</td>
-                <td>${!readiness ? "Check measured readiness to inspect saved offsets." : tableByGroup.has(key) || stageState === "completed" ? "Fresh calibration saved during this session." : savedSources.get(key) === "flash" ? "Saved offsets detected; this run will recalibrate this chip." : savedSources.get(key) === "configuration" ? "Configuration offsets reported; this run will calibrate this chip." : "Saved-offset status unknown; this run still requires fresh calibration."}</td>
-                <td>${tableByGroup.has(key) || stageState === "completed" ? stock ? "Captured; pending configuration installation." : "Saved; restart verification required." : result?.unfinished_group_keys.includes(key) ? "Unfinished" : stageState.replaceAll("_", " ")}</td>
+                <td>${tableByGroup.has(key) ? "Fresh calibration saved during this session." : configuredStage ? "Configured offset values recorded before this session." : !readiness ? "Check measured readiness to inspect saved offsets." : savedSources.get(key) === "flash" ? "Saved offsets detected; this run will recalibrate this chip." : savedSources.get(key) === "configuration" ? "Configuration offsets reported; this run will calibrate this chip." : "Saved-offset status unknown; this run still requires fresh calibration."}</td>
+                <td>${tableByGroup.has(key) ? stock ? "Captured; pending configuration installation." : "Saved; restart verification required." : configuredStage ? "Already configured in YAML." : result?.unfinished_group_keys.includes(key) ? "Unfinished" : stageState.replaceAll("_", " ")}</td>
                 <td>${tableByGroup.has(key) ? tableByGroup.get(key).map(([first, second]) => `${first}/${second}`).join(", ") : "—"}</td></tr>`)}
             </tbody></table>
           </section>
@@ -5216,7 +5220,7 @@ class CircuitSetupPanel extends i$2 {
     const current = this.transaction;
     const calibrationPreparation2 = current !== null && this.isCalibrationPreparationTransaction(current);
     const appliedInstallRetry = current?.purpose === "install_configuration" && current.state === "install_confirmation_required" && current.evidence.some((code) => ["upload_outcome_unknown", "reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed", "source_changed"].includes(code));
-    const terminalPersistenceFailure = current?.purpose === "install_configuration" && current.state === "failed" && !current.rollback_available && current.evidence.includes("persistence_failed");
+    const terminalInstallFailure = current?.purpose === "install_configuration" && current.state === "failed" && !current.rollback_available && current.evidence.some((code) => ["persistence_failed", "upload_failed", "identity_mismatch", "topology_mismatch"].includes(code));
     if (current?.purpose.startsWith("offset_")) {
       if (!["previewed", "rolled_back", "failed"].includes(current.state)) {
         this.fail(new Error(), "This review has already advanced. Complete or roll back this transaction first.");
@@ -5240,7 +5244,7 @@ class CircuitSetupPanel extends i$2 {
       this.requestUpdate();
       return;
     }
-    if (current && !["previewed", "rolled_back"].includes(current.state) && !appliedInstallRetry && !terminalPersistenceFailure) {
+    if (current && !["previewed", "rolled_back"].includes(current.state) && !appliedInstallRetry && !terminalInstallFailure) {
       this.fail(new Error(), "This review has already advanced. Roll it back before changing the configuration.");
       return;
     }
@@ -5259,7 +5263,7 @@ class CircuitSetupPanel extends i$2 {
       meterFrequencyTouched: this.meterFrequencyTouched,
       meterNominalVoltageTouched: new Set(this.meterNominalVoltageTouched)
     } : null);
-    if (!appliedInstallRetry && !terminalPersistenceFailure && !this.calibrationHandoff && !calibrationPreparation2 && !correction) {
+    if (!appliedInstallRetry && !terminalInstallFailure && !this.calibrationHandoff && !calibrationPreparation2 && !correction) {
       this.fail(new Error(), "The edited configuration is unavailable. Return to setup and reload the meter.");
       return;
     }
@@ -5275,7 +5279,7 @@ class CircuitSetupPanel extends i$2 {
         this.clearSubscription("transaction");
         this.transaction = null;
         abandoned = true;
-      } else if (current?.state === "rolled_back" || terminalPersistenceFailure) {
+      } else if (current?.state === "rolled_back" || terminalInstallFailure) {
         this.clearSubscription("transaction");
         this.transaction = null;
         abandoned = true;
@@ -5296,7 +5300,7 @@ class CircuitSetupPanel extends i$2 {
       this.reviewCorrection = correction;
       const fresh = await api.getMeterConfiguration(deviceId);
       if (!this.ownsOperation(generation, api, deviceId)) return;
-      if (appliedInstallRetry || terminalPersistenceFailure) {
+      if (appliedInstallRetry || terminalInstallFailure) {
         this.packageOptionsTouched = false;
         this.meterFrequencyTouched = false;
         this.meterNominalVoltageTouched = /* @__PURE__ */ new Set();

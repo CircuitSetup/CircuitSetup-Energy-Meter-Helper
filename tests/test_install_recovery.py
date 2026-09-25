@@ -318,7 +318,100 @@ def test_authoritative_upload_rejection_has_no_recovery():
     asyncio.run(run())
 
 
-def test_recovery_refuses_source_drift_and_foreign_identity():
+@pytest.mark.parametrize("next_action", ("retry", "abandon"))
+def test_upload_rejection_checkpoint_clear_failure_keeps_recovery_available(next_action):
+    class Storage(_CopyingStorage):
+        fail_clear = False
+
+        async def async_save(self, data):
+            if self.fail_clear and not data.get("install_recovery"):
+                raise OSError("checkpoint clear unavailable")
+            await super().async_save(data)
+
+    async def run():
+        backend = Storage()
+        store = _store(backend)
+
+        class Upload(Builder):
+            injected = False
+
+            async def async_upload(self, configuration, progress=None):
+                result = await super().async_upload(configuration, progress)
+                if not self.injected:
+                    backend.fail_clear = True
+                    self.injected = True
+                return result
+
+        builder = Upload(upload=Job(False, code=1))
+        manager = _manager(builder, store)
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        status = await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert status.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        assert "upload_failed" in status.evidence
+        assert "persistence_failed" in status.evidence
+        assert not status.rollback_available
+        assert await store.async_get_install_recovery("aabbccddeeff") is not None
+
+        backend.fail_clear = False
+        if next_action == "retry":
+            builder.upload = Job(True)
+            status = await manager.async_confirm_install(preview.transaction_id, "admin")
+            assert status.state is ConfigTransactionState.VERIFIED
+            assert "upload_failed" not in status.evidence
+        else:
+            status = await manager.async_abandon(preview.transaction_id)
+            assert status.state is ConfigTransactionState.FAILED
+            assert "cancelled" in status.evidence
+        assert await store.async_get_install_recovery("aabbccddeeff") is None
+
+    asyncio.run(run())
+
+
+def test_terminal_verification_checkpoint_clear_failure_retries_without_upload():
+    class Storage(_CopyingStorage):
+        fail_clear = False
+
+        async def async_save(self, data):
+            if self.fail_clear and not data.get("install_recovery"):
+                raise OSError("checkpoint clear unavailable")
+            await super().async_save(data)
+
+    async def run():
+        backend = Storage()
+        store = _store(backend)
+
+        class Upload(Builder):
+            async def async_upload(self, configuration, progress=None):
+                result = await super().async_upload(configuration, progress)
+                backend.fail_clear = True
+                return result
+
+        builder = Upload()
+        manager = _manager(builder, store, evidence=replace(_evidence(), topology=_topology(1)))
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        waiting = await manager.async_confirm_install(preview.transaction_id, "admin")
+        assert waiting.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        assert "topology_mismatch" in waiting.evidence
+        assert "persistence_failed" in waiting.evidence
+        assert await store.async_get_install_recovery("aabbccddeeff") is not None
+
+        backend.fail_clear = False
+        manager._verifier = _manager(builder, store)._verifier
+        verified = await manager.async_confirm_install(preview.transaction_id, "admin")
+        assert verified.state is ConfigTransactionState.VERIFIED
+        assert "topology_mismatch" not in verified.evidence
+        assert builder.calls.count("upload") == 1
+        assert await store.async_get_install_recovery("aabbccddeeff") is None
+
+    asyncio.run(run())
+
+
+def test_recovery_exposes_source_drift_for_safe_abandonment():
     async def run():
         store = _store(_CopyingStorage())
         builder = Builder(upload=ConnectionError())
@@ -331,11 +424,48 @@ def test_recovery_refuses_source_drift_and_foreign_identity():
         manager = _manager(builder, store)
         assert await manager.async_recover_install("112233445566") is None
         builder.remote_content = "unrelated edit"
-        with pytest.raises(ValueError):
-            await manager.async_recover_install("aabbccddeeff")
-        assert not manager.sessions.is_config_locked("aabbccddeeff")
+        recovered = await manager.async_recover_install("aabbccddeeff")
+        assert recovered is not None
+        assert recovered.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        assert "source_changed" in recovered.evidence
+        assert not recovered.rollback_available
+        assert manager.sessions.is_config_locked("aabbccddeeff")
         assert not await store.async_get_ct_selections("aabbccddeeff")
         assert builder.calls.count("upload") == 1
+        abandoned = await manager.async_abandon(recovered.transaction_id)
+        assert abandoned.state is ConfigTransactionState.FAILED
+        assert not manager.sessions.is_config_locked("aabbccddeeff")
+        assert await store.async_get_install_recovery("aabbccddeeff") is None
+
+    asyncio.run(run())
+
+
+def test_recovered_source_drift_can_retry_after_restoring_reviewed_yaml():
+    async def run():
+        store = _store(_CopyingStorage())
+        builder = Builder(upload=ConnectionError())
+        manager = _manager(builder, store)
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        await manager.async_confirm_install(preview.transaction_id, "admin")
+        reviewed_content = builder.remote_content
+        await manager.sessions.async_unload()
+
+        builder.remote_content = "unrelated edit"
+        builder.upload = Job(True)
+        manager = _manager(builder, store)
+        recovered = await manager.async_recover_install("aabbccddeeff")
+        assert recovered is not None and "source_changed" in recovered.evidence
+        waiting = await manager.async_confirm_install(recovered.transaction_id, "admin")
+        assert waiting.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        assert builder.calls.count("upload") == 1
+
+        builder.remote_content = reviewed_content
+        verified = await manager.async_confirm_install(recovered.transaction_id, "admin")
+        assert verified.state is ConfigTransactionState.VERIFIED
+        assert builder.calls.count("upload") == 2
+        assert await store.async_get_install_recovery("aabbccddeeff") is None
 
     asyncio.run(run())
 
@@ -354,9 +484,10 @@ def test_recovered_source_failure_cannot_enable_rollback():
         status = await manager.async_recover_install("aabbccddeeff")
         assert status is not None
         builder.remote_content = "source changed after recovery"
-        with pytest.raises(ValueError):
-            await manager.async_confirm_install(status.transaction_id, "admin")
-        assert not manager.status(status.transaction_id).rollback_available
+        waiting = await manager.async_confirm_install(status.transaction_id, "admin")
+        assert waiting.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        assert "source_changed" in waiting.evidence
+        assert not waiting.rollback_available
         with pytest.raises(RuntimeError, match="rollback"):
             await manager.async_rollback(status.transaction_id)
         await manager.async_abandon(status.transaction_id)

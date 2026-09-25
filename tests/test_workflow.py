@@ -59,6 +59,7 @@ from custom_components.circuitsetup_energy_meter_helper.workflow import (
     EntryWorkflow,
     WorkflowCapabilityUnavailable,
     WorkflowHandleError,
+    _completed_configured_offset_targets,
     _configured_offset_targets,
     _selections_for_topology,
     _SessionHandle,
@@ -69,13 +70,20 @@ OFFSET_TABLE = ((1, 2), (3, 4), (5, 6))
 POWER_OFFSET_TABLE = ((7, 8), (9, 10), (11, 12))
 
 
-def test_configured_offset_stage_requires_both_chips() -> None:
+def test_configured_offset_stage_requires_full_phase_tables_on_both_chips() -> None:
     partial = (("meter_main1", "offset_voltage"),)
-    complete = (*partial, ("meter_main2", "offset_current"))
+    both_chips = (*partial, ("meter_main2", "offset_current"))
+    full_table = tuple(
+        (chip, phase, field)
+        for chip in ("meter_main1", "meter_main2")
+        for phase in ("a", "b", "c")
+        for field in ("offset_voltage", "offset_current")
+    )
     assert _configured_offset_targets(partial, 1) == ((0, 1),)
-    assert _configured_offset_targets(partial, 1, require_both=True) == ()
-    assert _configured_offset_targets(complete, 1, require_both=True) == ((0, 1),)
-    assert _configured_offset_targets(((None, "offset_voltage"),), 1, require_both=True) == ()
+    assert _completed_configured_offset_targets(both_chips, full_table[:-1], 1) == ()
+    assert _completed_configured_offset_targets(both_chips, full_table, 1) == ((0, 1),)
+    assert _completed_configured_offset_targets((), full_table, 1) == ()
+    assert _completed_configured_offset_targets(((None, "offset_voltage"),), full_table, 1) == ()
 
 
 def test_partial_config_offset_blocks_rerun_without_completing_stage() -> None:
