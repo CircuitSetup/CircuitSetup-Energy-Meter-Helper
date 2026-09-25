@@ -827,6 +827,63 @@ describe("server-authoritative total graph", () => {
     expect(panel.shadowRoot!.querySelectorAll(".default-total-card")).toHaveLength(1);
   });
 
+  it("skips configuration review after a Main Board total edit is undone on Back", async () => {
+    const meter = meterResponse();
+    meter.topology = { ...meter.topology, addon_count: 1, board_count: 2, ct_count: 12, group_count: 4 };
+    meter.configuration.channels.push(...meter.configuration.channels.map((channel) => ({ ...channel, channel: channel.channel + 6 })));
+    meter.channels.push(...meter.channels.map((channel) => ({ ...channel, channel: channel.channel + 6,
+      address: { ...channel.address, channel: channel.channel + 6, board_index: 1 } })));
+    meter.configuration.meter.voltage_references[0]!.group_keys.push("addon1_1", "addon1_2");
+    meter.voltage_topology.references[0]![1].push("addon1_1", "addon1_2");
+    meter.configuration.power_quality.push(true); meter.configuration.status_fields.push(false);
+    meter.configuration.default_totals.boards = [0, 1].map((board_index) => ({ board_index,
+      outputs: { watts: true, amps: board_index !== 0, kwh: true } }));
+    meter.configuration_impact = { ...meter.configuration_impact, enabled_channel_count: 12,
+      numeric_entity_count: 79, approximate_publications_per_second: 79 / 5 };
+    const overall = meter.totals.native_sources[0]!;
+    meter.totals.native_sources = [
+      { ...overall, leaf_channels: Array.from({ length: 12 }, (_, index) => index + 1) },
+      { ...overall, source_id: "board-main", label: "Main Board total" },
+      { ...overall, source_id: "board-addon-1", label: "Add-on 1 total", leaf_channels: [7, 8, 9, 10, 11, 12] },
+    ];
+    const preview = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: meter.source_sha256,
+      changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null,
+      upload_progress: [], purpose: "install_configuration", aggregate_entity_mismatch: false, full_meter_configuration_verified: false };
+    let reviews = 0;
+    const hass = makeHass({ setup_status: { state: "no_device", devices: [] }, get_meter_configuration: meter,
+      preview_meter_configuration: preview, abandon_ct_config: preview,
+      preview_total_graph: { plan_id: meter.plan_id, source_sha256: meter.source_sha256,
+        automatic_candidates: [], automatic_totals: [], stale_automatic_total_settings: [],
+        configuration_impact: meter.configuration_impact,
+        graph: { native_visibility: [], ordered_nodes: [], leaf_channels: {}, independent_overlap_warnings: [] } } });
+    const call = hass.callWS.bind(hass);
+    hass.callWS = async <T>(message: Record<string, unknown>): Promise<T> => {
+      if (String(message.type).endsWith("/preview_meter_configuration")) reviews += 1;
+      return call<T>(message);
+    };
+    const panel = await mount(hass);
+    const state = panel as unknown as { selectedDeviceId: string; setMeterConfiguration(value: typeof meter): void;
+      continueFromCt(): Promise<void>; backFromBuild(): Promise<void>; step: string };
+    state.selectedDeviceId = "meter-1"; state.setMeterConfiguration(meter); panel.showInventory(meter);
+    await panel.updateComplete;
+
+    panel.shadowRoot!.querySelector<HTMLInputElement>('[aria-label="Main Board total Amps"]')!.click();
+    await tick();
+    await state.continueFromCt();
+    expect(state.step).toBe("install-configuration");
+    expect(reviews).toBe(1);
+
+    await state.backFromBuild(); await panel.updateComplete;
+    expect(state.step).toBe("ct");
+    expect(panel.shadowRoot!.querySelector<HTMLInputElement>('[aria-label="Main Board total Amps"]')!.checked).toBe(true);
+    panel.shadowRoot!.querySelector<HTMLInputElement>('[aria-label="Main Board total Amps"]')!.click();
+    await tick();
+    await state.continueFromCt();
+
+    expect(reviews).toBe(1);
+    expect(state.step).toBe("calibration-plan");
+  });
+
   it.each([
     ["native", 41, 3, 0, 1],
     ["automatic bidirectional", 46, 8, 1, 3],
@@ -4947,6 +5004,20 @@ describe("CircuitSetup panel", () => {
     expect(state.session).toEqual(session);
     expect(state.transaction).toEqual(transaction);
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Install Configuration");
+  });
+
+  it("explains an unreachable meter when calibration cannot start", async () => {
+    const failure = Object.assign(new Error("private connection detail"), { code: "meter_unavailable" });
+    const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] },
+      get_active_work: { session: null, transaction: null, verified_calibration: null }, start_session: failure }));
+    const state = panel as unknown as { selectedDeviceId: string; topology: MeterTopology; startSession(plan: "full"): Promise<void> };
+    state.selectedDeviceId = "meter-1";
+    state.topology = meterResponse().topology;
+
+    await state.startSession("full"); await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector('[role="alert"]')?.textContent).toContain("meter is offline or its ESPHome API is unreachable");
+    expect(text(panel)).not.toContain("private connection detail");
   });
 
   it("revokes replaced transaction and session subscriptions and ignores captured old callbacks", async () => {

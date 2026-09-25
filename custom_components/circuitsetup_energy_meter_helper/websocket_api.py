@@ -15,6 +15,7 @@ from functools import wraps
 from typing import Any, Protocol
 
 # isort: off
+from aioesphomeapi import APIConnectionError
 from homeassistant.components import websocket_api
 from homeassistant.components.websocket_api import ActiveConnection
 from homeassistant.core import HomeAssistant
@@ -1895,7 +1896,9 @@ def _send_safe_error(
     *,
     operation: str | None = None,
 ) -> None:
-    if isinstance(error, MeterCommunicationError):
+    if operation == "start_session" and isinstance(error, APIConnectionError | ConnectionError):
+        code, message = "meter_unavailable", "The selected meter could not be reached"
+    elif isinstance(error, MeterCommunicationError):
         if operation in {"preview_offset_preparation", "preview_offset_finalization"}:
             code, message = (
                 "offset_communication_failed",

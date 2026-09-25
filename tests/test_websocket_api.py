@@ -15,6 +15,7 @@ from typing import Any
 
 # isort: off
 import pytest
+from aioesphomeapi import APIConnectionError
 from aioesphomeapi import ButtonInfo as ApiButtonInfo
 from aioesphomeapi import NumberInfo as ApiNumberInfo
 from aioesphomeapi import SensorInfo as ApiSensorInfo
@@ -736,6 +737,20 @@ def test_offset_safe_errors_distinguish_communication_diagnostics_and_identity()
         (2, "offset_diagnostics_incomplete", "Fresh offset diagnostics are incomplete"),
         (3, "offset_chip_identity_unavailable", "The selected chip identity could not be verified"),
         (4, "meter_communication_failed", "Meter chip communication could not be verified"),
+    ]
+
+
+def test_start_session_reports_an_unreachable_meter_without_connection_details() -> None:
+    connection = FakeConnection()
+
+    _send_safe_error(
+        connection, 1, APIConnectionError("private network address"), operation="start_session"
+    )
+    _send_safe_error(connection, 2, APIConnectionError("private network address"))
+
+    assert connection.errors == [
+        (1, "meter_unavailable", "The selected meter could not be reached"),
+        (2, "operation_failed", "The request could not be completed"),
     ]
 
 

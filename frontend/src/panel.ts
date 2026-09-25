@@ -1358,8 +1358,13 @@ export class CircuitSetupPanel extends LitElement {
 
   private hasCanonicalChanges(): boolean {
     const intent = this.meterConfiguration?.configuration.totals_change_intent;
-    return Boolean(intent?.adopt_managed_totals || intent?.legacy_parent_decisions.length
-      || this.existingConfigurationChoice !== "calibrate_only" && !this.labelOnly && this.canonicalConfigurationChanged);
+    const source = this.sourceMeterConfiguration?.meter.configuration;
+    const current = this.meterConfiguration?.configuration;
+    const reverted = source && current && JSON.stringify({ ...source, multi_reference_preparation_acknowledged: false })
+      === JSON.stringify({ ...current, multi_reference_preparation_acknowledged: false });
+    return Boolean(this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.configurationInstalled
+      || intent?.adopt_managed_totals || intent?.legacy_parent_decisions.length
+      || this.existingConfigurationChoice !== "calibrate_only" && !this.labelOnly && this.canonicalConfigurationChanged && !reverted);
   }
 
   private hasUnsupportedCalibrationChanges(): boolean {
@@ -2581,6 +2586,7 @@ export class CircuitSetupPanel extends LitElement {
     if (code === "meter_communication_failed") return this.step === "offset"
       ? `The selected ${board} could not verify meter-chip communication. Check the meter connection and retry. Existing recovery data is unchanged.`
       : "Meter-chip communication could not be verified. Check the meter connection and retry.";
+    if (code === "meter_unavailable") return "The meter is offline or its ESPHome API is unreachable. Restore its connection in Home Assistant and retry.";
     if (code === "offset_diagnostics_incomplete") return `Fresh offset diagnostics for the selected ${board} were incomplete. Retry to request fresh diagnostics. Existing recovery data is unchanged.`;
     if (code === "offset_chip_identity_unavailable") return `The meter-chip mapping for the selected ${board} could not be verified from the authoritative configuration. Review the source/package definitions and retry. Existing recovery data is unchanged.`;
     if (code === "offset_tables_unavailable") return `The meter did not report all offset values needed to back up this calibration stage for the selected ${board}. This can happen before the first offset calibration, even when the firmware supports offset calibration. Retry to request fresh diagnostics, or choose Skip offset calibration to continue with voltage/current calibration. Existing recovery data is unchanged.`;
