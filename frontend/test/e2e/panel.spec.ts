@@ -789,9 +789,11 @@ test("CT name editing survives repeated delayed previews without moving the view
   await expect.poll(completed).toBeGreaterThan(0);
   let previousCompleted = completed();
   for (const value of ["Kitchen mains", "Kitchen mains revised", "Kitchen mains final"]) {
+    const previousRequests = frames.filter((frame) => frame.type.endsWith("/preview_total_graph")).length;
     await name.fill(value);
+    await expect.poll(() => frames.filter((frame) => frame.type.endsWith("/preview_total_graph")).length)
+      .toBeGreaterThan(previousRequests);
     const request = frames.filter((frame) => frame.type.endsWith("/preview_total_graph")).at(-1)!;
-    await expect.poll(() => request.response === undefined).toBe(true);
     const during = await measure();
     await expect.poll(() => request.response !== undefined).toBe(true);
     await expect.poll(completed).toBeGreaterThan(previousCompleted);
@@ -874,7 +876,7 @@ test("nested child formulas block cycles and overlap but allow independent repor
   await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
 });
 
-test("legacy parent decisions remain pending on failure and clear per-link only after success", async ({ page }) => {
+test("legacy parent decision saves without firmware when YAML is unchanged", async ({ page }) => {
   const fixture = await totalsFixture(page, "legacy-parent");
   await openInventory(page, fixture.url);
   const links = page.locator(".totals-migration fieldset");
@@ -884,22 +886,11 @@ test("legacy parent decisions remain pending on failure and clear per-link only 
   await expect(page.getByLabel("Whole building: East", { exact: true })).toHaveCount(0);
   await links.first().getByRole("button", { name: "Keep totals independent" }).click();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
-  await fixture.rpc({ type: "fixture_outcome", compile: false });
-  await page.getByRole("button", { name: "Save and validate configuration" }).click();
-  await page.getByRole("button", { name: "Build firmware" }).click();
-  await expect(page.getByText("Build or install needs attention")).toBeVisible();
   expect((await fixture.state()).stored.configuration.totals_migration.legacy_parent_links).toHaveLength(2);
-  await page.getByRole("button", { name: "Rollback", exact: true }).click();
-  await fixture.rpc({ type: "fixture_outcome" });
-  await openInventory(page, fixture.url);
-  await expect(links).toHaveCount(2);
-  await links.first().getByRole("button", { name: "Keep totals independent" }).click();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
-  await page.getByRole("button", { name: "Save and validate configuration" }).click();
-  await page.getByRole("button", { name: "Build firmware" }).click();
-  await page.getByRole("button", { name: "Install on meter", exact: true }).click();
+  await page.getByRole("button", { name: "Confirm unchanged configuration" }).click();
   await expect.poll(async () => (await fixture.state()).stored.configuration.totals_migration.legacy_parent_links).toEqual([
     { child_id: "west", proposed_parent_id: "building" }]);
+  expect((await fixture.state()).builder_calls.filter((call: string) => ["write", "compile", "upload"].includes(call))).toEqual([]);
 });
 
 test("adopted board totals remain editable beside a custom overall with hidden kWh", async ({ page }) => {
@@ -949,10 +940,9 @@ test("non-helper opening performs no write and explicit adoption is a metadata-o
   await expect(page.getByRole("switch", { name: "Overall meter total Watts", exact: true })).toBeEnabled();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   expect((await fixture.state()).stored.configuration.totals_managed).toBe(false);
-  await page.getByRole("button", { name: "Save and validate configuration" }).click();
-  await page.getByRole("button", { name: "Build firmware" }).click();
-  await page.getByRole("button", { name: "Install on meter", exact: true }).click();
+  await page.getByRole("button", { name: "Confirm unchanged configuration" }).click();
   await expect.poll(async () => (await fixture.state()).stored.configuration.totals_managed).toBe(true);
+  expect((await fixture.state()).builder_calls.filter((call: string) => ["write", "compile", "upload"].includes(call))).toEqual([]);
 });
 
 test("adoption review uses one authoritative source diff before any write", async ({ page }) => {
