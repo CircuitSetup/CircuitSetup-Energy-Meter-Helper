@@ -224,7 +224,8 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
   setupEvent?: "none" | "device" | "devices"; firmwareIndex?: typeof FIRMWARE_INDEX | null;
   firmwareRequests?: string[]; consumePlans?: boolean; freshSourceChanged?: boolean; scenario?: Scenario;
   existingOutcome?: ExistingOutcome; slowClearCalibration?: boolean; delayedGraph?: boolean;
-  delayedInventory?: boolean; sourceMode?: SourceMode; activeWork?: "normal" | "handoff" | "safety" | "ready"; oneDevice?: boolean } = {}) {
+  delayedInventory?: boolean; sourceMode?: SourceMode; activeWork?: "normal" | "handoff" | "safety" | "ready"; oneDevice?: boolean;
+  unchangedConfig?: boolean } = {}) {
   const addons = options.addons ?? 0;
   const outcome = options.outcome ?? "success";
   const offsetCapability = options.scenario === "calibration-unavailable" ? "unavailable" as const : "available" as const;
@@ -404,7 +405,9 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
         }
         transactionActive = true;
         reviewedConfiguration = frame.configuration as MeterConfigurationRequest;
-        result = currentTransaction = transaction("previewed", 1);
+        result = currentTransaction = options.unchangedConfig
+          ? { ...transaction("previewed", 1), changes: [], redacted_diff: "", full_meter_configuration_verified: false }
+          : transaction("previewed", 1);
         if (options.consumePlans) {
           activePlan = null;
           pendingPreview = true;
@@ -420,7 +423,11 @@ async function mockHomeAssistant(page: Page, options: { addons?: number; outcome
           source_handoff_available: false, source_handoff_transaction_id: currentTransaction.transaction_id,
           source_handoff_firmware_installed: true };
       } else if (operation === "apply_ct_config") {
-        result = currentTransaction = { ...(outcome === "validation"
+        if (options.unchangedConfig && currentTransaction.purpose === "install_configuration") {
+          transactionActive = false;
+          committedConfiguration = reviewedConfiguration;
+          result = currentTransaction = { ...currentTransaction, state: "verified", progress: ["metadata_persisted"] };
+        } else result = currentTransaction = { ...(outcome === "validation"
           ? transaction("failed", addons ? 42 : 1, { evidence: ["validation_failed"], rollback: true, validation: true })
           : transaction("validated", addons ? 42 : 1, { progress: ["config_written", "config_validated"], rollback: true })),
           purpose: currentTransaction.purpose, transaction_id: String(frame.transaction_id) };
@@ -1368,6 +1375,25 @@ test("package choices appear only after the first meter configuration load", asy
   await page.getByRole("button", { name: "Continue" }).click();
   const preview = frames.find((frame) => frame.type.endsWith("/preview_meter_configuration"))!;
   expect(preview.configuration).toMatchObject({ status_fields: [true] });
+});
+
+test("an unchanged configuration continues without building or uploading firmware", async ({ page }) => {
+  const frames = await mockHomeAssistant(page, { unchangedConfig: true });
+  await openInventory(page);
+  await page.getByLabel("CT1 role").selectOption("grid");
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Install meter configuration" })).toBeVisible();
+  await expect(page.getByText("Configuration file is unchanged.", { exact: false })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Build firmware" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Install on meter" })).toHaveCount(0);
+  await expect(page.locator('.action-footer').getByRole("button", { name: "Continue" })).toBeDisabled();
+  await page.getByRole("button", { name: "Confirm unchanged configuration" }).click();
+  await expect(page.locator('.action-footer').getByRole("button", { name: "Continue" })).toBeEnabled();
+  await page.locator('.action-footer').getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Calibration Plan" })).toBeVisible();
+  expect(operations(frames)).toContain("apply_ct_config");
+  expect(operations(frames)).not.toContain("compile_ct_config");
+  expect(operations(frames)).not.toContain("install_ct_config");
 });
 
 test("validation failure exposes evidence and performs only a user-requested rollback", async ({ page }) => {

@@ -1040,7 +1040,7 @@ export class CircuitSetupPanel extends LitElement {
       && current.evidence.some((code) => ["upload_outcome_unknown", "reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed"].includes(code));
     const terminalPersistenceFailure = current?.purpose === "install_configuration"
       && current.state === "failed" && !current.rollback_available
-      && current.evidence.includes("persistence_failed") && current.progress.includes("device_verified");
+      && current.evidence.includes("persistence_failed");
     if (current?.purpose.startsWith("offset_")) {
       if (!["previewed", "rolled_back", "failed"].includes(current.state)) {
         this.fail(new Error(), "This review has already advanced. Complete or roll back this transaction first."); return;
@@ -1120,7 +1120,7 @@ export class CircuitSetupPanel extends LitElement {
         this.showInventory(this.meterConfiguration!);
         this.reviewCorrection = null;
         this.announcement = current?.evidence.includes("persistence_failed")
-          ? "Installed configuration was reloaded."
+          ? current.progress.includes("device_verified") ? "Installed configuration was reloaded." : "Configuration was reloaded."
           : "Review cancelled. Live saved configuration was reloaded.";
         return;
       }
@@ -1734,7 +1734,9 @@ export class CircuitSetupPanel extends LitElement {
         || this.transaction.source_sha256 !== current.source_sha256) return;
       this.transaction = transaction;
       this.announcement = `Configuration ${this.transaction.state}.`;
-      if (action === "apply" && transaction.state === "validated" && this.sourcePackageOptions) {
+      const unchangedConfirmed = action === "apply" && transaction.purpose === "install_configuration"
+        && transaction.state === "verified" && !transaction.progress.includes("device_verified");
+      if (action === "apply" && (transaction.state === "validated" || unchangedConfirmed) && this.sourcePackageOptions) {
         this.sourcePackageOptions = {
           power_quality: [...this.packageOptions.power_quality],
           status_fields: [...this.packageOptions.status_fields],
@@ -1782,8 +1784,8 @@ export class CircuitSetupPanel extends LitElement {
         this.restartResult = result;
         this.announcement = "Calibration was saved to YAML, installed, verified, and cleared from flash.";
         this.navigate("summary");
-      } else if (action === "install" && transaction.state === "verified") {
-        this.configurationInstalled = true;
+      } else if ((action === "install" || unchangedConfirmed) && transaction.state === "verified") {
+        this.configurationInstalled = action === "install";
         this.verifiedMeterConfiguration = null;
         this.sourceMeterConfiguration = null;
         this.acceptInstalledDrafts();
@@ -1797,8 +1799,11 @@ export class CircuitSetupPanel extends LitElement {
             configuration: { ...meter.configuration, totals_change_intent: { adopt_managed_totals: false, legacy_parent_decisions: [] } },
             totals: { ...meter.totals, migration: { ...meter.totals.migration, legacy_parent_links: links, parent_review_required: links.length > 0 } } };
         }
-        this.announcement = "Configuration changes were installed and verified. Continue to safety and calibration.";
-        if (this.meterConfiguration?.capabilities.configuration_authoritative && transaction.full_meter_configuration_verified) {
+        this.announcement = unchangedConfirmed
+          ? "Unchanged configuration confirmed and Helper settings saved. Continue to calibration."
+          : "Configuration changes were installed and verified. Continue to safety and calibration.";
+        if (this.meterConfiguration?.capabilities.configuration_authoritative
+          && (transaction.full_meter_configuration_verified || unchangedConfirmed)) {
           await this.refreshInstalledConfiguration();
         }
       }
@@ -1813,8 +1818,10 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private async refreshInstalledConfiguration(): Promise<void> {
-    if (!this.api || !this.selectedDeviceId || !this.configurationInstalled || this.transaction?.state !== "verified"
-      || !this.transaction.full_meter_configuration_verified || this.configurationMode === "runtime_only") return;
+    if (!this.api || !this.selectedDeviceId || this.transaction?.state !== "verified"
+      || (!this.transaction.full_meter_configuration_verified
+        && !(this.transaction.redacted_diff === "" && this.transaction.progress.includes("metadata_persisted")))
+      || this.configurationMode === "runtime_only") return;
     const api = this.api; const deviceId = this.selectedDeviceId; const generation = this.operationGeneration;
     const transaction = this.transaction;
     const current = () => this.ownsOperation(generation, api, deviceId) && this.transaction?.state === "verified"
@@ -1827,15 +1834,19 @@ export class CircuitSetupPanel extends LitElement {
       if (!fresh.capabilities.configuration_authoritative) throw new Error("Fresh configuration is not authoritative");
       this.packageOptionsTouched = false;
       this.setMeterConfiguration(fresh);
-      this.verifiedMeterConfiguration = fresh;
+      this.verifiedMeterConfiguration = this.configurationInstalled ? fresh : null;
       this.canonicalConfigurationChanged = false;
       this.error = "";
-      this.announcement = "Installed configuration and totals inventory are verified.";
+      this.announcement = this.configurationInstalled
+        ? "Installed configuration and totals inventory are verified."
+        : "Unchanged configuration confirmed and Helper settings refreshed.";
     } catch {
       if (!current()) return;
       this.verifiedMeterConfiguration = null;
       this.totalGraphState = "invalid";
-      this.error = "Installed configuration is verified, but fresh totals inventory could not be loaded. Retry inventory refresh; do not reinstall.";
+      this.error = this.configurationInstalled
+        ? "Installed configuration is verified, but fresh totals inventory could not be loaded. Retry inventory refresh; do not reinstall."
+        : "Helper settings were saved, but fresh totals inventory could not be loaded. Retry inventory refresh.";
     }
     this.requestUpdate();
   }

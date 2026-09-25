@@ -1167,8 +1167,37 @@ class ConfigTransactionManager:
                             TransactionEvidenceCode.SOURCE_CHANGED,
                         )
                 raise ConfigMutationError("verified calibration preview was superseded")
-            transaction.state = ConfigTransactionState.WRITE_CONFIRMED
             plan, prior_content = _sensitive(transaction)
+            if (
+                transaction.purpose == "install_configuration"
+                and plan.proposed_content == prior_content
+            ):
+                try:
+                    saved, cancelled = await self._drain_persistence_commit(
+                        transaction, self._persist_configuration_metadata(transaction, plan)
+                    )
+                except asyncio.CancelledError:
+                    self._finish(
+                        transaction, ConfigTransactionState.FAILED,
+                        TransactionEvidenceCode.PERSISTENCE_FAILED,
+                    )
+                    raise
+                except Exception:  # noqa: BLE001 - storage failure must not imply firmware installation
+                    return self._finish(
+                        transaction, ConfigTransactionState.FAILED,
+                        TransactionEvidenceCode.PERSISTENCE_FAILED,
+                    )
+                if not saved:
+                    return self._finish(
+                        transaction, ConfigTransactionState.FAILED,
+                        TransactionEvidenceCode.PERSISTENCE_FAILED,
+                    )
+                _progress(transaction, TransactionProgress.METADATA_PERSISTED)
+                status = self._finish(transaction, ConfigTransactionState.VERIFIED)
+                if cancelled:
+                    raise asyncio.CancelledError
+                return status
+            transaction.state = ConfigTransactionState.WRITE_CONFIRMED
             snapshot = ESPHomeConfigSnapshot(
                 plan.configuration, prior_content, transaction.source_sha256
             )
@@ -2313,7 +2342,8 @@ def _status(transaction: _ConfigTransaction) -> TransactionStatus:
         tuple(transaction.upload_progress),
         transaction.aggregate_entity_mismatch,
         transaction.meter_configuration is not None
-        and transaction.state is ConfigTransactionState.VERIFIED,
+        and transaction.state is ConfigTransactionState.VERIFIED
+        and TransactionProgress.DEVICE_VERIFIED in transaction.progress,
         transaction.purpose,
         transaction.communication_failed_cs_pins,
         transaction.failure,

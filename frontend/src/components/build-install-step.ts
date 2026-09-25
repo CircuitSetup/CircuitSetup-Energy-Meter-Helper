@@ -32,6 +32,9 @@ export function buildInstallStep(
     ? { heading: "Save verified calibration", apply: "Write verified gains to ESPHome", compile: "Build firmware", install: "Install calibrated firmware" }
     : { heading: purpose === "offset_preparation" ? "Install offset preparation" : purpose === "offset_finalization" ? "Install captured offsets" : legacyMigration ? "Install reviewed helper configuration" : "Install meter configuration", apply: "Save and validate configuration", compile: "Build firmware", install: "Install on meter" };
   const state = status.state;
+  const unchanged = purpose === "install_configuration" && status.redacted_diff === ""
+    && ["previewed", "verified", "failed"].includes(state)
+    && !status.progress.includes("ota_attempted") && !status.progress.includes("firmware_compiled");
   const retryClear = purpose === "save_calibration" && state === "verified";
   const busy = Boolean(pendingAction);
   const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) =>
@@ -56,11 +59,12 @@ export function buildInstallStep(
       <h2>${labels.heading}</h2>
       ${purpose === "offset_preparation" ? html`<p>Installs a reviewed zero baseline for unfinished chips only. It does not calibrate. Return to the same board and stage, repeat physical preparation, then check readiness before Run.</p>` : ""}
       ${purpose === "offset_finalization" ? html`<p>Installs captured signed offsets, including zeros, with native restore disabled. Confirm configuration selection after install. This is not register readback and does not clear gain calibration.</p>` : ""}
-      ${configReview(status, configuration, impact, meterInventory?.totals)}
+      ${unchanged ? html`<p class="info-band" role="status">Configuration file is unchanged. Confirm to save Helper settings and continue. No firmware build or upload is needed.</p>` : ""}
+      ${configReview(status, configuration, impact, meterInventory?.totals, unchanged)}
       ${meterInventory ? totalsMigrationReview(meterInventory, () => undefined, totalPreview, impact !== null, true) : ""}
       ${state === "failed" || retryableInstall ? html`
         <div class="recovery-panel" role="status">
-          <strong>${communicationFailure ? "Meter chip communication failed" : uploadUnknown ? "Installation outcome needs verification" : persistenceFailure ? "Firmware installed; Helper data was not saved" : failureMessage ?? "Build or install needs attention"}</strong>
+          <strong>${communicationFailure ? "Meter chip communication failed" : uploadUnknown ? "Installation outcome needs verification" : persistenceFailure ? unchanged ? "Helper settings could not be saved" : "Firmware installed; Helper data was not saved" : failureMessage ?? "Build or install needs attention"}</strong>
           ${communicationFailure ? html`<p>The ESP32 reconnected but could not establish SPI communication with
             ${failedPins.length ? "the meter chip(s) on CS pin(s) " + failedPins.map((pin) => "GPIO" + pin).join(", ") : "one or more meter chips (CS pin unavailable)"}.
             This is an ESP32–meter-chip link, not a Wi-Fi or Home Assistant problem.</p>
@@ -73,7 +77,7 @@ export function buildInstallStep(
             </ol>
             <p>Fix the hardware or configuration, power up, and Retry verification. It rechecks installed firmware without another upload.</p>
             <p>Back keeps this saved configuration for editing; rollback is optional.</p>
-          ` : uploadUnknown ? html`<p>The upload may have reached the meter. Retry verification checks the source and meter without uploading again.</p>` : persistenceFailure ? html`<p>The meter accepted and verified the firmware. Retry completion to save the Helper data without uploading again, or use Back to reload the installed configuration.</p>`
+          ` : uploadUnknown ? html`<p>The upload may have reached the meter. Retry verification checks the source and meter without uploading again.</p>` : persistenceFailure ? unchanged ? html`<p>No firmware was installed. Go Back, reload the configuration, and confirm again.</p>` : html`<p>The meter accepted and verified the firmware. Retry completion to save the Helper data without uploading again, or use Back to reload the installed configuration.</p>`
             : html`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
           ${status?.rollback_available ? html`<button class="danger" @click=${rollback} ?disabled=${busy}>${pendingAction === "rollback" ? "Rolling back…" : "Rollback"}</button>` : ""}
         </div>
@@ -87,11 +91,13 @@ export function buildInstallStep(
         <span>Meter rebooting; waiting for startup verification.</span>
         <progress max="100" aria-label="Waiting for meter startup"></progress>
       </div>` : ""}
-      <div class="confirmation-actions">
+      ${unchanged ? html`<div class="confirmation-actions">
+        ${state === "previewed" ? html`<button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending}>${pendingAction === "apply" ? "Confirming…" : "Confirm unchanged configuration"}</button>` : ""}
+      </div>` : html`<div class="confirmation-actions">
         <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : labels.apply}</button>
         <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : labels.compile}</button>
         <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || (state !== "install_confirmation_required" && !retryClear)}>${pendingAction === "install" ? retryableInstall ? "Checking…" : "Installing…" : retryClear ? "Retry clearing saved flash values" : persistenceFailure ? "Retry completion" : retryableInstall ? "Retry verification" : labels.install}</button>
-      </div>
+      </div>`}
       ${status?.validation_detail ? html`<dl class="status-list evidence-list">
         <div><dt>Validation code</dt><dd>${status.validation_detail.code ?? "unavailable"}</dd></div>
         <div><dt>Errors</dt><dd>${status.validation_detail.error_record_count} records (${status.validation_detail.reported_error_count === null ? "unreported" : `${status.validation_detail.reported_error_count} reported`})</dd></div>

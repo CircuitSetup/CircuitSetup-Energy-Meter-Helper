@@ -1933,8 +1933,8 @@ const emptyTotals = {
   stale_automatic_total_settings: [],
   migration: { parent_review_required: false, legacy_parent_links: [], native_visibility_confirmation_required: false, native_visibility_resolved: false }
 };
-function configReview(status, configuration = null, impact = null, totals = null) {
-  const diff = (status?.redacted_diff || "No reviewed configuration changes yet.").split(/\r?\n/);
+function configReview(status, configuration = null, impact = null, totals = null, unchanged = false) {
+  const diff = (status?.redacted_diff || (unchanged ? "No configuration file changes." : "No reviewed configuration changes yet.")).split(/\r?\n/);
   const diffLine = (line) => {
     const kind = line.startsWith("+") ? "added" : line.startsWith("-") ? "removed" : "context";
     const prefixed = line.startsWith(" ") || line.startsWith("+") || line.startsWith("-");
@@ -1956,7 +1956,7 @@ function configReview(status, configuration = null, impact = null, totals = null
   return b`
     <section class="review-region" aria-labelledby="review-heading">
       <h2 id="review-heading">Review changes</h2>
-      <p class="warning-band">Firmware changes can alter Home Assistant entity names and keys. Review every change before Apply.</p>
+      ${unchanged ? b`<p>Review the configuration before confirming the unchanged file.</p>` : b`<p class="warning-band">Firmware changes can alter Home Assistant entity names and keys. Review every change before Apply.</p>`}
       ${configuration ? b`
         <h3>Meter</h3>
         <dl class="status-list"><div><dt>Electrical profile</dt><dd>${configuration.meter.electrical_system.replaceAll("_", " ")} · ${configuration.meter.line_frequency_hz} Hz</dd></div><div><dt>Reporting interval</dt><dd>${configuration.meter.update_interval_s} seconds</dd></div><div><dt>Friendly name</dt><dd>${configuration.meter.friendly_name}</dd></div></dl>
@@ -1978,9 +1978,9 @@ function configReview(status, configuration = null, impact = null, totals = null
         <dl class="status-list"><div><dt>Power quality</dt><dd>${pqBoards.length ? `Boards ${pqBoards.join(", ")} · reactive power, apparent power, and power factor for each used CT` : "Not selected"}</dd></div><div><dt>Phase status</dt><dd>${statusBoards.length ? `Boards ${statusBoards.join(", ")} · native API diagnostics, disabled by default in Home Assistant` : "Not selected"}</dd></div>${impact ? b`<div><dt>Helper-managed measurements</dt><dd>${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text, ${impact.energy_entity_count} energy; ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec</dd></div>` : ""}</dl>
       ` : ""}
       <dl class="status-list">
-        <div><dt>Validation</dt><dd>${status?.state === "validated" || status?.progress.includes("config_validated") ? "Validated" : "Pending"}</dd></div>
-        <div><dt>Compile</dt><dd>${status?.state === "compiled" || status?.progress.includes("firmware_compiled") ? "Compiled" : "Pending"}</dd></div>
-        <div><dt>Install</dt><dd>${status?.state === "install_confirmation_required" ? "Confirmation required" : status?.state ?? "Pending"}</dd></div>
+        <div><dt>Validation</dt><dd>${unchanged ? "Not needed" : status?.state === "validated" || status?.progress.includes("config_validated") ? "Validated" : "Pending"}</dd></div>
+        <div><dt>Compile</dt><dd>${unchanged ? "Not needed" : status?.state === "compiled" || status?.progress.includes("firmware_compiled") ? "Compiled" : "Pending"}</dd></div>
+        <div><dt>Install</dt><dd>${unchanged ? "Not needed" : status?.state === "install_confirmation_required" ? "Confirmation required" : status?.state ?? "Pending"}</dd></div>
       </dl>
       <details>
         <summary>Configuration differences</summary>
@@ -2069,6 +2069,7 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
   `;
   const labels = purpose === "save_calibration" ? { heading: "Save verified calibration", apply: "Write verified gains to ESPHome", compile: "Build firmware", install: "Install calibrated firmware" } : { heading: purpose === "offset_preparation" ? "Install offset preparation" : purpose === "offset_finalization" ? "Install captured offsets" : legacyMigration ? "Install reviewed helper configuration" : "Install meter configuration", apply: "Save and validate configuration", compile: "Build firmware", install: "Install on meter" };
   const state = status.state;
+  const unchanged = purpose === "install_configuration" && status.redacted_diff === "" && ["previewed", "verified", "failed"].includes(state) && !status.progress.includes("ota_attempted") && !status.progress.includes("firmware_compiled");
   const retryClear = purpose === "save_calibration" && state === "verified";
   const busy = Boolean(pendingAction);
   const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) => ["upload_outcome_unknown", "reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed"].includes(code)) === true;
@@ -2088,11 +2089,12 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
       <h2>${labels.heading}</h2>
       ${purpose === "offset_preparation" ? b`<p>Installs a reviewed zero baseline for unfinished chips only. It does not calibrate. Return to the same board and stage, repeat physical preparation, then check readiness before Run.</p>` : ""}
       ${purpose === "offset_finalization" ? b`<p>Installs captured signed offsets, including zeros, with native restore disabled. Confirm configuration selection after install. This is not register readback and does not clear gain calibration.</p>` : ""}
-      ${configReview(status, configuration, impact, meterInventory?.totals)}
+      ${unchanged ? b`<p class="info-band" role="status">Configuration file is unchanged. Confirm to save Helper settings and continue. No firmware build or upload is needed.</p>` : ""}
+      ${configReview(status, configuration, impact, meterInventory?.totals, unchanged)}
       ${meterInventory ? totalsMigrationReview(meterInventory, () => void 0, totalPreview, impact !== null, true) : ""}
       ${state === "failed" || retryableInstall ? b`
         <div class="recovery-panel" role="status">
-          <strong>${communicationFailure ? "Meter chip communication failed" : uploadUnknown ? "Installation outcome needs verification" : persistenceFailure ? "Firmware installed; Helper data was not saved" : failureMessage ?? "Build or install needs attention"}</strong>
+          <strong>${communicationFailure ? "Meter chip communication failed" : uploadUnknown ? "Installation outcome needs verification" : persistenceFailure ? unchanged ? "Helper settings could not be saved" : "Firmware installed; Helper data was not saved" : failureMessage ?? "Build or install needs attention"}</strong>
           ${communicationFailure ? b`<p>The ESP32 reconnected but could not establish SPI communication with
             ${failedPins.length ? "the meter chip(s) on CS pin(s) " + failedPins.map((pin) => "GPIO" + pin).join(", ") : "one or more meter chips (CS pin unavailable)"}.
             This is an ESP32–meter-chip link, not a Wi-Fi or Home Assistant problem.</p>
@@ -2105,7 +2107,7 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
             </ol>
             <p>Fix the hardware or configuration, power up, and Retry verification. It rechecks installed firmware without another upload.</p>
             <p>Back keeps this saved configuration for editing; rollback is optional.</p>
-          ` : uploadUnknown ? b`<p>The upload may have reached the meter. Retry verification checks the source and meter without uploading again.</p>` : persistenceFailure ? b`<p>The meter accepted and verified the firmware. Retry completion to save the Helper data without uploading again, or use Back to reload the installed configuration.</p>` : b`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
+          ` : uploadUnknown ? b`<p>The upload may have reached the meter. Retry verification checks the source and meter without uploading again.</p>` : persistenceFailure ? unchanged ? b`<p>No firmware was installed. Go Back, reload the configuration, and confirm again.</p>` : b`<p>The meter accepted and verified the firmware. Retry completion to save the Helper data without uploading again, or use Back to reload the installed configuration.</p>` : b`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
           ${status?.rollback_available ? b`<button class="danger" @click=${rollback} ?disabled=${busy}>${pendingAction === "rollback" ? "Rolling back…" : "Rollback"}</button>` : ""}
         </div>
       ` : ""}
@@ -2118,11 +2120,13 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
         <span>Meter rebooting; waiting for startup verification.</span>
         <progress max="100" aria-label="Waiting for meter startup"></progress>
       </div>` : ""}
-      <div class="confirmation-actions">
+      ${unchanged ? b`<div class="confirmation-actions">
+        ${state === "previewed" ? b`<button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending}>${pendingAction === "apply" ? "Confirming…" : "Confirm unchanged configuration"}</button>` : ""}
+      </div>` : b`<div class="confirmation-actions">
         <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : labels.apply}</button>
         <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : labels.compile}</button>
         <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "install_confirmation_required" && !retryClear}>${pendingAction === "install" ? retryableInstall ? "Checking…" : "Installing…" : retryClear ? "Retry clearing saved flash values" : persistenceFailure ? "Retry completion" : retryableInstall ? "Retry verification" : labels.install}</button>
-      </div>
+      </div>`}
       ${status?.validation_detail ? b`<dl class="status-list evidence-list">
         <div><dt>Validation code</dt><dd>${status.validation_detail.code ?? "unavailable"}</dd></div>
         <div><dt>Errors</dt><dd>${status.validation_detail.error_record_count} records (${status.validation_detail.reported_error_count === null ? "unreported" : `${status.validation_detail.reported_error_count} reported`})</dd></div>
@@ -5212,7 +5216,7 @@ class CircuitSetupPanel extends i$2 {
     const current = this.transaction;
     const calibrationPreparation2 = current !== null && this.isCalibrationPreparationTransaction(current);
     const appliedInstallRetry = current?.purpose === "install_configuration" && current.state === "install_confirmation_required" && current.evidence.some((code) => ["upload_outcome_unknown", "reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed"].includes(code));
-    const terminalPersistenceFailure = current?.purpose === "install_configuration" && current.state === "failed" && !current.rollback_available && current.evidence.includes("persistence_failed") && current.progress.includes("device_verified");
+    const terminalPersistenceFailure = current?.purpose === "install_configuration" && current.state === "failed" && !current.rollback_available && current.evidence.includes("persistence_failed");
     if (current?.purpose.startsWith("offset_")) {
       if (!["previewed", "rolled_back", "failed"].includes(current.state)) {
         this.fail(new Error(), "This review has already advanced. Complete or roll back this transaction first.");
@@ -5299,7 +5303,7 @@ class CircuitSetupPanel extends i$2 {
         this.setMeterConfiguration(fresh);
         this.showInventory(this.meterConfiguration);
         this.reviewCorrection = null;
-        this.announcement = current?.evidence.includes("persistence_failed") ? "Installed configuration was reloaded." : "Review cancelled. Live saved configuration was reloaded.";
+        this.announcement = current?.evidence.includes("persistence_failed") ? current.progress.includes("device_verified") ? "Installed configuration was reloaded." : "Configuration was reloaded." : "Review cancelled. Live saved configuration was reloaded.";
         return;
       }
       if (fresh.source_sha256 !== correction.sourceSha256) {
@@ -5947,7 +5951,8 @@ class CircuitSetupPanel extends i$2 {
         if (!this.ownsOperation(generation, api, deviceId) || this.transaction?.transaction_id !== current.transaction_id || this.transaction.source_sha256 !== current.source_sha256) return;
         this.transaction = transaction2;
         this.announcement = `Configuration ${this.transaction.state}.`;
-        if (action === "apply" && transaction2.state === "validated" && this.sourcePackageOptions) {
+        const unchangedConfirmed = action === "apply" && transaction2.purpose === "install_configuration" && transaction2.state === "verified" && !transaction2.progress.includes("device_verified");
+        if (action === "apply" && (transaction2.state === "validated" || unchangedConfirmed) && this.sourcePackageOptions) {
           this.sourcePackageOptions = {
             power_quality: [...this.packageOptions.power_quality],
             status_fields: [...this.packageOptions.status_fields]
@@ -5995,8 +6000,8 @@ class CircuitSetupPanel extends i$2 {
           this.restartResult = result;
           this.announcement = "Calibration was saved to YAML, installed, verified, and cleared from flash.";
           this.navigate("summary");
-        } else if (action === "install" && transaction2.state === "verified") {
-          this.configurationInstalled = true;
+        } else if ((action === "install" || unchangedConfirmed) && transaction2.state === "verified") {
+          this.configurationInstalled = action === "install";
           this.verifiedMeterConfiguration = null;
           this.sourceMeterConfiguration = null;
           this.acceptInstalledDrafts();
@@ -6011,8 +6016,8 @@ class CircuitSetupPanel extends i$2 {
               totals: { ...meter.totals, migration: { ...meter.totals.migration, legacy_parent_links: links, parent_review_required: links.length > 0 } }
             };
           }
-          this.announcement = "Configuration changes were installed and verified. Continue to safety and calibration.";
-          if (this.meterConfiguration?.capabilities.configuration_authoritative && transaction2.full_meter_configuration_verified) {
+          this.announcement = unchangedConfirmed ? "Unchanged configuration confirmed and Helper settings saved. Continue to calibration." : "Configuration changes were installed and verified. Continue to safety and calibration.";
+          if (this.meterConfiguration?.capabilities.configuration_authoritative && (transaction2.full_meter_configuration_verified || unchangedConfirmed)) {
             await this.refreshInstalledConfiguration();
           }
         }
@@ -6024,7 +6029,7 @@ class CircuitSetupPanel extends i$2 {
     this.requestUpdate();
   }
   async refreshInstalledConfiguration() {
-    if (!this.api || !this.selectedDeviceId || !this.configurationInstalled || this.transaction?.state !== "verified" || !this.transaction.full_meter_configuration_verified || this.configurationMode === "runtime_only") return;
+    if (!this.api || !this.selectedDeviceId || this.transaction?.state !== "verified" || !this.transaction.full_meter_configuration_verified && !(this.transaction.redacted_diff === "" && this.transaction.progress.includes("metadata_persisted")) || this.configurationMode === "runtime_only") return;
     const api = this.api;
     const deviceId = this.selectedDeviceId;
     const generation = this.operationGeneration;
@@ -6038,15 +6043,15 @@ class CircuitSetupPanel extends i$2 {
       if (!fresh.capabilities.configuration_authoritative) throw new Error("Fresh configuration is not authoritative");
       this.packageOptionsTouched = false;
       this.setMeterConfiguration(fresh);
-      this.verifiedMeterConfiguration = fresh;
+      this.verifiedMeterConfiguration = this.configurationInstalled ? fresh : null;
       this.canonicalConfigurationChanged = false;
       this.error = "";
-      this.announcement = "Installed configuration and totals inventory are verified.";
+      this.announcement = this.configurationInstalled ? "Installed configuration and totals inventory are verified." : "Unchanged configuration confirmed and Helper settings refreshed.";
     } catch {
       if (!current()) return;
       this.verifiedMeterConfiguration = null;
       this.totalGraphState = "invalid";
-      this.error = "Installed configuration is verified, but fresh totals inventory could not be loaded. Retry inventory refresh; do not reinstall.";
+      this.error = this.configurationInstalled ? "Installed configuration is verified, but fresh totals inventory could not be loaded. Retry inventory refresh; do not reinstall." : "Helper settings were saved, but fresh totals inventory could not be loaded. Retry inventory refresh.";
     }
     this.requestUpdate();
   }

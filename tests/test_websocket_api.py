@@ -3194,10 +3194,9 @@ def test_total_graph_preview_route_serializes_server_graph_without_transaction()
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("success", (False, True))
-@pytest.mark.parametrize("accepted", (False, True))
-def test_parent_decision_cross_route_persists_only_after_verified_install(success: bool, accepted: bool) -> None:
-    """A typed per-link decision survives preview/routes, not a failed upload."""
+@pytest.mark.parametrize(("accepted", "success"), ((False, True), (True, False), (True, True)))
+def test_parent_decision_cross_route_persists_only_after_verified_install(accepted: bool, success: bool) -> None:
+    """A typed per-link decision is saved after confirmation or a verified upload."""
     from dataclasses import replace
 
     from tests.test_config_transaction import Job
@@ -3233,10 +3232,15 @@ def test_parent_decision_cross_route_persists_only_after_verified_install(succes
             sensor_entities=retained.expected_sensor_entities)
         transaction = {"transaction_id": status["transaction_id"], "source_sha256": status["source_sha256"]}
         fixture.builder.upload = Job(success, code=0 if success else 1)
-        await call("apply_ct_config", **transaction)
-        await call("compile_ct_config", **transaction)
-        assert await fixture.store.async_get_meter_configuration(MAC) == before
-        final = await call("install_ct_config", **transaction)
+        final = await call("apply_ct_config", **transaction)
+        if not accepted:
+            assert status["redacted_diff"] == ""
+            assert final["state"] == "verified"
+            assert set(fixture.builder.calls) == {"read"}
+        else:
+            await call("compile_ct_config", **transaction)
+            assert await fixture.store.async_get_meter_configuration(MAC) == before
+            final = await call("install_ct_config", **transaction)
         after = await fixture.store.async_get_meter_configuration(MAC)
         if success:
             assert final["state"] == "verified"

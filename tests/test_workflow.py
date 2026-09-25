@@ -152,6 +152,9 @@ async def _install_totals_preview(
     from custom_components.circuitsetup_energy_meter_helper.config_document import (
         ESPHomeConfigDocument,
     )
+    from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
+        ConfigTransactionState,
+    )
     from tests.test_config_transaction import _evidence
 
     topology = plan.topology
@@ -171,7 +174,9 @@ async def _install_totals_preview(
         sensor_entities=expected.sensor_entities,
     )
     manager = workflow.transactions
-    await manager.async_confirm_write(status.transaction_id, "admin")
+    confirmed = await manager.async_confirm_write(status.transaction_id, "admin")
+    if confirmed.state is ConfigTransactionState.VERIFIED:
+        return confirmed
     await manager.async_compile(status.transaction_id)
     return await manager.async_confirm_install(status.transaction_id, "admin")
 
@@ -375,7 +380,9 @@ def test_ct_review_preserves_unmanaged_totals_after_suggestions_refresh(edit: st
         status = await workflow._async_preview_meter_configuration(plan, reviewed)
         assert status.state is ConfigTransactionState.PREVIEWED
         status = await workflow.transactions.async_confirm_write(status.transaction_id, "admin")
-        assert status.state is ConfigTransactionState.VALIDATED
+        assert status.state is (ConfigTransactionState.VALIDATED if edit == "model" else ConfigTransactionState.VERIFIED)
+        if edit == "role":
+            assert builder.calls == ["read"]
         assert source_total in builder.remote_content
         assert "# CircuitSetup Energy Meter Helper: aggregates" not in builder.remote_content
 
@@ -464,6 +471,9 @@ def test_analyzer_sources_match_initial_inventory_and_refresh(
 
 def test_hidden_analyzer_duplicate_preserves_managed_output_choices(monkeypatch: pytest.MonkeyPatch) -> None:
     from custom_components.circuitsetup_energy_meter_helper import workflow as module
+    from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
+        ConfigTransactionState,
+    )
     from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
         TotalOutputSettings,
     )
@@ -485,9 +495,10 @@ def test_hidden_analyzer_duplicate_preserves_managed_output_choices(monkeypatch:
         await fixture.workflow.async_preview_total_graph("meter-1", initial["plan_id"], initial["source_sha256"], requested)
         plan = fixture.workflow._plans[initial["plan_id"]]
         status = await fixture.workflow._async_preview_meter_configuration(plan, requested)
-        await fixture.manager.async_confirm_write(status.transaction_id, "admin")
-        content = fixture.builder.remote_content
         retained = fixture.manager._transaction(status.transaction_id).meter_configuration
+        confirmed = await fixture.manager.async_confirm_write(status.transaction_id, "admin")
+        assert confirmed.state is ConfigTransactionState.VERIFIED
+        content = fixture.builder.remote_content
         assert retained.automatic_totals == settings
         saved = _inventory(ESPHomeConfigSnapshot("meter.yaml", content, sha256(content.encode()).hexdigest()), plan.topology, stored=retained)
         assert saved.configuration.automatic_totals == settings
@@ -583,9 +594,16 @@ def test_partial_unowned_native_visibility_survives_initial_preview_and_unrelate
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("accepted", (False, True))
 @pytest.mark.parametrize(
-    "outcome", ("success", "compile", "install", "rollback", "retry")
+    ("accepted", "outcome"),
+    (
+        (False, "success"),
+        (True, "success"),
+        (True, "compile"),
+        (True, "install"),
+        (True, "rollback"),
+        (True, "retry"),
+    ),
 )
 def test_explicit_adoption_and_partial_parent_review_commit_only_on_success(
     outcome: str, accepted: bool
@@ -672,10 +690,6 @@ def test_explicit_adoption_and_partial_parent_review_commit_only_on_success(
                 outputs=TotalOutputSettings(True, False, False),
             )
             requested = replace(requested, aggregates=(child, parent))
-        if outcome == "rollback":
-            requested = replace(
-                requested, meter=replace(requested.meter, update_interval_s=10)
-            )
         before = await store.async_get_meter_configuration(MAC)
         status = await workflow._async_preview_meter_configuration(plan, requested)
         assert await store.async_get_meter_configuration(MAC) == before
@@ -696,8 +710,12 @@ def test_explicit_adoption_and_partial_parent_review_commit_only_on_success(
         if outcome == "retry":
             verifier.evidence = replace(complete_evidence, sensor_entities=frozenset())
         manager = workflow.transactions
-        await manager.async_confirm_write(status.transaction_id, "admin")
-        if outcome == "rollback":
+        confirmed = await manager.async_confirm_write(status.transaction_id, "admin")
+        if not accepted:
+            assert status.redacted_diff == ""
+            assert confirmed.state is ConfigTransactionState.VERIFIED
+            assert builder.calls == ["read"]
+        elif outcome == "rollback":
             await manager.async_compile(status.transaction_id)
             await manager.async_rollback(status.transaction_id)
         else:

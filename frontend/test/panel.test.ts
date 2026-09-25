@@ -76,6 +76,35 @@ it("renders purpose-specific configuration installation controls", () => {
   expect(host.textContent).toContain("Install reviewed helper configuration");
 });
 
+it("confirms an unchanged meter configuration without build or install controls", () => {
+  const host = document.createElement("div");
+  const confirm = vi.fn();
+  const status = { transaction_id: "1".repeat(32), state: "previewed", source_sha256: "a".repeat(64),
+    changes: [], redacted_diff: "", rollback_available: false, evidence: [], progress: [], validation_detail: null,
+    upload_progress: [], purpose: "install_configuration" as const, aggregate_entity_mismatch: false,
+    full_meter_configuration_verified: false } as import("../src/types").TransactionStatus;
+  const noop = () => undefined;
+
+  render(buildInstallStep("install_configuration", status, confirm, noop, noop, noop, noop, noop), host);
+  expect(host.textContent).toContain("Configuration file is unchanged");
+  expect(host.textContent).toContain("Confirm unchanged configuration");
+  expect(host.textContent).not.toContain("Build firmware");
+  expect(host.textContent).not.toContain("Install on meter");
+  expect(host.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(true);
+  [...host.querySelectorAll("button")].find((button) => button.textContent === "Confirm unchanged configuration")?.click();
+  expect(confirm).toHaveBeenCalledOnce();
+
+  render(buildInstallStep("install_configuration", { ...status, state: "verified", progress: ["metadata_persisted"] },
+    confirm, noop, noop, noop, noop, noop), host);
+  expect(host.querySelector<HTMLButtonElement>('[data-action="continue"]')?.disabled).toBe(false);
+
+  render(buildInstallStep("install_configuration", { ...status, state: "failed", evidence: ["persistence_failed"] },
+    confirm, noop, noop, noop, noop, noop), host);
+  expect(host.textContent).toContain("Helper settings could not be saved");
+  expect(host.textContent).toContain("No firmware was installed");
+  expect(host.textContent).not.toContain("Firmware installed; Helper data was not saved");
+});
+
 it("uses normal explicit install controls for stock preparation without flash clearing", () => {
   const host = document.createElement("div");
   const noop = () => undefined;
@@ -389,6 +418,24 @@ describe("explicit totals adoption and migration transactions", () => {
     expect(calls.some((message) => String(message.type).endsWith("close_session"))).toBe(false);
     expect(state.selectedDeviceId).toBeNull();
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Setup Device");
+  });
+
+  it("continues after an unchanged confirmation without claiming firmware installation", async () => {
+    const unchanged = { ...reviewed(), redacted_diff: "", full_meter_configuration_verified: false };
+    const { state, panel, calls } = await prepare({ apply_ct_config: {
+      ...unchanged, state: "verified", progress: ["metadata_persisted"],
+    } });
+    state.canonicalConfigurationChanged = true;
+    state.transaction = unchanged;
+    await state.transactionAction("apply");
+
+    expect(calls.some((call) => String(call.type).endsWith("apply_ct_config"))).toBe(true);
+    expect(calls.some((call) => /compile_ct_config|install_ct_config/.test(String(call.type)))).toBe(false);
+    expect(state.configurationInstalled).toBe(false);
+    expect(state.canonicalConfigurationChanged).toBe(false);
+    expect(state.verifiedMeterConfiguration).toBeNull();
+    panel.showState("calibration-plan"); await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Calibration Plan");
   });
 
   it.each(["adoption", "keep independent"])("retains metadata-only %s after a failed install and clears it only on verified retry", async (choice) => {
@@ -1714,6 +1761,27 @@ describe("CircuitSetup panel", () => {
     expect((state.meterConfiguration as import("../src/types").MeterConfiguration).configuration.meter.friendly_name).toBe("Installed configuration");
     expect(state.announcement).toContain("Installed configuration was reloaded");
     expect(state.step).toBe("ct");
+  });
+
+  it("returns to review after an unchanged Helper save fails", async () => {
+    const fresh = meterResponse();
+    const failed = { transaction_id: "1".repeat(32), state: "failed" as const,
+      source_sha256: "a".repeat(64), changes: [], redacted_diff: "", rollback_available: false,
+      evidence: ["persistence_failed"], progress: [], validation_detail: null, upload_progress: [],
+      purpose: "install_configuration" as const, aggregate_entity_mismatch: false,
+      full_meter_configuration_verified: false };
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] }, get_meter_configuration: fresh }));
+    const state = panel as unknown as Record<string, unknown> & { backFromBuild(): Promise<void> };
+    state.selectedDeviceId = "meter-1";
+    state.meterConfiguration = fresh;
+    state.transaction = failed;
+    state.step = "install-configuration";
+
+    await state.backFromBuild();
+
+    expect(state.transaction).toBeNull();
+    expect(state.step).toBe("ct");
+    expect(state.announcement).toContain("Configuration was reloaded");
   });
 
   it("keeps a failed review cancellation visible and does not discard edits", async () => {
