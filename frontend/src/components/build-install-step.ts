@@ -1,8 +1,11 @@
 import { html, type TemplateResult } from "lit";
-import type { ConfigurationImpact, MeterConfigurationRequest, TransactionStatus } from "../types";
+import type { ConfigurationImpact, MeterConfiguration, MeterConfigurationRequest, TotalGraphPreview, TransactionStatus } from "../types";
+import type { TransactionPurpose } from "../workflow-model";
 import { configReview } from "./config-review-step";
+import { totalsMigrationReview } from "./totals-migration-review";
 
 export function buildInstallStep(
+  purpose: Exclude<TransactionPurpose, null>,
   status: TransactionStatus | null,
   apply: () => void,
   compile: () => void,
@@ -15,12 +18,34 @@ export function buildInstallStep(
   reviewBackBusy = false,
   correctionPending = false,
   pendingAction = "",
+  legacyMigration = false,
+  meterInventory: MeterConfiguration | null = null,
+  totalPreview: TotalGraphPreview | null = null,
 ): TemplateResult {
-  const state = status?.state ?? "previewed";
+  if (!status) return html`
+    <section class="step-content" aria-labelledby="step-heading">
+      <div class="recovery-panel" role="status"><strong>No active review</strong><p>Return to the previous step to review the current configuration.</p></div>
+      <footer class="action-footer"><button class="secondary" @click=${back}>Back</button></footer>
+    </section>
+  `;
+  const labels = purpose === "save_calibration"
+    ? { heading: "Save verified calibration", apply: "Write verified gains to ESPHome", compile: "Build firmware", install: "Install calibrated firmware" }
+    : { heading: purpose === "offset_preparation" ? "Install offset preparation" : purpose === "offset_finalization" ? "Install captured offsets" : legacyMigration ? "Install reviewed helper configuration" : "Install meter configuration", apply: "Save and validate configuration", compile: "Build firmware", install: "Install on meter" };
+  const state = status.state;
+  const unchanged = purpose === "install_configuration" && status.redacted_diff === ""
+    && ["previewed", "verified", "failed"].includes(state)
+    && !status.progress.includes("ota_attempted") && !status.progress.includes("firmware_compiled");
+  const retryClear = purpose === "save_calibration" && state === "verified";
   const busy = Boolean(pendingAction);
   const retryableInstall = state === "install_confirmation_required" && status?.evidence.some((code) =>
-    ["reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed"].includes(code)) === true;
+    ["upload_outcome_unknown", "reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed", "source_changed"].includes(code)) === true;
+  const uploadRejected = status.evidence.includes("upload_failed");
+  const retryUpload = status.progress.includes("ota_attempted") && !status.progress.includes("ota_uploaded");
+  const uploadUnknown = retryUpload && !uploadRejected;
+  const deviceVerified = status.progress.includes("device_verified");
+  const sourceChanged = status.evidence.includes("source_changed");
   const communicationFailure = status?.evidence.includes("meter_communication_failed") === true;
+  const persistenceFailure = status?.evidence.includes("persistence_failed") === true;
   const failedPins = status?.communication_failed_cs_pins ?? [];
   const waitingForStartup = state === "reconnecting";
   const latestProgress = status?.upload_progress.slice().reverse().find((item) => item.percentage !== null)
@@ -32,37 +57,51 @@ export function buildInstallStep(
     : status?.upload_progress.length ? status.progress.includes("firmware_compiled") ? "Install" : "Compile" : null;
   const percentage = jobProgress?.percentage ?? null;
   const validationFailed = state === "rolled_back" && status?.evidence.includes("validation_failed");
+  const failureMessage = status?.failure?.reason_code === "missing_package" ? "A required supported package is missing. Review the package selection and create a fresh review." : status?.failure?.reason_code === "unsupported_component_option" ? "The selected option is not supported by this ESPHome version. Choose a supported firmware version and review again." : status?.failure?.reason_code === "required_secret" ? "A required secret name is unresolved. Add it in ESPHome and create a fresh review." : status?.failure?.reason_code === "conflicting_managed_override" ? "A managed configuration override conflicts with the reviewed source. Restore the source or create a fresh review." : status?.failure?.reason_code === "verification_incomplete" ? "Uploaded; verification incomplete. Reconnect the meter and retry verification." : null;
   return html`
     <section class="step-content" aria-labelledby="step-heading">
-      ${configReview(status, configuration, impact)}
+      <h2>${labels.heading}</h2>
+      ${purpose === "offset_preparation" ? html`<p>Installs a reviewed zero baseline for unfinished chips only. It does not calibrate. Return to the same board and stage, repeat physical preparation, then check readiness before Run.</p>` : ""}
+      ${purpose === "offset_finalization" ? html`<p>Installs captured signed offsets, including zeros, with native restore disabled. Confirm configuration selection after install. This is not register readback and does not clear gain calibration.</p>` : ""}
+      ${unchanged ? html`<p class="info-band" role="status">Configuration file is unchanged. Confirm to save Helper settings and continue. No firmware build or upload is needed.</p>` : ""}
+      ${configReview(status, configuration, impact, meterInventory?.totals, unchanged)}
+      ${meterInventory ? totalsMigrationReview(meterInventory, () => undefined, totalPreview, impact !== null, true) : ""}
       ${state === "failed" || retryableInstall ? html`
         <div class="recovery-panel" role="status">
-          <strong>${communicationFailure ? "Meter chip communication failed" : "Build or install needs attention"}</strong>
-          ${communicationFailure ? html`<p>The ESP32 reconnected, but reported that it could not establish SPI communication with
+          <strong>${sourceChanged ? "Reviewed configuration source changed" : communicationFailure ? "Meter chip communication failed" : uploadRejected ? "Firmware upload was rejected" : uploadUnknown ? "Installation outcome is unknown" : persistenceFailure ? unchanged ? "Helper settings could not be saved" : deviceVerified ? "Firmware installed; Helper data was not saved" : "Firmware uploaded; verification did not complete" : failureMessage ?? "Build or install needs attention"}</strong>
+          ${sourceChanged ? html`<p>Restore the exact reviewed YAML in ESPHome Device Builder before retrying or going Back. This review cannot verify a different source.</p>` : communicationFailure ? html`<p>The ESP32 reconnected but could not establish SPI communication with
             ${failedPins.length ? "the meter chip(s) on CS pin(s) " + failedPins.map((pin) => "GPIO" + pin).join(", ") : "one or more meter chips (CS pin unavailable)"}.
-            This is the connection between the ESP32 and the meter chip, not a Wi-Fi or Home Assistant connection problem.</p>
+            This is an ESP32–meter-chip link, not a Wi-Fi or Home Assistant problem.</p>
             <ol>
-              <li>Power down the meter and ESP32 before touching boards or changing jumpers. Do not touch exposed mains wiring.</li>
-              <li>Confirm the correct ESP32 model for your meter board and firmware is installed. Check its orientation, make sure both header rows are fully seated and aligned, and look for bent pins or poor contact.</li>
-              <li>If an add-on board is affected, check its CS jumpers: each jumper must be in the correct position and make firm contact. Match the default CS-pin assignments for your board and connection type, or the explicit overrides in your configuration. Main-board CS pins should also match the configuration.</li>
-              <li>If the ESP32 model, seating, and CS assignments are correct, try another known-good ESP32 with the correct firmware.</li>
-              <li>If an add-on still fails, move its CS jumper to a different unused, supported CS pin and update the configuration to match before rebuilding and installing. A fault that follows the GPIO points to the ESP32 pin or its connection; a fault that stays with the same add-on on a known-good GPIO points to that add-on board or meter chip.</li>
+              <li>Power down the meter and ESP32 before touching boards or jumpers. Do not touch exposed mains wiring.</li>
+              <li>Confirm the ESP32 model and firmware. Check orientation, seated and aligned header rows, bent pins, and contact.</li>
+              <li>For an affected add-on, check CS jumpers for position and contact. Match board/connection defaults or configuration overrides. Check main-board CS pins too.</li>
+              <li>If the model, seating, and CS assignments are correct, try a known-good ESP32 with the correct firmware.</li>
+              <li>If an add-on still fails, move its CS jumper to an unused supported pin and update the configuration before rebuilding and installing. A fault that follows the GPIO points to the ESP32 or link; one that stays with the add-on points to that board or meter chip.</li>
             </ol>
-            <p>After correcting the hardware or configuration, power up and use Retry Install. This uploads the firmware again and repeats startup verification.</p>
-          ` : html`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
+            <p>Fix the hardware or configuration, power up, and Retry verification. It rechecks installed firmware without another upload.</p>
+            <p>Back keeps this saved configuration for editing.</p>
+          ` : uploadRejected ? html`<p>Device Builder rejected the upload. Check its details${persistenceFailure ? "; the recovery record could not be cleared" : ""}. ${state === "failed" ? "Go Back and review before trying again." : "Retry installation sends the reviewed firmware again."}</p>` : uploadUnknown ? html`<p>The upload may have reached the meter. Retry installation sends the reviewed firmware again so completion can be confirmed. The saved YAML cannot be rolled back after an OTA attempt.</p>` : persistenceFailure ? unchanged ? html`<p>No firmware was installed. Go Back, reload the configuration, and confirm again.</p>` : deviceVerified ? html`<p>The meter accepted and verified the firmware. Retry completion to save the Helper data without uploading again, or use Back to reload the installed configuration.</p>` : html`<p>The firmware upload completed, but meter verification failed and the recovery record could not be cleared. Retry verification checks the meter without uploading again.</p>`
+            : html`<p>${status?.evidence.join(", ") || "The operation did not complete."}</p>`}
           ${status?.rollback_available ? html`<button class="danger" @click=${rollback} ?disabled=${busy}>${pendingAction === "rollback" ? "Rolling back…" : "Rollback"}</button>` : ""}
         </div>
       ` : ""}
-      ${validationFailed ? html`<div class="recovery-panel" role="status"><strong>ESPHome rejected the config (code ${status?.validation_detail?.code ?? "unavailable"})</strong><p>The original config was restored. Review the config changes and open ESPHome Device Builder logs for the exact validation error.</p></div>` : ""}
+      ${validationFailed ? html`<div class="recovery-panel" role="status"><strong>ESPHome rejected the config (code ${status?.validation_detail?.code ?? "unavailable"})</strong><p>Original config restored. Review the changes and open ESPHome Device Builder logs for the validation error.</p></div>` : ""}
+      ${status?.failure ? html`<div class="recovery-panel" role="status">
+        ${failureMessage && !uploadUnknown ? html`<p>${failureMessage}</p>` : html`<p>Open ESPHome Device Builder details for the failed operation.</p>`}
+        ${status.failure.context.map(([key, value]) => html`<p>${key === "secret_name" ? "Required secret" : key === "component" ? "Component" : key === "field" ? "Option" : "Package"}: <code>${value}</code></p>`)}
+      </div>` : ""}
       ${waitingForStartup ? html`<div class="job-progress" role="status" aria-live="polite">
-        <span>Meter is rebooting. Waiting for startup verification.</span>
+        <span>Meter rebooting; waiting for startup verification.</span>
         <progress max="100" aria-label="Waiting for meter startup"></progress>
       </div>` : ""}
-      <div class="confirmation-actions">
-        <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : "Apply"}</button>
-        <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : "Compile"}</button>
-        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "install_confirmation_required"}>${pendingAction === "install" ? "Installing…" : retryableInstall ? "Retry Install" : "Install"}</button>
-      </div>
+      ${unchanged ? html`<div class="confirmation-actions">
+        ${state === "previewed" ? html`<button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending}>${pendingAction === "apply" ? "Confirming…" : "Confirm unchanged configuration"}</button>` : ""}
+      </div>` : html`<div class="confirmation-actions">
+        <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : labels.apply}</button>
+        <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : labels.compile}</button>
+        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || (state !== "install_confirmation_required" && !retryClear)}>${pendingAction === "install" ? retryableInstall && !retryUpload ? "Checking…" : "Installing…" : retryClear ? "Retry clearing saved flash values" : retryUpload && state === "install_confirmation_required" ? "Retry installation" : persistenceFailure && deviceVerified ? "Retry completion" : retryableInstall ? "Retry verification" : labels.install}</button>
+      </div>`}
       ${status?.validation_detail ? html`<dl class="status-list evidence-list">
         <div><dt>Validation code</dt><dd>${status.validation_detail.code ?? "unavailable"}</dd></div>
         <div><dt>Errors</dt><dd>${status.validation_detail.error_record_count} records (${status.validation_detail.reported_error_count === null ? "unreported" : `${status.validation_detail.reported_error_count} reported`})</dd></div>

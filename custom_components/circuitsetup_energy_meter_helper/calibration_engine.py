@@ -24,6 +24,7 @@ from .entity_binding import (
     GroupBinding,
     MeterBinding,
     OffsetControlBinding,
+    OffsetRunControlBinding,
 )
 from .entity_catalog import EntityCatalog, EntityCatalogError
 from .esphome_api import ESPHomeSessionDisconnectedError
@@ -31,10 +32,13 @@ from .log_parser import (
     CalibrationLogLine,
     GainRunEvidence,
     LogEvidenceError,
+    OffsetClearEvidence,
     OffsetRunEvidence,
+    OffsetTableSnapshot,
     PowerOffsetRunEvidence,
     RestoreEvidence,
     parse_gain_run,
+    parse_offset_clear,
     parse_offset_run,
     parse_power_offset_run,
     parse_restore,
@@ -46,6 +50,15 @@ from .models import (
     StoredInterruptedSession,
 )
 from .offset_readiness import OffsetReadinessStage, async_check_offset_readiness
+from .offset_recovery import (
+    FIRST_CALIBRATION_CONFIGURATION,
+    ZERO_OFFSETS,
+    OffsetRecovery,
+    StockOffsetPreparation,
+    _allowed_observation_sources,
+    _validate_source,
+    source_offset_cs_pins,
+)
 from .preflight import (
     ReferenceZeroError,
     validate_offset_controls,
@@ -68,6 +81,7 @@ from .topology import (
 
 DEFAULT_EVIDENCE_TIMEOUT = 35.0
 _SUPPORTED_UPDATE_INTERVALS = frozenset((1, 2, 5, 10, 30, 60))
+_NATIVE_REVIEW_STALE_ERROR = "native offset review is stale; review readiness again"
 
 type MarkerWriter = Callable[[str, StoredInterruptedSession | None], Awaitable[None]]
 type VerifiedWriter = Callable[[VerifiedCalibrationRecord], Awaitable[None]]
@@ -88,6 +102,7 @@ class CalibrationState(StrEnum):
 
 
 class OffsetCalibrationState(StrEnum):
+    CAPTURED_PENDING_CONFIGURATION = "captured_pending_configuration"
     APPLIED_PENDING_RESTART_VERIFICATION = "applied_pending_restart_verification"
     PARTIAL = "partial"
     INDETERMINATE = "indeterminate"
@@ -250,6 +265,32 @@ class CalibrationEngine:
         *,
         substitutions: Mapping[str, str],
     ) -> RestartVerificationResult:
+        return await self._async_verify_after_restart(
+            mac, session, binding, substitutions=substitutions, gains_only=False
+        )
+
+    async def async_verify_gains_after_restart(
+        self,
+        mac: str,
+        session: Any,
+        binding: MeterBinding,
+        *,
+        substitutions: Mapping[str, str],
+    ) -> RestartVerificationResult:
+        """Verify real gains while retaining strict offsets in their original owner."""
+        return await self._async_verify_after_restart(
+            mac, session, binding, substitutions=substitutions, gains_only=True
+        )
+
+    async def _async_verify_after_restart(
+        self,
+        mac: str,
+        session: Any,
+        binding: MeterBinding,
+        *,
+        substitutions: Mapping[str, str],
+        gains_only: bool,
+    ) -> RestartVerificationResult:
         """Restart once and persist only exact flash evidence for changed groups."""
         if self._persist_verified is None:
             raise RestartVerificationError("verified calibration persistence is absent")
@@ -270,8 +311,14 @@ class CalibrationEngine:
                     "server-owned calibration origin is missing"
                 ) from error
             expected_gains = pending.expected_phase_gains
-            expected_offsets = pending.expected_phase_offsets
-            expected_power_offsets = pending.expected_phase_power_offsets
+            if gains_only and not expected_gains:
+                raise RestartVerificationError(
+                    "server-owned gain calibration is missing"
+                )
+            expected_offsets = {} if gains_only else pending.expected_phase_offsets
+            expected_power_offsets = (
+                {} if gains_only else pending.expected_phase_power_offsets
+            )
             expected_instance_ids = (
                 set(expected_gains)
                 | set(expected_offsets)
@@ -354,6 +401,9 @@ class CalibrationEngine:
                     session,
                     generation=generation,
                     expected_instance_ids=expected_instance_ids,
+                    allowed_instance_ids={
+                        _instance_id(group.key) for group in binding.groups
+                    },
                     expected_categories=expected_categories,
                     operation_sequence=operation_sequence,
                     started_after=restore_started,
@@ -407,9 +457,14 @@ class CalibrationEngine:
                     _require_connected_generation(session, generation)
                     await self._persist_verified(record)
                     _require_connected_generation(session, generation)
-                    self.sessions.consume_calibration_origin(
-                        lease, pending.operation_id, pending.revision
-                    )
+                    if gains_only:
+                        self.sessions.consume_calibration_gains(
+                            lease, pending.operation_id, pending.revision
+                        )
+                    else:
+                        self.sessions.consume_calibration_origin(
+                            lease, pending.operation_id, pending.revision
+                        )
                     consumed = True
                     return RestartVerificationResult(record, rebound)
             except ESPHomeSessionDisconnectedError as error:
@@ -549,6 +604,7 @@ class CalibrationEngine:
         *,
         confirm_retry: bool = False,
         timing_policy: CalibrationTimingPolicy | None = None,
+        stage_one_configured: bool = False,
     ) -> OffsetCalibrationResult:
         """Run one offset stage for both chips on a selected board."""
         if stage not in (1, 2):
@@ -556,10 +612,15 @@ class CalibrationEngine:
         if board_index < 0:
             raise ValueError("board_index must be non-negative")
         issues = validate_offset_controls(binding)
-        if issues:
+        if issues or not binding.offset_capability.controls or any(
+            not isinstance(control, OffsetControlBinding)
+            for control in binding.offset_capability.controls
+        ):
             raise CalibrationError(
                 "offset controls are not ready: "
                 + "; ".join(issue.detail for issue in issues)
+                if issues
+                else "offset clear controls are not ready"
             )
         self._validate_binding_generation(session, binding)
         start = board_index * 2
@@ -581,7 +642,7 @@ class CalibrationEngine:
             if origin is not None:
                 origin = await self._calibration_origin(lease, session, binding)
             expected = _pending_offset_tables(origin, stage)
-            if stage == 2 and not all(
+            if stage == 2 and not stage_one_configured and not all(
                 origin is not None and instance_id in origin.expected_phase_offsets
                 for _, _, instance_id in selected
             ):
@@ -682,6 +743,435 @@ class CalibrationEngine:
             )
         finally:
             lease.release()
+
+    async def async_calibrate_prepared_offset_board(
+        self,
+        mac: str,
+        session: Any,
+        binding: MeterBinding,
+        board_index: int,
+        preparation: StockOffsetPreparation,
+        recovery: OffsetRecovery,
+        *,
+        source_reader: Callable[[], Awaitable[ESPHomeConfigSnapshot]],
+        claim_guard: Callable[[], None] = lambda: None,
+        timing_policy: CalibrationTimingPolicy | None = None,
+        stage_one_configured: bool = False,
+    ) -> OffsetCalibrationResult:
+        """Capture stock candidates through a backed-up native or legacy preparation.
+
+        No runtime clear authorization survives this leased call. Failed or cancelled
+        attempts require a new reviewed preparation, never an automatic retry.
+        """
+        self._validate_binding_generation(session, binding)
+        if validate_offset_controls(binding):
+            raise CalibrationError("offset controls are not ready")
+        if (
+            type(board_index) is not int
+            or not 0 <= board_index < binding.topology.board_count
+        ):
+            raise ValueError("invalid offset board")
+        stage = preparation.stage
+        start = board_index * 2
+        controls: tuple[OffsetControlBinding | OffsetRunControlBinding, ...] = (
+            binding.offset_capability.controls
+            if binding.offset_capability.controls
+            else binding.offset_capability.run_controls
+        )
+        if preparation.mode != "native" and not binding.offset_capability.controls:
+            raise CalibrationError("offset clear controls are not ready")
+        selected = tuple(
+            (group, control, _instance_id(group.key))
+            for group, control in zip(
+                binding.groups[start : start + 2],
+                controls[start : start + 2],
+                strict=True,
+            )
+        )
+        if not set(preparation.targets) <= {item[2] for item in selected}:
+            raise ValueError("preparation targets changed")
+        lease = await self.sessions.async_acquire_calibration(mac)
+        try:
+            generation = binding.connection_generation
+            target_cs_pins: dict[str, int] = {}
+
+            async def read_snapshot(
+                instance: str, offset_stage: OffsetReadinessStage
+            ) -> Any:
+                try:
+                    snapshots = await session.async_offset_table_snapshot(
+                        {instance},
+                        offset_stage=offset_stage,
+                        require_communication=True,
+                        expected_cs_pins=frozenset({target_cs_pins[instance]}),
+                    )
+                    if not isinstance(snapshots, dict) or set(snapshots) != {instance}:
+                        raise CalibrationInvariantError(
+                            "offset snapshot response is incomplete"
+                        )
+                    return snapshots.get(instance)
+                except Exception:  # noqa: BLE001 - never reflect native logs from failed snapshots
+                    raise CalibrationError(
+                        "fresh saved offset tables are unavailable"
+                    ) from None
+
+            async def reconcile() -> ESPHomeConfigSnapshot:
+                claim_guard()
+                _require_connected_generation(session, generation)
+                record = await recovery.async_require(
+                    lease, preparation, installed=preparation.mode != "native"
+                )
+                if (
+                    preparation.mode == "native"
+                    and preparation.generation != generation
+                ):
+                    raise ValueError("preparation connection generation changed")
+                if replace(record.topology, evidence=()) != replace(
+                    binding.topology, evidence=()
+                ):
+                    raise ValueError("preparation topology changed")
+                try:
+                    source = await source_reader()
+                    _validate_source(source, binding.topology)
+                except Exception:  # noqa: BLE001 - source transport/parser may contain private YAML
+                    raise CalibrationError(
+                        "authoritative preparation source is unavailable"
+                    ) from None
+                if (
+                    source.configuration != record.original.configuration
+                    or source.sha256 != preparation.proposed_sha256
+                ):
+                    raise ValueError("preparation source changed")
+                claim_guard()
+                _require_connected_generation(session, generation)
+                return source
+
+            source = await reconcile()
+            record = await recovery.async_require(
+                lease, preparation, installed=preparation.mode != "native"
+            )
+            try:
+                target_cs_pins = source_offset_cs_pins(
+                    source,
+                    binding.topology,
+                    {instance for _, _, instance in selected}
+                    | {item.instance_id for item in record.results},
+                )
+            except Exception:  # noqa: BLE001 - source parser details stay private
+                raise CalibrationError(
+                    "authoritative offset chip mapping is unavailable"
+                ) from None
+            allowed_sources = _allowed_observation_sources(record)
+            source_bound: dict[tuple[str, int], OffsetTableSnapshot] = {}
+            for item in record.observations:
+                if (
+                    item.source_sha256 in allowed_sources
+                    and item.snapshot.reported_state
+                    in (
+                        "restored",
+                        "mismatch",
+                        "configuration",
+                        FIRST_CALIBRATION_CONFIGURATION,
+                    )
+                ):
+                    source_bound.setdefault(
+                        (item.snapshot.instance_id, item.snapshot.offset_stage),
+                        item.snapshot,
+                    )
+            expected = {
+                item.instance_id: item.phase_values
+                for item in record.results
+                if item.stage == stage
+            }
+            pending = self.sessions.pending_calibration(mac)
+            if pending is not None:
+                expected.update(_pending_offset_tables(pending, stage))
+            unfinished = {
+                instance for _, _, instance in selected if instance not in expected
+            }
+            if unfinished != set(preparation.targets) - set(expected):
+                raise ValueError("preparation does not cover unfinished chips")
+            if unfinished.intersection(record.attempted):
+                raise ValueError(
+                    "offset chip already attempted; new preparation required"
+                )
+            clear_targets = (
+                set(preparation.targets)
+                if preparation.mode != "native"
+                else set(preparation.clear_targets)
+            )
+            if not clear_targets <= set(preparation.targets):
+                raise ValueError("preparation clear targets changed")
+            for completed in record.results:
+                observed = await read_snapshot(completed.instance_id, completed.stage)
+                if observed is None and completed.phase_values == ZERO_OFFSETS:
+                    # Stock cannot restore-prove an all-zero table. Retain the
+                    # candidate for configuration handoff; never clear/rerun it.
+                    continue
+                if (
+                    observed is None
+                    or observed.phase_values != completed.phase_values
+                    or observed.connection_generation != generation
+                    or observed.instance_id != completed.instance_id
+                    or observed.offset_stage != completed.stage
+                ):
+                    raise ValueError(
+                        "completed offset candidate needs device reconciliation"
+                    )
+            stage_one = {item.instance_id for item in record.results if item.stage == 1}
+            if pending is not None:
+                stage_one.update(pending.expected_phase_offsets)
+            if stage == 2 and not stage_one_configured and not {item[2] for item in selected} <= stage_one:
+                raise ValueError("Stage 1 must complete for both selected chips")
+            for _, _, instance in selected:
+                if instance not in unfinished:
+                    continue
+                snapshot = await read_snapshot(instance, stage)
+                source_configuration = snapshot is None
+                if source_configuration:
+                    snapshot = source_bound.get((instance, stage))
+                if (
+                    snapshot is None
+                    or not source_configuration
+                    and snapshot.connection_generation != generation
+                    or snapshot.instance_id != instance
+                    or snapshot.offset_stage != stage
+                ):
+                    raise ValueError("fresh saved offset table is unavailable")
+                source = await reconcile()
+                if not source_configuration:
+                    await recovery.async_backup(
+                        lease, source, binding.topology, (snapshot,)
+                    )
+                if (
+                    preparation.mode == "native"
+                    and instance not in clear_targets
+                    and (
+                        snapshot is None
+                        or snapshot.reported_state != FIRST_CALIBRATION_CONFIGURATION
+                        or snapshot.phase_values != ZERO_OFFSETS
+                    )
+                ):
+                    raise CalibrationError(_NATIVE_REVIEW_STALE_ERROR)
+            # The fresh source receipt is the only permitted origin rebase.
+            if pending is not None:
+                self.sessions.rebind_prepared_calibration(
+                    lease, session, binding, source, record
+                )
+            readiness = await async_check_offset_readiness(
+                session,
+                binding,
+                board_index,
+                stage,
+                timeout=self._sensor_timeout(timing_policy),
+            )
+            if not readiness.ready or readiness.connection_generation != generation:
+                raise CalibrationError("offset physical readiness failed")
+            if unfinished:
+                await self._persist_interrupted(
+                    mac,
+                    self._marker(
+                        tuple(
+                            _channel_number(ref)
+                            for group, _, instance in selected
+                            if instance in unfinished
+                            for ref in group.current_references
+                        )
+                    ),
+                )
+            async with zero_reference_guard(_BoundZeroer(self, binding, {}), session):
+                for _, control, instance in selected:
+                    if instance not in unfinished:
+                        continue
+                    try:
+                        await reconcile()
+                        await recovery.async_begin_attempt(lease, preparation, instance)
+                        await reconcile()
+                        if instance in clear_targets:
+                            if not isinstance(control, OffsetControlBinding):
+                                raise CalibrationInvariantError(
+                                    "native clear control is unavailable"
+                                )
+                            clear = await self._prepared_offset_action(
+                                mac,
+                                session,
+                                control.restore_offset
+                                if stage == 1
+                                else control.restore_power_offset,
+                                instance,
+                                stage,
+                                generation,
+                                clear=True,
+                                timing_policy=timing_policy,
+                            )
+                            if (
+                                not isinstance(clear, OffsetClearEvidence)
+                                or clear.phase_values != ZERO_OFFSETS
+                            ):
+                                if (
+                                    isinstance(clear, OffsetClearEvidence)
+                                    and clear.phase_values != ZERO_OFFSETS
+                                ):
+                                    raise CalibrationInvariantError(
+                                        "Native clear restored nonzero configuration offsets; calibration was not run."
+                                    )
+                                raise CalibrationInvariantError(
+                                    "clear did not report exact zero offsets"
+                                )
+                            # no_stored is a no-op, never a flash erase/readback assertion.
+                            await reconcile()
+                            readiness = await async_check_offset_readiness(
+                                session,
+                                binding,
+                                board_index,
+                                stage,
+                                timeout=self._sensor_timeout(timing_policy),
+                            )
+                            if (
+                                not readiness.ready
+                                or readiness.connection_generation != generation
+                            ):
+                                raise CalibrationError(
+                                    "offset physical readiness changed after clear"
+                                )
+                        await reconcile()
+                        evidence = await self._prepared_offset_action(
+                            mac,
+                            session,
+                            control.run_offset
+                            if stage == 1
+                            else control.run_power_offset,
+                            instance,
+                            stage,
+                            generation,
+                            clear=False,
+                            timing_policy=timing_policy,
+                        )
+                        if (
+                            not isinstance(
+                                evidence, (OffsetRunEvidence, PowerOffsetRunEvidence)
+                            )
+                            or not evidence.flash_saved
+                        ):
+                            raise CalibrationInvariantError("offset save is absent")
+                        await reconcile()
+                        table = _offset_table(evidence)
+                        await recovery.async_capture_result(
+                            lease,
+                            preparation,
+                            instance,
+                            table,
+                            generation,
+                            evidence.register_verified,
+                        )
+                        expected[instance] = table
+                    except Exception as error:  # noqa: BLE001 - return no raw device/storage errors
+                        error_message = (
+                            str(error)
+                            if str(error)
+                            in {
+                                "Native clear restored nonzero configuration offsets; calibration was not run.",
+                                _NATIVE_REVIEW_STALE_ERROR,
+                            }
+                            else "stock offset action is indeterminate; retained recovery required"
+                        )
+                        return replace(
+                            _offset_result(
+                                OffsetCalibrationState.PARTIAL
+                                if any(item[2] in expected for item in selected)
+                                else OffsetCalibrationState.INDETERMINATE,
+                                board_index,
+                                stage,
+                                selected,
+                                expected,
+                                error=error_message,
+                            ),
+                            retry_allowed=False,
+                        )
+            return replace(
+                _offset_result(
+                    OffsetCalibrationState.CAPTURED_PENDING_CONFIGURATION,
+                    board_index,
+                    stage,
+                    selected,
+                    expected,
+                ),
+                retry_allowed=False,
+            )
+        finally:
+            lease.release()
+
+    async def _prepared_offset_action(
+        self,
+        mac: str,
+        session: Any,
+        button: BoundEntity,
+        instance: str,
+        stage: OffsetReadinessStage,
+        generation: int,
+        *,
+        clear: bool,
+        timing_policy: CalibrationTimingPolicy | None,
+    ) -> OffsetClearEvidence | OffsetRunEvidence | PowerOffsetRunEvidence:
+        """Accumulate a bounded continuous ring window; parse only at its end."""
+        sequence = self._next_sequence(mac)
+        previous = tuple(session.log_lines)
+        dispatched_after = monotonic()
+        captured: list[CalibrationLogLine] = []
+        size = 0
+        _require_connected_generation(session, generation)
+        await session.async_press_button(
+            button.descriptor.key, device_id=button.descriptor.device_id
+        )
+        deadline = monotonic() + self._evidence_timeout_for(timing_policy)
+        while True:
+            _require_connected_generation(session, generation)
+            current = tuple(session.log_lines)
+            if current[: len(previous)] == previous:
+                additions = current[len(previous) :]
+            else:
+                overlaps = [
+                    count
+                    for count in range(1, min(len(previous), len(current)) + 1)
+                    if previous[-count:] == current[:count]
+                ]
+                if len(overlaps) != 1:
+                    raise CalibrationInvariantError("offset log continuity was lost")
+                additions = current[overlaps[0] :]
+            for line in additions:
+                size += len(line.encode())
+                if len(captured) >= 4096 or size > 512 * 1024:
+                    raise CalibrationInvariantError(
+                        "offset observation window overflowed"
+                    )
+                captured.append(
+                    CalibrationLogLine(generation, sequence, monotonic(), line)
+                )
+            previous = current
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(0.005, remaining))
+        if clear:
+            return parse_offset_clear(
+                captured,
+                offset_stage=stage,
+                connection_generation=generation,
+                operation_sequence=sequence,
+                target_instance_id=instance,
+                button_name=button.descriptor.name,
+                dispatched_after=dispatched_after,
+            )
+        parser = parse_offset_run if stage == 1 else parse_power_offset_run
+        return parser(
+            captured,
+            allow_unverified=True,
+            connection_generation=generation,
+            operation_sequence=sequence,
+            target_instance_id=instance,
+            button_name=button.descriptor.name,
+            dispatched_after=dispatched_after,
+        )
 
     async def async_calibrate_voltage(
         self,
@@ -1105,6 +1595,9 @@ class CalibrationEngine:
                 expected_instance_ids={
                     instance_id for _group, instance_id, _sequence, _after in runs
                 },
+                allowed_instance_ids={
+                    _instance_id(group.key) for group in zeroer.binding.groups
+                },
                 expected_categories={
                     instance_id: {"gain"}
                     for _group, instance_id, _sequence, _after in runs
@@ -1267,6 +1760,7 @@ class CalibrationEngine:
                 raise ESPHomeSessionDisconnectedError(
                     "connection ended before complete offset evidence"
                 )
+            self._validate_offset_generation(session, generation)
             new_lines = _new_log_lines(baseline, tuple(session.log_lines))
             correlated = tuple(
                 CalibrationLogLine(
@@ -1285,6 +1779,7 @@ class CalibrationEngine:
                     target_instance_id=instance_id,
                     button_name=button_name,
                     dispatched_after=dispatched_after,
+                    allow_unverified=monotonic() >= deadline,
                 )
             except LogEvidenceError:
                 remaining = deadline - monotonic()
@@ -1311,12 +1806,13 @@ class CalibrationEngine:
                 target_instance_id=instance_id,
                 button_name=button_name,
                 dispatched_after=dispatched_after,
+                timeout=self._evidence_timeout if timeout is None else timeout,
             )
 
             async def wait_for_evidence() -> GainRunEvidence:
                 try:
                     async with asyncio.timeout(
-                        self._evidence_timeout if timeout is None else timeout
+                        (self._evidence_timeout if timeout is None else timeout) + 0.1
                     ):
                         return await evidence
                 finally:
@@ -1401,6 +1897,7 @@ class CalibrationEngine:
         *,
         generation: int,
         expected_instance_ids: set[str],
+        allowed_instance_ids: set[str],
         expected_categories: dict[str, set[Literal["gain", "offset", "power_offset"]]],
         operation_sequence: int,
         started_after: float,
@@ -1420,6 +1917,7 @@ class CalibrationEngine:
                     await wait(
                         connection_generation=generation,
                         expected_instance_ids=expected_instance_ids,
+                        allowed_instance_ids=allowed_instance_ids,
                         expected_categories=expected_categories,
                         operation_sequence=operation_sequence,
                         started_after=started_after,
@@ -1450,6 +1948,7 @@ class CalibrationEngine:
             correlated,
             connection_generation=generation,
             expected_instance_ids=expected_instance_ids,
+            allowed_instance_ids=allowed_instance_ids,
             started_after=started_after,
             operation_sequence=operation_sequence,
             expected_categories=expected_categories,
@@ -1726,7 +2225,9 @@ def _offset_result(
     state: OffsetCalibrationState,
     board_index: int,
     stage: OffsetReadinessStage,
-    selected: Sequence[tuple[GroupBinding, OffsetControlBinding, str]],
+    selected: Sequence[
+        tuple[GroupBinding, OffsetControlBinding | OffsetRunControlBinding, str]
+    ],
     expected: Mapping[str, PhaseOffsetTable | PhasePowerOffsetTable],
     *,
     error: str | None = None,

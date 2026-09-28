@@ -371,3 +371,16 @@ def test_every_builder_dependent_operation_evaluates_builder_repair() -> None:
         "start_session",
     ):
         assert "device_builder_unavailable" in repairs._OPERATION_ISSUES[operation]
+
+
+def test_builder_repair_supplies_installation_link() -> None:
+    async def run():
+        flow = await repairs.async_create_fix_flow(
+            None, "device_builder_unavailable_entry", None
+        )
+        result = await flow.async_step_init()
+        assert result["description_placeholders"] == {
+            "installation_url": "https://esphome.io/install/"
+        }
+
+    asyncio.run(run())

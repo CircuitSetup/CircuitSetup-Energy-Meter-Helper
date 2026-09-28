@@ -25,11 +25,11 @@ describe("meterSettingsStep", () => {
     expect(options.querySelector('[aria-label="main phase label"]')?.getAttribute("aria-describedby")).toBe("main-phase-help");
     expect(options.querySelector("#main-phase-help")?.textContent).toContain("does not change wiring or assign CT groups");
     expect(options.querySelector("#new-reference-help")?.textContent).toContain("then click Add voltage reference");
-    expect(options.querySelector("#voltage-assignment-help")?.textContent).toContain("Selecting a reference updates the draft immediately");
-    expect(options.querySelector("#voltage-assignment-help")?.textContent).toContain("click Apply to save");
+    expect(options.querySelector("#voltage-assignment-help")?.textContent).toContain("Changes update the draft");
+    expect(options.querySelector("#voltage-assignment-help")?.textContent).toContain("then Apply");
     expect(options.querySelector("#voltage-assignment-help")?.textContent).toContain("Compile and Install");
     expect(options.querySelector('[aria-label="Reporting interval"]')).toBeNull();
-    expect(root.querySelector(".package-options")?.textContent).toContain("used with the CircuitSetup Energy Analyzer");
+    expect(root.querySelector(".package-options")?.textContent).toContain("reactive power, apparent power, and power factor");
   });
 
   it("moves a voltage group atomically and requires multi-reference acknowledgement", () => {
@@ -65,12 +65,29 @@ describe("meterSettingsStep", () => {
     expect(root.textContent).toContain("1–5 seconds: high traffic.");
   });
 
+  it("keeps advanced voltage fields in top-aligned columns", () => {
+    const root = document.createElement("div");
+    render(meterSettingsStep({ ...draft, electrical_system: "custom", voltage_references: [{
+      ...draft.voltage_references[0]!, transformer_model_id: "custom",
+    }] }, catalog, true, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined), root);
+    const card = root.querySelector<HTMLElement>(".voltage-reference-card")!;
+    expect(card.querySelectorAll(".voltage-reference-column")).toHaveLength(2);
+    expect([...card.querySelectorAll(".voltage-reference-column:first-child label")].map((label) => label.textContent?.trim().split(" ")[0]))
+      .toEqual(["Label", "Nominal", "Custom"]);
+    expect(card.querySelector(".voltage-phase-column")?.querySelector("label")?.textContent).toContain("Phase label");
+  });
+
   it("shows the reporting default and derives voltage for fixed profiles", () => {
     const root = document.createElement("div");
     const standard = { ...draft, update_interval_s: 10 as const };
     render(meterSettingsStep(standard, catalog, true, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined), root);
     expect(root.textContent).toContain("Reporting interval (default: 10 seconds)");
     expect(root.textContent).not.toContain("10 seconds: standard");
+    expect(root.textContent).toContain("Nominal voltage: 120 V");
+    expect(root.querySelector('[aria-label="main nominal voltage"]')).toBeNull();
+
+    render(meterSettingsStep({ ...standard, electrical_system: "single_phase_230" }, catalog, true, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined), root);
+    expect(root.textContent).toContain("Nominal voltage: 230 V");
     expect(root.querySelector('[aria-label="main nominal voltage"]')).toBeNull();
 
     render(meterSettingsStep({ ...standard, electrical_system: "custom" }, catalog, true, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined), root);
@@ -89,6 +106,63 @@ describe("meterSettingsStep", () => {
     renderStep({ ...draft, line_frequency_hz: 50, update_interval_s: 30 });
     expect(root.querySelector<HTMLSelectElement>('[aria-label="Line frequency"] option:checked')?.value).toBe("50");
     expect(root.querySelector<HTMLSelectElement>('[aria-label="Reporting interval"] option:checked')?.value).toBe("30");
+  });
+
+  it("collapses advanced settings and only shows editable gain for custom transformers", () => {
+    const root = document.createElement("div");
+    render(meterSettingsStep(draft, catalog, true, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined), root);
+    expect(root.querySelector("details[data-section=advanced-meter-settings]")).not.toBeNull();
+    expect(root.querySelector('[aria-label="main custom voltage gain"]')).toBeNull();
+    expect(root.textContent).toContain("Starting gain: 7305");
+  });
+
+  it("keeps only the five guided fields outside collapsed advanced controls", () => {
+    const root = document.createElement("div");
+    render(meterSettingsStep(draft, catalog, true, () => undefined, () => undefined, () => undefined,
+      () => undefined, () => undefined, () => undefined, () => undefined, null, () => undefined, false), root);
+
+    const advanced = [...root.querySelectorAll<HTMLDetailsElement>("details")];
+    expect(advanced.map((section) => section.open)).toEqual([false, false]);
+    expect([...root.querySelectorAll(".step-content > .meter-settings-grid > label")].map((label) => label.childNodes[0]?.textContent?.trim()))
+      .toEqual(["Friendly name", "Electrical system", "Line frequency (N. America: 60Hz)",
+        "Reporting interval (default: 10 seconds)", "Transformer"]);
+    expect(root.querySelector('[aria-label="main transformer"]')?.closest("details")).toBeNull();
+    expect(root.querySelector('[aria-label="main phase label"]')?.closest("details")?.dataset.section)
+      .toBe("advanced-voltage-options");
+    expect(root.querySelector('[aria-label="main_1 voltage reference"]')?.closest("details")?.dataset.section)
+      .toBe("advanced-voltage-options");
+    expect(root.querySelector<HTMLInputElement>('[aria-label="Confirm electrical profile"]')?.checked).toBe(false);
+    expect(root.querySelector<HTMLButtonElement>('[data-action="continue-meter-settings"]')?.disabled).toBe(true);
+  });
+
+  it.each(["new install", "legacy management"])("requires electrical-profile confirmation for %s", (_mode) => {
+    const root = document.createElement("div");
+    render(meterSettingsStep(draft, catalog, true, () => undefined, () => undefined, () => undefined,
+      () => undefined, () => undefined, () => undefined, () => undefined, null, () => undefined, false,
+      () => undefined, "legacy_editable"), root);
+
+    expect(root.querySelector<HTMLButtonElement>('[data-action="continue-meter-settings"]')?.disabled).toBe(true);
+  });
+
+  it("allows an unchanged helper-managed profile to continue", () => {
+    const root = document.createElement("div");
+    render(meterSettingsStep(draft, catalog, true, () => undefined, () => undefined, () => undefined,
+      () => undefined, () => undefined, () => undefined, () => undefined, null, () => undefined, true,
+      () => undefined, "helper_managed"), root);
+
+    expect(root.querySelector<HTMLButtonElement>('[data-action="continue-meter-settings"]')?.disabled).toBe(false);
+  });
+
+  it("keeps package and multi-reference wiring controls in advanced sections", () => {
+    const root = document.createElement("div");
+    render(meterSettingsStep({ ...draft, electrical_system: "custom" }, catalog, true, () => undefined,
+      () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined,
+      { power_quality: [false], status_fields: [true] }, () => undefined), root);
+
+    expect(root.querySelector(".package-options")?.closest("details")?.dataset.section).toBe("advanced-meter-settings");
+    expect(root.querySelector('[aria-label="main phase label"]')?.closest("details")?.dataset.section).toBe("advanced-voltage-options");
+    expect(root.querySelector('[aria-label="main_1 voltage reference"]')?.closest("details")?.dataset.section).toBe("advanced-voltage-options");
+    expect(root.querySelector('[aria-label="main nominal voltage"]')?.closest("details")?.dataset.section).toBe("advanced-voltage-options");
   });
 
   it("adds and removes references by explicitly transferring physical groups", () => {

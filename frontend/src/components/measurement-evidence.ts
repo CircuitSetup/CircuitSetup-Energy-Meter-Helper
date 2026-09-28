@@ -7,10 +7,11 @@ export function calibrationProgress(
   referenceReady: boolean,
   stability: StabilityResult | null,
   result: CalibrationResult | null,
+  plan: "standard" | "full" | null = "full",
 ): TemplateResult {
-  const complete = [referenceReady, Boolean(stability?.stable), Boolean(result), Boolean(result?.gain_evidence), Boolean(result)];
+  const labels = plan === "standard" ? ["Set reference", "Check stability", "Run calibration", "Verify gain"] : ["Set reference", "Check stability", "Run calibration", "Verify gain", "Zero reference"];
+  const complete = labels.map((_, index) => index < 4 ? [referenceReady, Boolean(stability?.stable), Boolean(result), Boolean(result?.gain_evidence)][index]! : Boolean(result));
   const active = complete.findIndex((value) => !value);
-  const labels = ["Set reference", "Check stability", "Run calibration", "Verify gain", "Zero reference"];
   return html`<ol class="progress-steps">${labels.map((label, index) => html`<li
     class=${complete[index] ? "complete" : index === active ? "active" : "pending"}><span
       class="progress-number">${index + 1}</span><span>${label}</span></li>`)}</ol>`;
@@ -28,7 +29,7 @@ export function calibrationSourceEvidence(
     <h3>Active gain source</h3>
     ${sources.length ? html`<table><thead><tr><th>Chip</th><th>Active gain source</th><th>${target} calibrated this session</th></tr></thead><tbody>
       ${sources.map(([instance, source]) => html`<tr><td>${instance}</td><td>${source === "flash" ? "Saved flash" : source === "configuration" ? "Configuration" : "Unknown"}</td><td>${completedInstanceIds.has(instance) ? "Yes" : "No"}</td></tr>`)}
-    </tbody></table><p>ATM90E32 stores voltage and current gains in one table. The active source does not mean this calibration step was completed.</p>` : html`<p>Calibration source is not available.</p>`}
+    </tbody></table><p>ATM90E32 stores voltage and current gains together. Active source does not mean this step completed.</p>` : html`<p>Calibration source is not available.</p>`}
   </section>`;
 }
 
@@ -49,7 +50,7 @@ export function calibrationEvidence(result: CalibrationResult | null): TemplateR
   return html`<section class="measurement-evidence" aria-label="Calibration evidence">
     <h3>Calibration iteration ${result.iteration}</h3>
     <dl>
-      <div><dt>State</dt><dd>${result.state}</dd></div>
+        <details><summary>Technical details</summary><div><dt>Backend state</dt><dd>${result.state}</dd></div></details>
       <div><dt>Changed channels</dt><dd>${result.changed_channels.join(", ") || "None"}</dd></div>
       <div><dt>Before</dt><dd>${result.before_values.map(formatNumber).join(", ") || "Unavailable"}</dd></div>
       <div><dt>After</dt><dd>${result.after_values.map(formatNumber).join(", ") || "Unavailable"}</dd></div>

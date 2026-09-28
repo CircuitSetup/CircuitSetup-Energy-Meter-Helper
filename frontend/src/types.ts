@@ -17,6 +17,7 @@ export type VoltageLayout = "standard" | "multi_reference" | "custom";
 export type CircuitRole = "grid" | "solar" | "generator" | "subpanel" | "branch" | "two_pole" | "custom" | "unused";
 export type MeasurementMethod = "direct" | "two_ct_sum" | "one_ct_double_power" | "both_conductors_one_ct";
 export type EnergyMode = "none" | "consumption" | "bidirectional" | "generation";
+export type TotalOrigin = "advanced" | "migrated";
 
 export type SetupState =
   | "no_device"
@@ -44,6 +45,14 @@ export interface DiscoveredDevice {
   project_version: string | null;
   importable: boolean | null;
   configuration: string | null;
+}
+
+export interface ExistingDeviceCandidate {
+  entry_id: string;
+  title: string;
+  project_name: string | null;
+  project_version: string | null;
+  compatibility: string[];
 }
 
 export interface InstallerIntent {
@@ -98,26 +107,145 @@ export interface CircuitAggregate {
   aggregate_id: string;
   name: string;
   role: CircuitRole;
-  channels: number[];
+  sources: TotalSource[];
   measurement_method: MeasurementMethod;
-  parent_id: string | null;
   energy_mode: EnergyMode;
-  expose_power: boolean;
-  expose_current: boolean;
+  outputs: TotalOutputSettings;
+  origin: TotalOrigin;
+}
+
+export interface TotalOutputSettings {
+  watts: boolean;
+  amps: boolean;
+  kwh: boolean;
+}
+
+export interface BoardTotalSettings {
+  board_index: number;
+  outputs: TotalOutputSettings;
+}
+
+export interface DefaultTotalsSettings {
+  overall: TotalOutputSettings;
+  boards: BoardTotalSettings[];
+}
+
+export type TotalSource =
+  | { kind: "channel"; channel: number }
+  | { kind: "native_total"; source_id: string }
+  | { kind: "aggregate"; aggregate_id: string };
+
+export interface AutomaticTotalSettings {
+  candidate_id: string;
+  enabled: boolean;
+  outputs: TotalOutputSettings;
+  name?: string;
 }
 
 export interface MeterConfigurationRequest {
   meter: MeterSettings;
   channels: ChannelSettings[];
+  default_totals: DefaultTotalsSettings;
+  automatic_totals: AutomaticTotalSettings[];
   aggregates: CircuitAggregate[];
   power_quality: boolean[];
   status_fields: boolean[];
   multi_reference_preparation_acknowledged?: boolean;
+  totals_change_intent?: TotalsChangeIntent;
+}
+
+export interface TotalsChangeIntent {
+  adopt_managed_totals: boolean;
+  legacy_parent_decisions: Array<{ child_id: string; proposed_parent_id: string; accepted: boolean }>;
+}
+
+export interface NativeTotalDefinition {
+  source_id: string;
+  label: string;
+  leaf_channels: number[];
+  power_id: string;
+  current_id: string;
+  existing_energy_id: string | null;
+  upstream_defaults: TotalOutputSettings;
+}
+
+export interface AutomaticTotalCandidate {
+  candidate_id: string;
+  aggregate_id: string;
+  name: string;
+  role: CircuitRole;
+  sources: Array<{ kind: "channel"; channel: number }>;
+  measurement_method: MeasurementMethod;
+  energy_mode: EnergyMode;
+  recommended_outputs: TotalOutputSettings;
+}
+
+export interface ResolvedAutomaticTotal {
+  candidate: AutomaticTotalCandidate;
+  enabled: boolean;
+  outputs: TotalOutputSettings;
+}
+
+export interface TotalsInventory {
+  native_sources: NativeTotalDefinition[];
+  automatic_candidates: AutomaticTotalCandidate[];
+  automatic_totals: ResolvedAutomaticTotal[];
+  stale_automatic_total_settings: AutomaticTotalSettings[];
+  migration: {
+    parent_review_required: boolean;
+    legacy_parent_links: Array<{ child_id: string; proposed_parent_id: string }>;
+    native_visibility_confirmation_required: boolean;
+    native_visibility_resolved: boolean;
+  };
+}
+
+interface TotalOutputEvidence {
+  total_id: string;
+  ownership: "helper_managed" | "source_owned";
+  public_outputs: string[];
+  internal_outputs: string[];
+  unverified_outputs: string[];
+}
+
+export type TotalSummary = TotalOutputEvidence &
+  ({ kind: "aggregate" } | { kind: "native_total"; native_sources: string[] });
+
+export interface TotalGraphPreview {
+  configuration_impact: ConfigurationImpact;
+  plan_id: string;
+  source_sha256: string;
+  automatic_candidates: AutomaticTotalCandidate[];
+  automatic_totals: ResolvedAutomaticTotal[];
+  stale_automatic_total_settings: AutomaticTotalSettings[];
+  graph: {
+    native_visibility: Array<{ sensor_id: string; internal: boolean }>;
+    ordered_nodes: Array<{
+      aggregate: CircuitAggregate; power_id: string; current_id: string;
+      sources: Array<{ label: string; power_id: string; current_id: string; leaf_channels: number[] }>;
+      power_required: boolean; current_required: boolean; energy_required: boolean;
+    }>;
+    leaf_channels: Record<string, number[]>;
+    independent_overlap_warnings: Array<{ first_id: string; second_id: string; leaf_channels: number[] }>;
+  };
 }
 
 export interface BoardPackageOptions {
   power_quality: boolean[];
   status_fields: boolean[];
+}
+
+export type PackageCapabilityState = "already_present" | "available_to_prepare" | "cannot_safely_manage";
+
+export interface CalibrationPreparationCapability {
+  state: PackageCapabilityState;
+  reason_code: string;
+}
+
+export interface PackageCapability {
+  feature: keyof BoardPackageOptions;
+  board_index: number;
+  state: PackageCapabilityState;
+  reason_code: string;
 }
 
 export interface SetupSnapshot {
@@ -154,6 +282,18 @@ export interface TopologyResult {
   configuration_authoritative?: boolean;
   topology?: MeterTopology;
   package_options?: BoardPackageOptions;
+  package_capabilities?: PackageCapability[];
+  calibration_preparation?: CalibrationPreparationCapability;
+}
+
+export interface ExistingMeterInspection {
+  device: ExistingDeviceCandidate;
+  configuration: string;
+  source_sha256: string;
+  topology: MeterTopology;
+  package_options: BoardPackageOptions;
+  package_capabilities: PackageCapability[];
+  calibration_preparation: CalibrationPreparationCapability;
 }
 
 export interface ChannelAddress {
@@ -217,12 +357,22 @@ export interface VoltageTransformerCatalog {
 
 export interface MeterConfigurationCapabilities {
   configuration_authoritative: boolean;
-  managed_totals: boolean;
+  native_totals_readable: boolean;
+  native_totals_writable: boolean;
+  managed_automatic_totals: boolean;
+  managed_advanced_totals: boolean;
   multi_reference: boolean;
+  semantic_source: ConfigurationSemanticSource;
   reason_codes: string[];
 }
 
+export type ConfigurationSemanticSource =
+  | "helper_managed"
+  | "legacy_inferred";
+
 export interface ConfigurationImpact {
+  public_total_entity_count: number;
+  internal_total_sensor_count: number;
   enabled_channel_count: number;
   numeric_entity_count: number;
   text_entity_count: number;
@@ -236,11 +386,13 @@ export interface VoltageReferenceTopology {
 }
 
 export interface MeterConfiguration extends CtInventory {
+  total_details: TotalSummary[];
   plan_id: string;
   source_sha256: string;
   topology: MeterTopology;
   configuration: MeterConfigurationRequest;
   capabilities: MeterConfigurationCapabilities;
+  totals: TotalsInventory;
   voltage_topology: VoltageReferenceTopology;
   voltage_transformer_catalog: VoltageTransformerCatalog;
   ct_catalog: CtCatalog;
@@ -276,6 +428,19 @@ export type TransactionState =
   | "rolled_back"
   | "failed";
 
+export type TransactionFailureStage = "validating" | "building" | "installing" | "verifying_meter";
+export type TransactionFailureReason =
+  | "unknown"
+  | "missing_package"
+  | "unsupported_component_option"
+  | "required_secret"
+  | "conflicting_managed_override"
+  | "validation_rejected"
+  | "compile_rejected"
+  | "upload_failed"
+  | "verification_incomplete"
+  | "meter_communication_failed";
+
 export interface SubstitutionChange {
   key: string;
   old_value: string | null;
@@ -283,6 +448,7 @@ export interface SubstitutionChange {
 }
 
 export interface TransactionStatus {
+  purpose: Exclude<import("./workflow-model").TransactionPurpose, null>;
   transaction_id: string;
   state: TransactionState;
   source_sha256: string;
@@ -302,6 +468,11 @@ export interface TransactionStatus {
   aggregate_entity_mismatch: boolean;
   full_meter_configuration_verified: boolean;
   communication_failed_cs_pins?: number[];
+  failure?: {
+    stage: TransactionFailureStage;
+    reason_code: TransactionFailureReason;
+    context: Array<[string, string]>;
+  } | null;
 }
 
 export interface PreflightIssue {
@@ -325,6 +496,7 @@ export interface SessionStatus {
   offset_disposition?: "not_started" | "in_progress" | "completed" | "skipped" | "partial";
   offset_boards?: OffsetBoardStatus[];
   has_pending_calibration?: boolean;
+  calibration_plan?: "standard" | "full";
   configured_offset_targets?: Array<[number, 1 | 2]>;
 }
 
@@ -367,18 +539,67 @@ export interface OffsetReadinessResult {
   }>;
   reasons: string[];
   thresholds: OffsetReadinessThresholds;
+  saved_offset_sources: Array<[string, "flash" | "configuration" | "unknown"]>;
 }
 
 export type OffsetTable = [[number, number], [number, number], [number, number]];
 
 export interface OffsetCalibrationResult {
-  state: "applied_pending_restart_verification" | "partial" | "indeterminate";
+  state: "applied_pending_restart_verification" | "captured_pending_configuration" | "partial" | "indeterminate";
   board_index: number;
   stage: 1 | 2;
   expected_tables: Array<[string, OffsetTable]>;
   unfinished_group_keys: string[];
   retry_allowed: boolean;
   error: string | null;
+}
+
+export type OffsetPreparationMode = "native" | "legacy";
+
+export interface OffsetPreparationStatus {
+  backup_available: boolean;
+  operation_id: string | null;
+  stage: 1 | 2 | null;
+  targets: string[];
+  mode: OffsetPreparationMode | null;
+  installed: boolean;
+  cancelled: boolean;
+  action_ready: boolean;
+  attempted: string[];
+  completed: Array<[string, 1 | 2]>;
+}
+
+export interface OffsetFinalizationStatus {
+  purpose: "offset_preparation" | "offset_finalization";
+  operation_id: string | null;
+  transaction_id: string | null;
+  stage: 1 | 2 | null;
+  board_index: number | null;
+  targets: string[];
+  backup_available: boolean;
+  installed: boolean;
+  cancelled: boolean;
+  configuration_selected: boolean;
+  action_ready: boolean;
+  register_verified: false;
+  gain_verification_id: string | null;
+  results: Array<[string, 1 | 2, OffsetTable, boolean]>;
+}
+
+export interface OffsetPreparationPreview {
+  operation_id: string;
+  stage: 1 | 2;
+  targets: string[];
+  backup_available: true;
+  mode: OffsetPreparationMode;
+  transaction: TransactionStatus | null;
+}
+
+export interface OffsetFinalizationPreview {
+  purpose: "offset_finalization";
+  operation_id: string;
+  targets: string[];
+  transaction: TransactionStatus;
 }
 
 export interface ActiveWork {
@@ -452,15 +673,3 @@ interface RestartVerificationBase {
 }
 
 export type RestartVerificationResult = RestartVerificationBase;
-
-export type PanelStep =
-  | "setup"
-  | "meter"
-  | "ct"
-  | "build"
-  | "safety"
-  | "offset"
-  | "voltage"
-  | "current"
-  | "restart"
-  | "summary";

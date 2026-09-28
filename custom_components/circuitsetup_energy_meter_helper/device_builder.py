@@ -12,6 +12,7 @@ from hashlib import sha256
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
+from aiohttp import WSMessage, WSMessageTypeError, WSMsgType
 from awesomeversion import AwesomeVersion
 
 
@@ -51,6 +52,8 @@ class WebSocket(Protocol):
 
     async def receive_json(self) -> dict[str, Any] | None: ...
 
+    async def receive(self) -> WSMessage: ...
+
     async def close(self) -> None: ...
 
 
@@ -61,6 +64,7 @@ class ESPHomeConfigSnapshot:
     configuration: str
     content: str
     sha256: str
+    configuration_authoritative: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -448,7 +452,9 @@ class DeviceBuilderClient:
         result: dict[str, Any],
         progress: Callable[[JobProgress], None] | None = None,
     ) -> JobResult:
-        job_id = result["job_id"]
+        job_id = result.get("job_id")
+        if not isinstance(job_id, str) or not 0 < len(job_id) <= 256:
+            raise ConnectionError("Device Builder returned an invalid job")
         terminal, output = await self._async_stream_command(
             "firmware/follow_job", {"job_id": job_id}, progress
         )
@@ -486,7 +492,16 @@ class DeviceBuilderClient:
 
     async def _listen(self, websocket: WebSocket) -> None:
         try:
-            while message := await websocket.receive_json():
+            while True:
+                frame = await websocket.receive()
+                if frame.type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED):
+                    break
+                if frame.type is not WSMsgType.TEXT:
+                    await websocket.close()
+                    raise WSMessageTypeError("Device Builder sent a non-text message")
+                message = frame.json()
+                if not message:
+                    break
                 message_id = message.get("message_id")
                 if (
                     isinstance(message_id, str)

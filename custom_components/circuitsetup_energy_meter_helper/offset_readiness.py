@@ -73,6 +73,9 @@ class OffsetReadinessResult:
     entities: tuple[OffsetEntityReadinessEvidence, ...]
     reasons: tuple[str, ...]
     thresholds: OffsetReadinessThresholds
+    saved_offset_sources: tuple[
+        tuple[str, Literal["flash", "configuration", "unknown"]], ...
+    ] = ()
 
 
 async def async_check_offset_readiness(

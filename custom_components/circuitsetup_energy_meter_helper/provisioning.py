@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .models import InstallerIntent, SetupState
+from .topology import is_supported_project
 
 ADDON_JUMPER_PINS = (
     (0, 16),
@@ -37,12 +38,24 @@ class DiscoveredDevice:
 
 
 @dataclass(slots=True, frozen=True)
+class ExistingDeviceCandidate:
+    """A safe identity-only candidate for the explicit inspection action."""
+
+    entry_id: str
+    title: str
+    project_name: str | None
+    project_version: str | None = None
+    compatibility: tuple[str, ...] = ()
+
+
+@dataclass(slots=True, frozen=True)
 class DeviceBuilderStatus:
     """Current cached Device Builder state for one ESPHome entry."""
 
     importable: bool | None
     configuration: str | None
     import_data: dict[str, str] | None = None
+    friendly_name: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -58,7 +71,12 @@ def _project_name(entry: Any) -> str | None:
     """Read the runtime ESPHome project identity without name-based guessing."""
     runtime_data = getattr(entry, "runtime_data", None)
     device_info = getattr(runtime_data, "device_info", None)
-    return getattr(device_info, "project_name", None)
+    project_name = getattr(device_info, "project_name", None)
+    return (
+        project_name
+        if isinstance(project_name, str) and project_name.strip()
+        else None
+    )
 
 
 def _project_version(entry: Any) -> str | None:
@@ -69,29 +87,107 @@ def _project_version(entry: Any) -> str | None:
     return version if isinstance(version, str) else None
 
 
+def _runtime_name(entry: Any) -> str | None:
+    """Read ESPHome's current friendly name when the runtime provides one."""
+    name = getattr(
+        getattr(getattr(entry, "runtime_data", None), "device_info", None),
+        "name",
+        None,
+    )
+    return name if isinstance(name, str) and name.strip() else None
+
+
+def _mac_key(value: Any) -> str | None:
+    """Normalize a MAC address for identity matching."""
+    if not isinstance(value, str):
+        return None
+    compact = value.replace(":", "").replace("-", "")
+    return (
+        compact.lower()
+        if len(compact) == 12 and set(compact.lower()) <= set("0123456789abcdef")
+        else None
+    )
+
+
+def _friendly_name(item: Mapping[str, Any]) -> str | None:
+    value = item.get("friendly_name")
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
 def device_builder_status(
-    entry: Any, listing: Mapping[str, Any] | None
+    entry: Any, listing: Mapping[str, Any] | None, *, strict: bool = False
 ) -> DeviceBuilderStatus:
     """Match one ESPHome entry to the current Device Builder listing."""
     if listing is None:
         return DeviceBuilderStatus(None, None)
-    device_name = getattr(entry, "data", {}).get("device_name")
+    configured_name = getattr(entry, "data", {}).get("device_name")
+    entry_data = getattr(entry, "data", {})
+    entry_mac = _mac_key(getattr(entry, "unique_id", None))
+    entry_host = entry_data.get("host")
+    configuration_name = (
+        f"{configured_name}.yaml"
+        if isinstance(configured_name, str) and configured_name.strip()
+        else None
+    )
+    names = tuple(
+        dict.fromkeys(
+            name
+            for name in (configured_name, _runtime_name(entry))
+            if isinstance(name, str) and name.strip()
+        )
+    )
+    if strict and not (names or entry_mac or isinstance(entry_host, str)):
+        return DeviceBuilderStatus(None, None)
+
+    def item_macs(item: Mapping[str, Any]) -> tuple[str, ...]:
+        return tuple(
+            mac
+            for key in ("mac_address", "ethernet_mac", "bluetooth_mac")
+            if (mac := _mac_key(item.get(key))) is not None
+        )
+
+    has_mac_match = bool(entry_mac) and any(
+        entry_mac in item_macs(item)
+        for section in ("configured", "importable")
+        for item in listing.get(section, ())
+        if isinstance(item, Mapping)
+    )
 
     def matches(items: Any) -> list[Mapping[str, Any]]:
-        return [
-            item
-            for item in items
-            if isinstance(item, Mapping)
-            and (device_name is None or item.get("name") == device_name)
-        ]
+        candidates = [item for item in items if isinstance(item, Mapping)]
+        if entry_mac:
+            mac_matches = [item for item in candidates if entry_mac in item_macs(item)]
+            if has_mac_match:
+                return mac_matches
+            candidates = [item for item in candidates if not item_macs(item)]
+
+        matched: list[Mapping[str, Any]] = []
+        for item in candidates:
+            if not names and not entry_mac and not isinstance(entry_host, str):
+                matched.append(item)
+                continue
+            if item.get("name") in names or item.get("configuration") == configuration_name:
+                matched.append(item)
+                continue
+            if isinstance(entry_host, str) and entry_host in {
+                item.get("ip"),
+                item.get("address"),
+            }:
+                matched.append(item)
+        return matched
 
     configured = [
         item
         for item in matches(listing.get("configured", ()))
         if isinstance(item.get("configuration"), str)
+        and bool(item["configuration"].strip())
     ]
     if len(configured) == 1:
-        return DeviceBuilderStatus(False, str(configured[0]["configuration"]))
+        return DeviceBuilderStatus(
+            False,
+            str(configured[0]["configuration"]),
+            friendly_name=_friendly_name(configured[0]),
+        )
     if len(configured) > 1:
         return DeviceBuilderStatus(None, None)
     importable = matches(listing.get("importable", ()))
@@ -104,7 +200,12 @@ def device_builder_status(
         }
         if {"name", "package_import_url"} <= candidate.keys():
             import_data = candidate
-    return DeviceBuilderStatus(bool(importable), None, import_data)
+    return DeviceBuilderStatus(
+        bool(importable),
+        None,
+        import_data,
+        friendly_name=_friendly_name(importable[0]) if len(importable) == 1 else None,
+    )
 
 
 class ProvisioningCoordinator:
@@ -174,7 +275,7 @@ class ProvisioningCoordinator:
             self._device(entry, project_name, listing)
             for entry in self._hass.config_entries.async_entries("esphome")
             if (project_name := _project_name(entry))
-            and project_name.startswith(BASE_PROJECT)
+            and is_supported_project(project_name)
         )
         state = (
             SetupState.DEVICE_DISCOVERED
@@ -189,6 +290,20 @@ class ProvisioningCoordinator:
         self._publish()
         return self.snapshot
 
+    async def async_list_existing_meters(
+        self, exclude_device_id: str | None = None, after_entry_id: str | None = None
+    ) -> tuple[ExistingDeviceCandidate, ...]:
+        """List a bounded page of ESPHome identities in stable entry-ID order."""
+        return tuple(
+            existing_device_candidate(entry)
+            for entry in sorted(
+                self._hass.config_entries.async_entries("esphome"),
+                key=lambda item: str(getattr(item, "entry_id", "")),
+            )
+            if getattr(entry, "entry_id", None) != exclude_device_id
+            and (after_entry_id is None or entry.entry_id > after_entry_id)
+        )[:32]
+
     def _device(
         self, entry: Any, project_name: str, listing: Mapping[str, Any] | None
     ) -> DiscoveredDevice:
@@ -200,7 +315,7 @@ class ProvisioningCoordinator:
         )
         return DiscoveredDevice(
             entry.entry_id,
-            entry.title,
+            status.friendly_name or _runtime_name(entry) or entry.title,
             project_name,
             _project_version(entry),
             status.importable,
@@ -228,3 +343,21 @@ class ProvisioningCoordinator:
         """Deliver the latest immutable snapshot to registered subscribers."""
         for subscriber in self._subscribers:
             subscriber(self.snapshot)
+
+
+def existing_device_candidate(entry: Any) -> ExistingDeviceCandidate:
+    """Return bounded identity and non-authoritative compatibility hints."""
+    project_name = _project_name(entry)
+    if project_name is None:
+        compatibility = ("project_label_missing",)
+    elif is_supported_project(project_name):
+        compatibility = ("official_project",)
+    else:
+        compatibility = ("custom_or_older_project",)
+    return ExistingDeviceCandidate(
+        str(getattr(entry, "entry_id", "")),
+        _runtime_name(entry) or str(getattr(entry, "title", "")),
+        project_name,
+        _project_version(entry),
+        compatibility,
+    )

@@ -14,6 +14,7 @@ export function safetyStep(
   return html`
     <section class="step-content" aria-labelledby="step-heading">
       ${preflightStatus(session)}
+      <section class="info-band" aria-label="Calibration roadmap"><strong>What you will do</strong><p>Confirm the safe setup, calibrate ${session?.calibration_plan === "full" ? "offsets, voltage, and current" : "voltage and current"}, verify the restart, then review.</p></section>
       ${session?.state === "cancelled" ? html`<div class="status-band" role="status">Calibration session cancelled. No restart verification was claimed.</div>` : ""}
       <ul class="safety-list">
         <li>Mains voltage is hazardous.</li>
@@ -22,15 +23,16 @@ export function safetyStep(
         <li>Do not work inside an energized panel unless qualified.</li>
         <li>The helper cannot electrically verify a burden-jumper change.</li>
       </ul>
+      <p class="warning-band" role="note"><strong>Physical work required:</strong> Follow the wiring and de-energized steps on each calibration screen. The helper cannot verify panel changes.</p>
       <section class="warning-band" aria-labelledby="safety-heading">
         <h2 id="safety-heading">Safety acknowledgement</h2>
-        <p>Confirm the test setup is safe, isolated, and accessible before calibration.</p>
+        <p>Confirm the setup is safe, isolated, and accessible.</p>
         <label class="check-row"><input type="checkbox" .checked=${acknowledged} @change=${(event: Event) => setAcknowledged((event.target as HTMLInputElement).checked)} /> I acknowledge and accept responsibility</label>
       </section>
       <button class="danger" @click=${cancel}>Cancel session</button>
       <footer class="action-footer">
         <button class="secondary" @click=${back}>Back</button>
-        <button class="primary" @click=${confirm} ?disabled=${busy || session?.state === "cancelled" || !acknowledged || Boolean(session?.preflight.issues.length)}>${busy ? "Loading calibration…" : "Continue"}</button>
+        <button class="primary" @click=${confirm} ?disabled=${busy || session?.state === "cancelled" || !acknowledged || Boolean(session?.preflight.issues.length)}>${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Loading calibration…` : "Continue"}</button>
       </footer>
     </section>
   `;

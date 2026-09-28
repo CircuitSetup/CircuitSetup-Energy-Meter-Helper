@@ -57,7 +57,19 @@ class CTInventory:
                     f"duplicate stored selection for CT{selection.channel}"
                 )
             stored_by_channel[selection.channel] = selection
-        multipliers = reporting_multipliers or {}
+        from .config_mutator import (
+            _read_phase_channel_states,
+            package_options_from_document,
+        )
+
+        multipliers = dict(reporting_multipliers or {})
+        multipliers.update({
+            channel: state.multiplier
+            for channel, state in _read_phase_channel_states(
+                document.content, topology, document.substitutions,
+                package_options_from_document(document, topology)["power_quality"],
+            ).items()
+        })
         if any(
             channel not in range(1, topology.ct_count + 1) for channel in multipliers
         ):

@@ -12,7 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import issue_registry
 
-from .const import DOMAIN
+from .const import DOMAIN, ESPHOME_INSTALL_URL
 
 ISSUES = {
     "meter_configuration_invalid": {"METER_CONFIGURATION_INVALID"},
@@ -61,7 +61,10 @@ _OPERATION_ISSUES = {
 
 class _RepairFlow(RepairsFlow):
     async def async_step_init(self, user_input: None = None) -> FlowResult:
-        return self.async_abort(reason="see_panel")
+        return self.async_abort(
+            reason="see_panel",
+            description_placeholders={"installation_url": ESPHOME_INSTALL_URL},
+        )
 
 
 def _base_issue_id(issue_id: str) -> str | None:

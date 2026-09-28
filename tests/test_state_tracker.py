@@ -217,22 +217,23 @@ def test_number_ack_requires_post_dispatch_state_and_half_step_tolerance() -> No
     asyncio.run(run())
 
 
-def test_number_ack_rejects_unavailable_and_disconnect_fails_pending() -> None:
+def test_number_ack_waits_through_unavailable_and_disconnect_fails_pending() -> None:
     async def run() -> None:
         tracker = StateTracker()
         tracker.connect(1)
-        unavailable = tracker.expect_number_state(
+        pending = tracker.expect_number_state(
             NumberState, 5, target=0.0, step=0.1, dispatched_after=1.0
         )
         tracker.record(NumberState(5, 0.0, missing_state=True), received_at=2.0)
-        with pytest.raises(StateUnavailableError):
-            await unavailable
+        assert not pending.done()
 
-        pending = tracker.expect_number_state(
+        disconnected = tracker.expect_number_state(
             NumberState, 6, target=0.0, step=0.1, dispatched_after=2.0
         )
         tracker.disconnect()
         with pytest.raises(StateDisconnectedError):
             await pending
+        with pytest.raises(StateDisconnectedError):
+            await disconnected
 
     asyncio.run(run())

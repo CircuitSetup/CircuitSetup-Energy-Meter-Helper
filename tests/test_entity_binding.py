@@ -340,6 +340,30 @@ def test_binds_offset_controls_for_every_calibration_group() -> None:
     assert all(len(group.buttons) == 2 for group in meter.groups)
 
 
+def test_binds_run_only_offset_controls_when_clear_buttons_are_absent() -> None:
+    entities = synthetic_entities(0, offset_controls=True)
+    entities = [entity for entity in entities if not entity.name.startswith("z1. Clear")]
+    entities = [entity for entity in entities if not entity.name.startswith("z2. Clear")]
+
+    meter = bind_meter(
+        EntityCatalog(entities, 1),
+        topology(0),
+        substitutions(0),
+    )
+
+    assert meter.offset_capability.status is OffsetControlStatus.AVAILABLE
+    assert len(meter.offset_capability.controls) == 2
+    assert all(
+        control.run_offset.role == expected
+        for control, expected in zip(
+            meter.offset_capability.controls,
+            ("main_1.run_offset", "main_2.run_offset"),
+            strict=True,
+        )
+    )
+    assert len(meter.offset_capability.run_controls) == 2
+
+
 @pytest.mark.parametrize("failure", ("partial", "ambiguous", "duplicate", "cross_device"))
 def test_offset_controls_are_invalid_when_catalog_is_not_a_complete_grouped_set(
     failure: str,
@@ -817,7 +841,8 @@ def _label_workflow(monkeypatch: pytest.MonkeyPatch) -> tuple[EntryWorkflow, _La
     hass = SimpleNamespace(
         data={},
         config=SimpleNamespace(config_dir="."),
-        config_entries=SimpleNamespace(async_get_entry=lambda entry_id: entry if entry_id == "meter" else None),
+        config_entries=SimpleNamespace(async_get_entry=lambda entry_id: entry if entry_id == "meter" else None,
+            async_entries=lambda _domain: []),
         async_add_executor_job=executor_job,
     )
     monkeypatch.setattr("custom_components.circuitsetup_energy_meter_helper.workflow.er.async_get", lambda _hass: registry)

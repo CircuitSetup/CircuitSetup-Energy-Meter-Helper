@@ -14,6 +14,7 @@ from custom_components.circuitsetup_energy_meter_helper.config_transaction impor
     RollbackFailedError,
     TransactionEvidenceCode,
     TransactionStatus,
+    _safe_source_diff,
 )
 from custom_components.circuitsetup_energy_meter_helper.device_builder import (
     ConfigChangedError,
@@ -26,6 +27,7 @@ from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator imp
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
     ChannelSettings,
+    ChannelTotalSource,
     CircuitAggregate,
     CircuitRole,
     ElectricalSystem,
@@ -33,6 +35,7 @@ from custom_components.circuitsetup_energy_meter_helper.meter_configuration impo
     MeasurementMethod,
     MeterConfigurationRequest,
     MeterSettings,
+    TotalOutputSettings,
     VoltageLayout,
     VoltageReferenceConfig,
 )
@@ -40,6 +43,7 @@ from custom_components.circuitsetup_energy_meter_helper.models import (
     ConfigMutationPlan,
     MeterTopology,
     StoredCTSelection,
+    StoredMeterRecord,
     SubstitutionChange,
 )
 from custom_components.circuitsetup_energy_meter_helper.session_manager import (
@@ -47,6 +51,9 @@ from custom_components.circuitsetup_energy_meter_helper.session_manager import (
 )
 from custom_components.circuitsetup_energy_meter_helper.store import (
     StoredMeterConfiguration,
+)
+from custom_components.circuitsetup_energy_meter_helper.total_graph import (
+    default_total_settings,
 )
 
 
@@ -192,6 +199,32 @@ class UncertainUpdateBuilder(Builder):
 
 
 class Persistence:
+    async def async_get_install_recovery(self, mac):
+        return getattr(self, "checkpoints", {}).get(mac)
+
+    async def async_save_install_recovery(self, mac, transaction_id, checkpoint):
+        if not hasattr(self, "checkpoints"):
+            self.checkpoints = {}
+        if checkpoint is None:
+            self.checkpoints.pop(mac, None)
+        else:
+            self.checkpoints[mac] = checkpoint
+
+    async def async_revoke_installed_calibration(
+        self, mac: str, *, expected_record_fingerprint: str | None = None
+    ) -> str | None:
+        """This fake has no stored installation receipt."""
+        return expected_record_fingerprint
+
+    async def async_advance_offset_configuration_source(
+        self,
+        mac: str,
+        expected_source_sha256: str,
+        proposed_sha256: str,
+        record: StoredMeterRecord,
+    ) -> bool:
+        return False  # This fake has no authoritative meter metadata; real Store tests cover advancement.
+
     def __init__(
         self,
         error: BaseException | None = None,
@@ -271,9 +304,16 @@ class Verifier:
     ) -> None:
         self.evidence = evidence
         self.calls = 0
+        self.expected_instance_ids_calls: list[frozenset[str] | None] = []
 
-    async def async_verify(self, mac: str) -> ReconnectEvidence:
+    async def async_verify(
+        self,
+        mac: str,
+        *,
+        expected_instance_ids: frozenset[str] | None = None,
+    ) -> ReconnectEvidence:
         del mac
+        self.expected_instance_ids_calls.append(expected_instance_ids)
         self.calls += 1
         evidence = (
             self.evidence.pop(0)
@@ -358,15 +398,17 @@ def _meter_configuration(plan: ConfigMutationPlan) -> StoredMeterConfiguration:
         "grid",
         "Grid",
         CircuitRole.GRID,
-        (1, 2),
+        (ChannelTotalSource("channel", 1), ChannelTotalSource("channel", 2)),
         MeasurementMethod.TWO_CT_SUM,
-        None,
         EnergyMode.CONSUMPTION,
+        TotalOutputSettings(True, False, True),
     )
     return StoredMeterConfiguration(
         config_sha256,
         meter,
         channels,
+        default_total_settings(_topology()),
+        (),
         (aggregate,),
         (False,),
         (False,),
@@ -375,6 +417,131 @@ def _meter_configuration(plan: ConfigMutationPlan) -> StoredMeterConfiguration:
             for channel in range(1, 7)
         ),
     )
+
+
+def _supported_source_totals(count: int) -> str:
+    return "sensor:\n" + "".join(
+        "  - platform: template\n"
+        f"    id: totalExternal{index}{kind}\n"
+        f"    name: External {index} {kind}\n"
+        f"    lambda: return id(ct1{kind}).state;\n"
+        f"    unit_of_measurement: {unit}\n"
+        f"    device_class: {device_class}\n"
+        for index in range(count)
+        for kind, unit, device_class in (
+            ("Watts", "W", "power"),
+            ("Amps", "A", "current"),
+        )
+    )
+
+
+def test_reconnect_evidence_accepts_simultaneous_supported_maximum() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.config_document import (
+        ESPHomeConfigDocument,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.config_transaction import (
+        _validate_expected_sensor_entities,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.meter_configuration import (
+        AutomaticTotalSettings,
+        ChannelTotalSource,
+        TotalOutputSettings,
+    )
+    from custom_components.circuitsetup_energy_meter_helper.total_graph import (
+        automatic_total_candidates,
+    )
+    from tests.test_meter_configuration import request, topology
+
+    configuration = request(addons=6)
+    refs = tuple(
+        replace(
+            configuration.meter.voltage_references[0],
+            reference_id=f"ref{index}",
+            label=f"Reference {index}",
+            group_keys=(group,),
+        )
+        for index, group in enumerate(
+            configuration.meter.voltage_references[0].group_keys
+        )
+    )
+    roles = (
+        CircuitRole.GRID,
+        CircuitRole.SOLAR,
+        CircuitRole.SUBPANEL,
+        CircuitRole.TWO_POLE,
+    )
+    configuration = replace(
+        configuration,
+        meter=replace(configuration.meter, voltage_references=refs),
+        multi_reference_preparation_acknowledged=True,
+        channels=tuple(
+            replace(
+                channel,
+                role=roles[(channel.channel - 1) // 2]
+                if channel.channel <= 8
+                else CircuitRole.BRANCH,
+                voltage_reference_id=f"ref{(channel.channel - 1) // 3}",
+            )
+            for channel in configuration.channels
+        ),
+        aggregates=tuple(
+            CircuitAggregate(
+                f"load{index}",
+                f"Load {index}",
+                CircuitRole.CUSTOM,
+                (ChannelTotalSource("channel", 1),),
+                MeasurementMethod.DIRECT,
+                EnergyMode.BIDIRECTIONAL,
+                TotalOutputSettings(True, True, True),
+            )
+            for index in range(32)
+        ),
+    )
+    configuration = replace(
+        configuration,
+        automatic_totals=tuple(
+            AutomaticTotalSettings(
+                candidate.candidate_id, True, TotalOutputSettings(True, True, True)
+            )
+            for candidate in automatic_total_candidates(configuration)
+        ),
+    )
+    evidence = expected_meter_entity_evidence(configuration, topology(6))
+    assert len(evidence.sensor_entities) == 343
+    _validate_expected_sensor_entities(evidence.sensor_entities)
+    document = ESPHomeConfigDocument.parse(_supported_source_totals(40))
+    evidence = expected_meter_entity_evidence(
+        configuration, topology(6), document=document, native_visibility_resolved=True
+    )
+    assert len(evidence.source_owned_sensor_entities) == 80
+    assert len(evidence.sensor_entities) == 423
+    _validate_expected_sensor_entities(evidence.sensor_entities)
+    _validate_expected_sensor_entities(
+        frozenset((f"s{index}", f"Sensor {index}") for index in range(1024))
+    )
+    with pytest.raises(ValueError):
+        _validate_expected_sensor_entities(
+            frozenset((f"s{index}", f"Sensor {index}") for index in range(1025))
+        )
+
+
+def test_recomputed_source_evidence_overflow_refuses_preview_without_writes() -> None:
+    async def run() -> None:
+        content = _supported_source_totals(513)
+        plan = replace(_plan(content), proposed_content=content)
+        builder = Builder(remote_content=content)
+        manager = _manager(builder, Persistence())
+        with pytest.raises(ValueError, match="expected sensor entities"):
+            await manager.async_preview(
+                "aabbccddeeff",
+                _topology(),
+                plan,
+                _source(content),
+                meter_configuration=_meter_configuration(plan),
+            )
+        assert builder.calls == []
+
+    asyncio.run(run())
 
 
 def _evidence(mac: str = "aabbccddeeff") -> ReconnectEvidence:
@@ -387,6 +554,78 @@ def _evidence(mac: str = "aabbccddeeff") -> ReconnectEvidence:
         },
         6,
     )
+
+
+def _max_power_quality_configuration(
+    plan: ConfigMutationPlan,
+) -> StoredMeterConfiguration:
+    topology = _topology(6)
+    meter = MeterSettings(
+        "Energy meter",
+        ElectricalSystem.SPLIT_PHASE_120_240,
+        60,
+        5,
+        VoltageLayout.STANDARD,
+        (
+            VoltageReferenceConfig(
+                "main",
+                "Main",
+                "A",
+                120.0,
+                "vt",
+                1,
+                tuple(
+                    f"{('main' if board == 0 else f'addon{board}')}_{group}"
+                    for board in range(7)
+                    for group in (1, 2)
+                ),
+            ),
+        ),
+    )
+    channels = tuple(
+        ChannelSettings(
+            channel,
+            True,
+            f"CT {channel}",
+            "ct",
+            1.0,
+            CircuitRole.BRANCH,
+            "main",
+        )
+        for channel in range(1, topology.ct_count + 1)
+    )
+    config_sha256 = sha256(plan.proposed_content.encode()).hexdigest()
+    return StoredMeterConfiguration(
+        config_sha256,
+        meter,
+        channels,
+        default_total_settings(topology), (), (),
+        (True,) * topology.board_count,
+        (False,) * topology.board_count,
+        tuple(
+            StoredCTSelection(channel, "ct", None, 27518, 1.0, config_sha256)
+            for channel in range(1, topology.ct_count + 1)
+        ),
+    )
+
+
+def test_max_topology_power_quality_fits_transaction_review_bound() -> None:
+    async def run() -> None:
+        manager = _manager(Builder(), Persistence())
+        plan = _managed_entity_plan()
+        configuration = _max_power_quality_configuration(plan)
+        status = await manager.async_preview(
+            "aabbccddeeff",
+            _topology(6),
+            plan,
+            _source(),
+            meter_configuration=configuration,
+        )
+
+        transaction = manager._transaction(status.transaction_id)
+        assert len(transaction.expected_sensor_entities) == 212
+
+    asyncio.run(run())
 
 
 def _manager(
@@ -420,27 +659,633 @@ async def _preview(
     )
 
 
+@pytest.mark.parametrize("failure", (
+    "upload_cancel", "upload_response_lost", "reconnect_cancel",
+    "reconnect_timeout", "metadata_save", "receipt_save",
+))
+def test_new_upload_revokes_previous_flash_clear_authority_before_side_effects(failure: str) -> None:
+    """Failed or uncertain OTA cannot leave an older firmware receipt usable."""
+    from custom_components.circuitsetup_energy_meter_helper.store import (
+        HelperStore,
+        VerifiedCalibrationRecord,
+        VerifiedGainGroup,
+    )
+    from tests.test_store import _CopyingStorage, _record
+
+    class Storage(_CopyingStorage):
+        fail = False
+
+        async def async_save(self, data: dict[str, object]) -> None:
+            if self.fail:
+                raise OSError("storage unavailable")
+            await super().async_save(data)
+
+    async def run() -> None:
+        store = object.__new__(HelperStore)
+        store._store = backend = Storage()  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        await store.async_save_meter(_record(_source().sha256))
+        record = VerifiedCalibrationRecord(
+            "aabbccddeeff", "meter.yaml", _source().sha256, 0,
+            _topology().project_name, "wifi", "standard", 1,
+            (VerifiedGainGroup("meter_main1", ((7301, 28001),) * 3),),
+            "1" * 32, source_handoff_available=False,
+            source_handoff_transaction_id="2" * 32,
+            source_handoff_firmware_installed=True,
+        )
+        await store.async_save_verified_calibration(record)
+        upload_receipts = []
+
+        class UploadBuilder(Builder):
+            async def async_upload(self, configuration, progress=None):
+                upload_receipts.append(await store.async_get_verified_calibration(record.mac))
+                backend.fail = failure == "metadata_save"
+                return await super().async_upload(configuration, progress)
+
+        builder = UploadBuilder(upload=(
+            asyncio.CancelledError() if failure == "upload_cancel" else
+            ConnectionError() if failure == "upload_response_lost" else None
+        ))
+        manager = _manager(builder, store, evidence=(  # type: ignore[arg-type]
+            asyncio.CancelledError() if failure == "reconnect_cancel" else
+            ConnectionError() if failure == "reconnect_timeout" else None
+        ))
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        backend.fail = failure == "receipt_save"
+        if failure in {"upload_cancel", "reconnect_cancel"}:
+            with pytest.raises(asyncio.CancelledError):
+                await manager.async_confirm_install(preview.transaction_id, "admin")
+        else:
+            result = await manager.async_confirm_install(preview.transaction_id, "admin")
+            if failure == "reconnect_timeout":
+                assert not result.rollback_available
+                await manager.async_abandon(preview.transaction_id)
+            elif failure == "metadata_save":
+                assert result.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+                backend.fail = False
+                assert (
+                    await manager.async_confirm_install(preview.transaction_id, "admin")
+                ).state is ConfigTransactionState.VERIFIED
+            elif failure == "upload_response_lost":
+                assert result.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+            else:
+                assert result.state is ConfigTransactionState.FAILED
+        backend.fail = False
+        assert manager.sessions.is_config_locked(record.mac) is (
+            failure in {"upload_cancel", "upload_response_lost", "reconnect_cancel"}
+        )
+        if failure == "receipt_save":
+            assert "upload" not in builder.calls
+            assert await store.async_get_verified_calibration(record.mac) == record
+        else:
+            assert "upload" in builder.calls
+            assert upload_receipts == [None]
+            assert not await store.async_complete_verified_calibration_handoff(
+                record.mac, record.verification_id, "2" * 32
+            )
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("restart", (False, True))
+def test_real_store_swallowed_ack_checkpoint_failure_retries_safely(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, restart: bool,
+) -> None:
+    """An unpersisted upload acknowledgement needs another upload after restart."""
+    from types import SimpleNamespace
+
+    from homeassistant.core import CoreState
+    from homeassistant.util.file import WriteError
+
+    from custom_components.circuitsetup_energy_meter_helper.store import (
+        HelperStore,
+        VerifiedCalibrationRecord,
+        VerifiedGainGroup,
+    )
+    from tests.test_store import _record
+
+    async def run() -> None:
+        async def executor(function, *args):
+            return await asyncio.to_thread(function, *args)
+
+        hass = SimpleNamespace(
+            data={}, state=CoreState.running, loop=asyncio.get_running_loop(),
+            config=SimpleNamespace(
+                config_dir=str(tmp_path),
+                path=lambda *parts: str(tmp_path.joinpath(*parts)),
+            ),
+            async_add_executor_job=executor,
+            bus=SimpleNamespace(async_listen_once=lambda *_args: lambda: None),
+        )
+        store = HelperStore(hass)
+        await store.async_save_meter(_record(_source().sha256))
+        record = VerifiedCalibrationRecord(
+            "aabbccddeeff", "meter.yaml", _source().sha256, 0,
+            _topology().project_name, "wifi", "standard", 1,
+            (VerifiedGainGroup("meter_main1", ((7301, 28001),) * 3),),
+            "1" * 32, source_handoff_available=True,
+        )
+        await store.async_save_verified_calibration(record)
+        write = store._store._async_write_data
+
+        async def failed_write(_data):
+            raise WriteError("disk full")
+
+        class UploadBuilder(Builder):
+            fault_injected = False
+
+            async def async_upload(self, configuration, progress=None):
+                result = await super().async_upload(configuration, progress)
+                if not self.fault_injected:
+                    monkeypatch.setattr(store._store, "_async_write_data", failed_write)
+                    self.fault_injected = True
+                return result
+
+        builder = UploadBuilder()
+        manager = _manager(builder, store)  # type: ignore[arg-type]
+        preview = await _preview(manager)
+        transaction = manager._transaction(preview.transaction_id)
+        transaction.verification_id = record.verification_id
+        transaction.reservation_claimed = True
+        assert await store.async_claim_verified_calibration(
+            record.mac, record.verification_id, preview.transaction_id
+        )
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        first = await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert first.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        persisted = await store.async_get_verified_calibration(record.mac)
+        assert persisted is not None and not persisted.source_handoff_firmware_installed
+        monkeypatch.setattr(store._store, "_async_write_data", write)
+        if restart:
+            await manager.sessions.async_unload()
+            store = HelperStore(hass)
+            manager = _manager(builder, store)
+            recovered = await manager.async_recover_install(record.mac)
+            assert recovered is not None and recovered.transaction_id == preview.transaction_id
+        retry = await manager.async_confirm_install(preview.transaction_id, "admin")
+        assert retry.state is ConfigTransactionState.VERIFIED
+        assert builder.calls.count("upload") == (2 if restart else 1)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("external_change", (False, True))
+def test_receipt_revocation_advances_only_its_own_stale_metadata_fingerprint(external_change: bool) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.store import (
+        HelperStore,
+        VerifiedCalibrationRecord,
+        VerifiedGainGroup,
+    )
+    from tests.test_store import _CopyingStorage, _record
+
+    async def run() -> None:
+        store = object.__new__(HelperStore)
+        store._store = _CopyingStorage()  # type: ignore[assignment]
+        store._update_lock = asyncio.Lock()
+        await store.async_save_meter(_record())
+        record = VerifiedCalibrationRecord(
+            "aabbccddeeff", "meter.yaml", "a" * 64, 0,
+            _topology().project_name, "wifi", "standard", 1,
+            (VerifiedGainGroup("meter_main1", ((7301, 28001),) * 3),),
+            "1" * 32, source_handoff_available=False,
+            source_handoff_transaction_id="2" * 32,
+            source_handoff_firmware_installed=True,
+        )
+        await store.async_save_verified_calibration(record)
+        plan = _plan()
+        configuration = _meter_configuration(plan)
+        expected = expected_meter_entity_evidence(
+            MeterConfigurationRequest(
+                configuration.meter, configuration.channels,
+                configuration.default_totals, configuration.automatic_totals,
+                configuration.aggregates, configuration.power_quality,
+                configuration.status_fields,
+            ), _topology(),
+        )
+        builder = Builder()
+        manager = _manager(builder, store, evidence=ReconnectEvidence(  # type: ignore[arg-type]
+            record.mac, _topology(),
+            {channel.channel: channel.name for channel in configuration.channels},
+            6, expected.sensor_entities,
+        ))
+        preview = await manager.async_preview(
+            record.mac, _topology(), plan, _source(),
+            meter_configuration=configuration, reconcile_stale_metadata=True,
+        )
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        if external_change:
+            await store.async_save_verified_calibration(replace(record, verification_id="3" * 32))
+        status = await manager.async_confirm_install(preview.transaction_id, "admin")
+        if external_change:
+            assert status.state is ConfigTransactionState.FAILED
+            assert "upload" not in builder.calls
+            assert await store.async_get_verified_calibration(record.mac) == replace(record, verification_id="3" * 32)
+        else:
+            assert status.state is ConfigTransactionState.VERIFIED
+            assert await store.async_get_meter_configuration(record.mac) == configuration
+            assert await store.async_get_verified_calibration(record.mac) is None
+
+    asyncio.run(run())
+
+
+def test_cancelling_receipt_revocation_drains_storage_before_releasing_meter() -> None:
+    async def run() -> None:
+        started, finish = asyncio.Event(), asyncio.Event()
+
+        class BlockingPersistence(Persistence):
+            async def async_revoke_installed_calibration(
+                self, mac: str, *, expected_record_fingerprint: str | None = None
+            ) -> str | None:
+                started.set()
+                await finish.wait()
+                return expected_record_fingerprint
+
+        builder = Builder()
+        manager = _manager(builder, BlockingPersistence())
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        task = asyncio.create_task(manager.async_confirm_install(preview.transaction_id, "admin"))
+        await started.wait()
+        for _ in range(2):
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+            assert manager.sessions.is_config_locked("aabbccddeeff")
+        finish.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert "upload" not in builder.calls
+        assert not manager.sessions.is_config_locked("aabbccddeeff")
+
+    asyncio.run(run())
+
+
 def test_preview_binds_source_and_exposes_only_bounded_safe_dto() -> None:
     async def run() -> None:
         manager = _manager(Builder(), Persistence())
+        prior_content = "prior baselineExampleValue"
         status = await manager.async_preview(
             "AABBCCDDEEFF",
             _topology(),
-            _plan(
-                "prior top-secret",
-                diff=" api_encryption_key: raw-diff-secret\n+ ct1_name: Kitchen",
+            replace(
+                _plan(
+                    prior_content,
+                    diff=" api_encryption_key: rawDiffExampleValue\n+ ct1_name: Kitchen",
+                ),
+                proposed_content=(
+                    "api:\n  encryption_key: abc123ExampleValue\n"
+                    "substitutions:\n  ct1_name: Kitchen\n"
+                ),
             ),
-            _source("prior top-secret"),
+            _source(prior_content),
         )
         assert isinstance(status, TransactionStatus)
         assert not hasattr(status, "plan") and not hasattr(status, "prior_content")
-        assert "top-secret" not in repr(status)
-        assert "raw-diff-secret" not in status.redacted_diff
+        assert "abc123ExampleValue" not in repr(status)
+        assert "rawDiffExampleValue" not in status.redacted_diff
         assert len(status.redacted_diff.encode()) <= 32_768
 
         bad = ESPHomeConfigSnapshot("meter.yaml", "different", _source().sha256)
         with pytest.raises(ValueError, match="source snapshot"):
             await manager.async_preview("aabbccddeeff", _topology(), _plan(), bad)
+
+    asyncio.run(run())
+
+
+def test_preview_exposes_exact_safe_source_diff() -> None:
+    async def run() -> None:
+        source = """substitutions:
+  ct1_name: Old
+sensor:
+  - platform: atm90e32
+    current_cal_ct1: 100
+    filters:
+      - lambda: return x;
+api:
+  encryption:
+    key: abc123ExampleValue
+  token: |
+    abc456ExampleValue
+    abc789ExampleValue
+wifi:
+  password: |
+    abc111ExampleValue
+    abc222ExampleValue
+secrets:
+  wifi_password: !secret abc333ExampleValue
+"""
+        proposed = """substitutions:
+  ct1_name: New
+sensor:
+  - platform: atm90e32
+    current_cal_ct1: 200
+    filters:
+      - lambda: return y;
+api:
+  encryption:
+    key: xyz123ExampleValue
+  token: |
+    xyz456ExampleValue
+    xyz789ExampleValue
+wifi:
+  password: |
+    xyz111ExampleValue
+    xyz222ExampleValue
+secrets:
+  wifi_password: !secret xyz333ExampleValue
+"""
+        plan = replace(_plan(source), proposed_content=proposed)
+        manager = _manager(Builder(), Persistence())
+        status = await manager.async_preview(
+            "aabbccddeeff", _topology(), plan, _source(source)
+        )
+
+        diff = status.redacted_diff
+        assert "-  ct1_name: Old" in diff
+        assert "+  ct1_name: New" in diff
+        assert "-    current_cal_ct1: 100" in diff
+        assert "+    current_cal_ct1: 200" in diff
+        assert "-      - lambda: return x;" in diff
+        assert "+      - lambda: return y;" in diff
+        for secret in (
+            "abc123ExampleValue", "xyz123ExampleValue", "abc111ExampleValue",
+            "xyz111ExampleValue", "abc222ExampleValue", "xyz222ExampleValue",
+            "abc456ExampleValue", "xyz456ExampleValue", "abc789ExampleValue",
+            "xyz789ExampleValue", "abc333ExampleValue", "xyz333ExampleValue",
+        ):
+            assert secret not in diff
+        assert diff.count("[redacted]") >= 6
+
+    asyncio.run(run())
+
+
+def test_source_diff_fails_closed_for_quoted_flow_and_alias_secrets() -> None:
+    source = '''"api": {
+  "encryption": {
+    "key": abcApiFlowExampleValue
+  },
+  "port": 6052,
+  "password": abcStableExampleValue
+}
+"password": &pw abcAnchorExampleValue
+copy: *pw
+flow_sequence: [
+  {"password": abcFlowSequenceExampleValue},
+  {"token": abcFlowSequenceTokenExampleValue}
+]
+"credentials": [
+  abcCredentialOneExampleValue,
+  abcCredentialTwoExampleValue
+]
+auth: abcAuthScalarExampleValue
+tls:
+  - abcTlsListExampleValue
+  - abcTlsListContinuationExampleValue
+"multiline_token": >-
+  abcFoldedExampleValue
+  abcFoldedContinuationExampleValue
+substitutions:
+  "wifi_password": |-
+    abcSubstitutionExampleValue
+    abcSubstitutionContinuationExampleValue
+opaque_ref: !secret abcTaggedExampleValue
+'''
+    proposed = source.replace("abcApiFlowExampleValue", "xyzApiFlowExampleValue") \
+        .replace("6052", "6053") \
+        .replace("abcAnchorExampleValue", "xyzAnchorExampleValue") \
+        .replace("abcFlowSequenceExampleValue", "xyzFlowSequenceExampleValue") \
+        .replace("abcFlowSequenceTokenExampleValue", "xyzFlowSequenceTokenExampleValue") \
+        .replace("abcCredentialOneExampleValue", "xyzCredentialOneExampleValue") \
+        .replace("abcCredentialTwoExampleValue", "xyzCredentialTwoExampleValue") \
+        .replace("abcAuthScalarExampleValue", "xyzAuthScalarExampleValue") \
+        .replace("abcTlsListExampleValue", "xyzTlsListExampleValue") \
+        .replace("abcTlsListContinuationExampleValue", "xyzTlsListContinuationExampleValue") \
+        .replace("abcFoldedExampleValue", "xyzFoldedExampleValue") \
+        .replace("abcFoldedContinuationExampleValue", "xyzFoldedContinuationExampleValue") \
+        .replace("abcSubstitutionExampleValue", "xyzSubstitutionExampleValue") \
+        .replace("abcSubstitutionContinuationExampleValue", "xyzSubstitutionContinuationExampleValue") \
+        .replace("abcTaggedExampleValue", "xyzTaggedExampleValue")
+
+    diff = _safe_source_diff(source, proposed)
+
+    for secret in (
+        "abcApiFlowExampleValue", "xyzApiFlowExampleValue", "abcAnchorExampleValue",
+        "xyzAnchorExampleValue", "abcFoldedExampleValue", "xyzFoldedExampleValue",
+        "abcFlowSequenceExampleValue", "xyzFlowSequenceExampleValue",
+        "abcFlowSequenceTokenExampleValue", "xyzFlowSequenceTokenExampleValue",
+        "abcCredentialOneExampleValue", "xyzCredentialOneExampleValue",
+        "abcCredentialTwoExampleValue", "xyzCredentialTwoExampleValue",
+        "abcStableExampleValue",
+        "abcAuthScalarExampleValue", "xyzAuthScalarExampleValue",
+        "abcTlsListExampleValue", "xyzTlsListExampleValue",
+        "abcTlsListContinuationExampleValue", "xyzTlsListContinuationExampleValue",
+        "abcFoldedContinuationExampleValue", "xyzFoldedContinuationExampleValue",
+        "abcSubstitutionExampleValue", "xyzSubstitutionExampleValue",
+        "abcSubstitutionContinuationExampleValue", "xyzSubstitutionContinuationExampleValue",
+        "abcTaggedExampleValue", "xyzTaggedExampleValue",
+    ):
+        assert secret not in diff
+    assert '"port": 6052' in diff
+    assert '"port": 6053' in diff
+    assert "copy: [redacted]" in diff
+
+    malformed = _safe_source_diff("safe: abcNeutralValue\nbroken: [\n", "safe: xyzNeutralValue\nbroken: [\n")
+    assert "abcNeutralValue" not in malformed and "xyzNeutralValue" not in malformed
+    assert "[redacted]" in malformed
+
+
+def test_source_diff_redacts_credentials_and_keeps_field_names() -> None:
+    source = """wifi:
+  ssid: HomeNetwork
+  password: oldWifiValue
+web_server:
+  auth:
+    username: oldAdminName
+http_request:
+  headers:
+    Authorization: BearerOldValue
+    Cookie: session=oldCookieValue
+package:
+  source: https://alice:oldUrlValue@example.invalid/repo
+"""
+    proposed = (
+        source.replace("oldWifiValue", "newWifiValue")
+        .replace("oldAdminName", "newAdminName")
+        .replace("BearerOldValue", "BearerNewValue")
+        .replace("oldCookieValue", "newCookieValue")
+        .replace("oldUrlValue", "newUrlValue")
+    )
+
+    diff = _safe_source_diff(source, proposed)
+
+    for value in (
+        "HomeNetwork",
+        "oldWifiValue",
+        "newWifiValue",
+        "oldAdminName",
+        "newAdminName",
+        "BearerOldValue",
+        "BearerNewValue",
+        "oldCookieValue",
+        "newCookieValue",
+        "oldUrlValue",
+        "newUrlValue",
+    ):
+        assert value not in diff
+    for key in ("ssid:", "password:", "username:", "Authorization:", "Cookie:", "source:"):
+        assert key in diff
+
+
+def test_preview_diff_marks_line_truncation() -> None:
+    async def run() -> None:
+        source = "\n".join(f"setting_{index}: old" for index in range(600))
+        proposed = "\n".join(f"setting_{index}: new" for index in range(600))
+        plan = replace(_plan(source), proposed_content=proposed)
+        status = await _manager(Builder(), Persistence()).async_preview(
+            "aabbccddeeff", _topology(), plan, _source(source)
+        )
+
+        assert status.redacted_diff.endswith("[truncated]")
+        assert len(status.redacted_diff.encode()) <= 32_768
+        assert len(status.redacted_diff.splitlines()) <= 512
+
+    asyncio.run(run())
+
+
+def test_chip_failure_can_abandon_without_rollback_and_release_lock() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.log_parser import (
+        MeterCommunicationError,
+    )
+
+    async def run() -> None:
+        builder = Builder()
+        persistence = Persistence()
+        manager = _manager(
+            builder, persistence, evidence=MeterCommunicationError((0, 16))
+        )
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        failed = await manager.async_confirm_install(preview.transaction_id, "admin")
+        internal = manager._transaction(preview.transaction_id)
+        proposed = internal.plan.proposed_content
+
+        abandoned = await manager.async_abandon(preview.transaction_id)
+
+        assert abandoned.state is ConfigTransactionState.FAILED
+        assert TransactionEvidenceCode.CANCELLED in abandoned.evidence
+        assert builder.remote_content == proposed
+        assert "restore" not in builder.calls
+        assert not persistence.saved
+        assert not manager.sessions.is_config_locked("aabbccddeeff")
+        with pytest.raises(KeyError):
+            manager.status(preview.transaction_id)
+        assert failed.communication_failed_cs_pins == (0, 16)
+
+    asyncio.run(run())
+
+
+def test_chip_failure_abandon_rejects_external_source_changes() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.log_parser import (
+        MeterCommunicationError,
+    )
+
+    async def run() -> None:
+        builder = Builder()
+        manager = _manager(
+            builder, Persistence(), evidence=MeterCommunicationError((0,))
+        )
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        await manager.async_confirm_install(preview.transaction_id, "admin")
+        builder.remote_content = "external edit"
+
+        with pytest.raises(ValueError, match="confirmed configuration source"):
+            await manager.async_abandon(preview.transaction_id)
+
+        status = manager.status(preview.transaction_id)
+        assert status.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        assert not status.rollback_available
+        assert manager.sessions.is_config_locked("aabbccddeeff")
+        assert "restore" not in builder.calls
+        await manager.sessions.async_unload()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("outcome", ("source_hash", "validation", "compile", "resume"))
+def test_hierarchical_totals_transaction_preserves_graph_and_public_only_evidence(outcome: str) -> None:
+    """A stale source, failed build or reconnect cannot commit a different graph."""
+    from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
+        sanitize_payload,
+    )
+    from tests.totals_browser_fixture import MAC, Fixture
+
+    async def run() -> None:
+        fixture = Fixture()
+        await fixture.initialize("child-parent")
+        inventory = sanitize_payload(await fixture.call({"type": "get_meter_configuration"}))
+        draft = inventory["configuration"]
+        draft["default_totals"]["overall"] = {"watts": False, "amps": False, "kwh": False}
+        for aggregate in draft["aggregates"]:
+            aggregate["outputs"] = {"watts": False, "amps": False, "kwh": aggregate["aggregate_id"] == "building"}
+        before = await fixture.store.async_get_meter_configuration(MAC)
+        source = fixture.builder.remote_content
+        message = {"type": "preview_meter_configuration", "plan_id": inventory["plan_id"],
+            "source_sha256": "f" * 64 if outcome == "source_hash" else inventory["source_sha256"], "configuration": draft}
+        if outcome == "source_hash":
+            from custom_components.circuitsetup_energy_meter_helper.workflow import (
+                WorkflowHandleError,
+            )
+            with pytest.raises(WorkflowHandleError):
+                await fixture.call(message)
+            assert "write" not in fixture.builder.calls
+            assert await fixture.store.async_get_meter_configuration(MAC) == before
+            return
+        preview = await fixture.call(message)
+        retained = fixture.manager._transaction(preview.transaction_id)
+        graph = retained.meter_configuration.aggregates
+        assert graph[-1].sources[0].aggregate_id == "east"
+        assert graph[-1].sources[1].aggregate_id == "west"
+        public_ids = {identifier for identifier, _ in retained.expected_sensor_entities}
+        assert public_ids == {"whole_building_energy"}
+        if outcome == "validation":
+            fixture.builder.validation = [Job(False)]
+        if outcome == "compile":
+            fixture.builder.compile = Job(False)
+        written = await fixture.manager.async_confirm_write(preview.transaction_id, "admin")
+        if outcome == "validation":
+            assert written.state is ConfigTransactionState.ROLLED_BACK
+        else:
+            compiled = await fixture.manager.async_compile(preview.transaction_id)
+            if outcome == "compile":
+                assert compiled.state is ConfigTransactionState.FAILED
+            else:
+                public_evidence = fixture.verifier.evidence
+                fixture.verifier.evidence = replace(public_evidence, sensor_entities=frozenset())
+                interrupted = await fixture.manager.async_confirm_install(preview.transaction_id, "admin")
+                assert interrupted.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+                assert fixture.manager.active_status(MAC).transaction_id == preview.transaction_id
+                assert retained.meter_configuration.aggregates == graph
+                assert await fixture.store.async_get_meter_configuration(MAC) == before
+                fixture.verifier.evidence = public_evidence
+                finished = await fixture.manager.async_confirm_install(preview.transaction_id, "admin")
+                assert finished.state is ConfigTransactionState.VERIFIED
+                assert (await fixture.store.async_get_meter_configuration(MAC)).aggregates == graph
+                return
+        assert await fixture.store.async_get_meter_configuration(MAC) == before
+        rollback = written if outcome == "validation" else await fixture.manager.async_rollback(preview.transaction_id)
+        assert rollback.state is ConfigTransactionState.ROLLED_BACK
+        assert fixture.builder.remote_content == source
+        assert fixture.builder.calls.count("restore") == 1
+        assert "csemh_building_power" not in fixture.builder.remote_content
 
     asyncio.run(run())
 
@@ -498,7 +1343,49 @@ def test_write_and_compile_are_distinct_confirmed_phases() -> None:
 
         compiled = await manager.async_compile(preview.transaction_id)
         assert compiled.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
-        assert builder.calls == ["write", "validate", "compile"]
+        assert builder.calls == ["write", "validate", "read", "compile", "read"]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("stage", ("before_compile", "during_compile", "before_upload"))
+def test_changed_confirmed_source_blocks_build_or_install(stage: str) -> None:
+    """A filename never authorizes building or installing someone else's YAML."""
+    async def run() -> None:
+        builder = Builder()
+        persistence = Persistence()
+        manager = _manager(builder, persistence)
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        foreign = builder.remote_content + "  ct1_cal: 1234\n"
+        if stage == "before_upload":
+            await manager.async_compile(preview.transaction_id)
+        if stage == "during_compile":
+            resume = builder.pause("compile")
+            compile_task = asyncio.create_task(manager.async_compile(preview.transaction_id))
+            await builder.started["compile"].wait()
+            builder.remote_content = foreign
+            resume.set()
+            operation = compile_task
+        else:
+            builder.remote_content = foreign
+            operation = (
+                manager.async_confirm_install(preview.transaction_id, "admin")
+                if stage == "before_upload"
+                else manager.async_compile(preview.transaction_id)
+            )
+        with pytest.raises(ValueError, match="source.*stale|source.*changed"):
+            await operation
+        status = manager.status(preview.transaction_id)
+        assert status.state is ConfigTransactionState.FAILED
+        assert TransactionEvidenceCode.SOURCE_CHANGED in status.evidence
+        assert "upload" not in builder.calls
+        if stage == "before_compile":
+            assert "compile" not in builder.calls
+        assert not persistence.saved
+        await manager.async_rollback(preview.transaction_id)
+        assert builder.remote_content == foreign
+        assert builder.restored_content is None
 
     asyncio.run(run())
 
@@ -515,13 +1402,8 @@ def test_full_meter_configuration_persists_only_after_verified_reconnect(
         if not with_aggregate:
             configuration = replace(configuration, aggregates=())
         expected = expected_meter_entity_evidence(
-            MeterConfigurationRequest(
-                configuration.meter,
-                configuration.channels,
-                configuration.aggregates,
-                configuration.power_quality,
-                configuration.status_fields,
-            ),
+            MeterConfigurationRequest(configuration.meter, configuration.channels, configuration.default_totals, configuration.automatic_totals, configuration.aggregates, configuration.power_quality,
+            configuration.status_fields,),
             _topology(),
         )
         evidence = ReconnectEvidence(
@@ -551,6 +1433,68 @@ def test_full_meter_configuration_persists_only_after_verified_reconnect(
         assert status.full_meter_configuration_verified
         assert persistence.meter_configuration == configuration
         assert persistence.selections == configuration.ct_selections
+
+    asyncio.run(run())
+
+
+def test_verified_reconnect_scopes_entity_and_name_checks_to_enabled_channels() -> None:
+    """Disabled CTs may stay internal without blocking the install proof."""
+
+    async def run() -> None:
+        plan = _managed_entity_plan()
+        base_configuration = _meter_configuration(plan)
+        configuration = replace(
+            base_configuration,
+            channels=tuple(
+                replace(
+                    channel,
+                    enabled=channel.channel != 6,
+                    role=(
+                        CircuitRole.UNUSED
+                        if channel.channel == 6
+                        else channel.role
+                    ),
+                )
+                for channel in base_configuration.channels
+            ),
+        )
+        expected = expected_meter_entity_evidence(
+            MeterConfigurationRequest(
+                configuration.meter,
+                configuration.channels,
+                configuration.default_totals, configuration.automatic_totals, configuration.aggregates,
+                configuration.power_quality,
+                configuration.status_fields,
+            ),
+            _topology(),
+        )
+        evidence = ReconnectEvidence(
+            "aabbccddeeff",
+            _topology(),
+            {
+                channel.channel: channel.name
+                for channel in configuration.channels
+                if channel.enabled
+            },
+            5,
+            expected.sensor_entities,
+        )
+        persistence = Persistence()
+        manager = _manager(Builder(), persistence, evidence=evidence)
+        preview = await manager.async_preview(
+            "aabbccddeeff",
+            _topology(),
+            plan,
+            _source(),
+            meter_configuration=configuration,
+        )
+
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        status = await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert status.state is ConfigTransactionState.VERIFIED
+        assert persistence.meter_configuration == configuration
 
     asyncio.run(run())
 
@@ -592,13 +1536,8 @@ def test_calibration_handoff_saves_full_metadata_and_install_marker_together() -
         plan = _plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
-            MeterConfigurationRequest(
-                configuration.meter,
-                configuration.channels,
-                configuration.aggregates,
-                configuration.power_quality,
-                configuration.status_fields,
-            ),
+            MeterConfigurationRequest(configuration.meter, configuration.channels, configuration.default_totals, configuration.automatic_totals, configuration.aggregates, configuration.power_quality,
+            configuration.status_fields,),
             _topology(),
         )
         persistence = AtomicPersistence()
@@ -633,22 +1572,17 @@ def test_calibration_handoff_saves_full_metadata_and_install_marker_together() -
     asyncio.run(run())
 
 
-def test_missing_full_reconnect_entity_retains_rollbackable_retry_without_persisting() -> (
+def test_missing_full_reconnect_entity_retains_retry_without_persisting() -> (
     None
 ):
-    """Transient reconnect failure stays bounded, private, and rollbackable."""
+    """Transient reconnect failure keeps the upload retryable without metadata."""
 
     async def run() -> None:
         plan = _managed_entity_plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
-            MeterConfigurationRequest(
-                configuration.meter,
-                configuration.channels,
-                configuration.aggregates,
-                configuration.power_quality,
-                configuration.status_fields,
-            ),
+            MeterConfigurationRequest(configuration.meter, configuration.channels, configuration.default_totals, configuration.automatic_totals, configuration.aggregates, configuration.power_quality,
+            configuration.status_fields,),
             _topology(),
         )
         persistence = Persistence()
@@ -687,12 +1621,15 @@ def test_missing_full_reconnect_entity_retains_rollbackable_retry_without_persis
         assert internal.plan is not None and internal.prior_content is not None
         assert internal.meter_configuration is not None
         assert internal.expected_sensor_entities
-        assert status.rollback_available
+        assert not status.rollback_available
         assert manager.sessions.is_config_locked("aabbccddeeff")
         assert "top-secret" not in repr(status) and "top-secret" not in repr(internal)
 
-        rolled_back = await manager.async_rollback(preview.transaction_id)
-        assert rolled_back.state is ConfigTransactionState.ROLLED_BACK
+        with pytest.raises(RuntimeError, match="rollback"):
+            await manager.async_rollback(preview.transaction_id)
+        abandoned = await manager.async_abandon(preview.transaction_id)
+        assert abandoned.state is ConfigTransactionState.FAILED
+        assert "restore" not in manager._device_builder.calls
 
     asyncio.run(run())
 
@@ -712,6 +1649,9 @@ def test_legacy_yaml_does_not_require_unmanaged_entity_names_after_install() -> 
                 _topology(),
                 {channel.channel: channel.name for channel in configuration.channels},
                 6,
+                frozenset({("energy_meter_total_watts_main", "Energy meter Total Watts Main"),
+                    ("energy_meter_total_amps_main", "Energy meter Total Amps Main"),
+                    ("energy_meter_total_kwh", "Energy meter Total kWh")}),
             ),
         )
         preview = await manager.async_preview(
@@ -739,13 +1679,8 @@ def test_verified_reconnect_marks_only_missing_aggregate_entities() -> None:
         plan = _managed_entity_plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
-            MeterConfigurationRequest(
-                configuration.meter,
-                configuration.channels,
-                configuration.aggregates,
-                configuration.power_quality,
-                configuration.status_fields,
-            ),
+            MeterConfigurationRequest(configuration.meter, configuration.channels, configuration.default_totals, configuration.automatic_totals, configuration.aggregates, configuration.power_quality,
+            configuration.status_fields,),
             _topology(),
         )
         assert expected.aggregate_sensor_entities
@@ -810,13 +1745,8 @@ def test_full_reconnect_requires_exact_sensor_object_id_name_pairs() -> None:
         plan = _managed_entity_plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
-            MeterConfigurationRequest(
-                configuration.meter,
-                configuration.channels,
-                configuration.aggregates,
-                configuration.power_quality,
-                configuration.status_fields,
-            ),
+            MeterConfigurationRequest(configuration.meter, configuration.channels, configuration.default_totals, configuration.automatic_totals, configuration.aggregates, configuration.power_quality,
+            configuration.status_fields,),
             _topology(),
         )
         pairs = tuple(expected.sensor_entities)
@@ -860,16 +1790,14 @@ def test_full_reconnect_rejects_duplicate_required_sensor_object_id() -> None:
         plan = _managed_entity_plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
-            MeterConfigurationRequest(
-                configuration.meter,
-                configuration.channels,
-                configuration.aggregates,
-                configuration.power_quality,
-                configuration.status_fields,
-            ),
+            MeterConfigurationRequest(configuration.meter, configuration.channels, configuration.default_totals, configuration.automatic_totals, configuration.aggregates, configuration.power_quality,
+            configuration.status_fields,),
             _topology(),
         )
-        duplicate = next(iter(expected.sensor_entities))[0]
+        # Source-unresolved native totals are not required by this managed-block fixture.
+        duplicate = min(
+            expected.aggregate_sensor_entities - expected.native_sensor_entities
+        )[0]
         manager = _manager(
             Builder(),
             Persistence(),
@@ -890,6 +1818,7 @@ def test_full_reconnect_rejects_duplicate_required_sensor_object_id() -> None:
             meter_configuration=configuration,
             expected_sensor_entities=expected.sensor_entities,
         )
+        assert duplicate in {identifier for identifier, _ in manager._transaction(preview.transaction_id).expected_sensor_entities}
         await manager.async_confirm_write(preview.transaction_id, "admin")
         await manager.async_compile(preview.transaction_id)
 
@@ -926,13 +1855,8 @@ def test_cancellation_during_verified_commit_finishes_durable_metadata() -> None
         plan = _plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
-            MeterConfigurationRequest(
-                configuration.meter,
-                configuration.channels,
-                configuration.aggregates,
-                configuration.power_quality,
-                configuration.status_fields,
-            ),
+            MeterConfigurationRequest(configuration.meter, configuration.channels, configuration.default_totals, configuration.automatic_totals, configuration.aggregates, configuration.power_quality,
+            configuration.status_fields,),
             _topology(),
         )
         persistence = BlockingPersistence()
@@ -1039,13 +1963,8 @@ def test_unload_keeps_started_store_commit_owned_until_terminal_state() -> None:
         plan = _plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
-            MeterConfigurationRequest(
-                configuration.meter,
-                configuration.channels,
-                configuration.aggregates,
-                configuration.power_quality,
-                configuration.status_fields,
-            ),
+            MeterConfigurationRequest(configuration.meter, configuration.channels, configuration.default_totals, configuration.automatic_totals, configuration.aggregates, configuration.power_quality,
+            configuration.status_fields,),
             _topology(),
         )
         sessions = SessionManager(unload_timeout=0.001)
@@ -1105,7 +2024,7 @@ def test_unload_keeps_started_store_commit_owned_until_terminal_state() -> None:
 
 
 def test_unload_drains_started_store_failure_before_returning() -> None:
-    """A durable-save error reaches the transaction terminal state before unload ends."""
+    """A durable-save error reaches retry state before unload closes the transaction."""
 
     class FailingPersistence(Persistence):
         def __init__(self) -> None:
@@ -1128,13 +2047,8 @@ def test_unload_drains_started_store_failure_before_returning() -> None:
         plan = _plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
-            MeterConfigurationRequest(
-                configuration.meter,
-                configuration.channels,
-                configuration.aggregates,
-                configuration.power_quality,
-                configuration.status_fields,
-            ),
+            MeterConfigurationRequest(configuration.meter, configuration.channels, configuration.default_totals, configuration.automatic_totals, configuration.aggregates, configuration.power_quality,
+            configuration.status_fields,),
             _topology(),
         )
         sessions = SessionManager(unload_timeout=0.001)
@@ -1174,9 +2088,11 @@ def test_unload_drains_started_store_failure_before_returning() -> None:
         assert not unload.done()
         persistence.finish.set()
 
-        assert (await install).state is ConfigTransactionState.FAILED
+        assert (
+            await install
+        ).state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
         await unload
-        assert states[-1] is ConfigTransactionState.FAILED
+        assert states[-1] is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
         assert persistence.meter_configuration is None
         assert sessions._get_transaction(preview.transaction_id) is None
         assert transaction.closed and transaction.meter_configuration is None
@@ -1210,13 +2126,8 @@ def test_cancelled_unload_drains_started_store_commit_before_propagating() -> No
         plan = _plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
-            MeterConfigurationRequest(
-                configuration.meter,
-                configuration.channels,
-                configuration.aggregates,
-                configuration.power_quality,
-                configuration.status_fields,
-            ),
+            MeterConfigurationRequest(configuration.meter, configuration.channels, configuration.default_totals, configuration.automatic_totals, configuration.aggregates, configuration.power_quality,
+            configuration.status_fields,),
             _topology(),
         )
         sessions = SessionManager(unload_timeout=0.001)
@@ -1282,13 +2193,8 @@ def test_expiry_release_failure_or_cancellation_always_scrubs_transaction() -> N
         plan = _plan()
         configuration = _meter_configuration(plan)
         expected = expected_meter_entity_evidence(
-            MeterConfigurationRequest(
-                configuration.meter,
-                configuration.channels,
-                configuration.aggregates,
-                configuration.power_quality,
-                configuration.status_fields,
-            ),
+            MeterConfigurationRequest(configuration.meter, configuration.channels, configuration.default_totals, configuration.automatic_totals, configuration.aggregates, configuration.power_quality,
+            configuration.status_fields,),
             _topology(),
         )
         preview = await manager.async_preview(
@@ -1669,7 +2575,9 @@ def test_confirmations_and_verified_persistence_are_separate() -> None:
         status = await manager.async_confirm_install(preview.transaction_id, "admin")
         assert status.state is ConfigTransactionState.VERIFIED
         assert not status.full_meter_configuration_verified
-        assert builder.calls == ["write", "validate", "compile", "upload"]
+        assert builder.calls == [
+            "write", "validate", "read", "compile", "read", "read", "read", "upload", "read"
+        ]
         saved = persistence.saved[0][1][0]  # type: ignore[index]
         assert (
             saved.config_sha256 == sha256(_plan().proposed_content.encode()).hexdigest()
@@ -1926,7 +2834,7 @@ def test_rollback_claim_is_atomic_and_replay_safe() -> None:
     asyncio.run(run())
 
 
-def test_upload_disconnect_is_terminal_and_never_persists() -> None:
+def test_upload_disconnect_retains_verification_and_never_persists() -> None:
     async def run() -> None:
         persistence = Persistence()
         manager = _manager(
@@ -1936,10 +2844,10 @@ def test_upload_disconnect_is_terminal_and_never_persists() -> None:
         await manager.async_confirm_write(preview.transaction_id, "admin")
         await manager.async_compile(preview.transaction_id)
         status = await manager.async_confirm_install(preview.transaction_id, "admin")
-        assert status.state is ConfigTransactionState.FAILED
-        assert status.evidence == (TransactionEvidenceCode.UPLOAD_FAILED,)
+        assert status.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        assert status.evidence == (TransactionEvidenceCode.UPLOAD_OUTCOME_UNKNOWN,)
         assert "token" not in repr(status) and not persistence.saved
-        assert not manager.sessions.is_config_locked("aabbccddeeff")
+        assert manager.sessions.is_config_locked("aabbccddeeff")
 
     asyncio.run(run())
 
@@ -2062,7 +2970,7 @@ def test_rebooting_meter_waits_and_verifies_without_second_upload(
     asyncio.run(run())
 
 
-def test_cancellation_during_reboot_wait_finishes_the_transaction(
+def test_cancellation_during_reboot_wait_retains_verification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def run() -> None:
@@ -2096,9 +3004,9 @@ def test_cancellation_during_reboot_wait_finishes_the_transaction(
         with pytest.raises(asyncio.CancelledError):
             await install
 
-        assert statuses[-1].state is ConfigTransactionState.FAILED
-        assert statuses[-1].evidence == (TransactionEvidenceCode.CANCELLED,)
-        assert manager.active_status("aabbccddeeff") is None
+        assert statuses[-1].state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        assert statuses[-1].evidence == (TransactionEvidenceCode.RECONNECT_UNAVAILABLE,)
+        assert manager.active_status("aabbccddeeff") is not None
 
     asyncio.run(run())
 
@@ -2163,7 +3071,7 @@ def test_reconnect_exhaustion_preserves_manual_install_retry() -> None:
         assert verifier.calls >= 1
         assert retry.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
         assert retry.evidence == (TransactionEvidenceCode.RECONNECT_UNAVAILABLE,)
-        assert retry.rollback_available
+        assert not retry.rollback_available
         assert sessions.is_config_locked("aabbccddeeff")
 
         exhausted_calls = verifier.calls
@@ -2172,6 +3080,7 @@ def test_reconnect_exhaustion_preserves_manual_install_retry() -> None:
         assert completed.state is ConfigTransactionState.VERIFIED
         assert completed.evidence == ()
         assert verifier.calls == exhausted_calls + 1
+        assert manager._device_builder.calls.count("upload") == 1
 
     asyncio.run(run())
 
@@ -2227,21 +3136,54 @@ def test_reconnect_rejects_wrong_identity_topology_entities_or_count(
     asyncio.run(run())
 
 
-def test_persistence_failure_is_terminal_and_releases_lease() -> None:
+def test_persistence_failure_retries_metadata_without_uploading_again() -> None:
     async def run() -> None:
-        manager = _manager(Builder(), Persistence(OSError("disk secret")))
+        builder = Builder()
+        persistence = Persistence(OSError("disk secret"))
+        manager = _manager(builder, persistence)
         preview = await _preview(manager)
         await manager.async_confirm_write(preview.transaction_id, "admin")
         await manager.async_compile(preview.transaction_id)
         status = await manager.async_confirm_install(preview.transaction_id, "admin")
+        assert status.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
         assert status.evidence == (TransactionEvidenceCode.PERSISTENCE_FAILED,)
+        assert not status.rollback_available
         assert "secret" not in repr(status)
+        assert manager.sessions.is_config_locked("aabbccddeeff")
+
+        persistence.error = None
+        status = await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert status.state is ConfigTransactionState.VERIFIED
+        assert status.evidence == ()
+        assert builder.calls.count("upload") == 1
         assert not manager.sessions.is_config_locked("aabbccddeeff")
 
     asyncio.run(run())
 
 
-def test_cancellation_after_write_restores_and_upload_cancel_cleans_up() -> None:
+def test_persistence_retry_can_be_abandoned_without_rollback() -> None:
+    async def run() -> None:
+        builder = Builder()
+        manager = _manager(builder, Persistence(OSError("disk secret")))
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        retry = await manager.async_confirm_install(preview.transaction_id, "admin")
+
+        assert retry.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        assert not retry.rollback_available
+        abandoned = await manager.async_abandon(preview.transaction_id)
+
+        assert abandoned.state is ConfigTransactionState.FAILED
+        assert abandoned.evidence[-1] is TransactionEvidenceCode.CANCELLED
+        assert builder.restored_content is None
+        assert not manager.sessions.is_config_locked("aabbccddeeff")
+
+    asyncio.run(run())
+
+
+def test_cancellation_after_write_restores_and_upload_cancel_retains_verification() -> None:
     async def run() -> None:
         builder = Builder()
         builder.pause("validate")
@@ -2270,11 +3212,10 @@ def test_cancellation_after_write_restores_and_upload_cancel_cleans_up() -> None
         task2.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task2
-        assert not persistence2.saved and not manager2.sessions.is_config_locked(
+        assert not persistence2.saved and manager2.sessions.is_config_locked(
             "aabbccddeeff"
         )
-        with pytest.raises(KeyError):
-            manager2.status(preview2.transaction_id)
+        assert manager2.status(preview2.transaction_id).state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
 
     asyncio.run(run())
 
@@ -2355,7 +3296,7 @@ def test_spi_failure_retains_pin_evidence_and_blocks_verified_persistence() -> N
         assert status.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
         assert status.evidence == (TransactionEvidenceCode.METER_COMMUNICATION_FAILED,)
         assert status.communication_failed_cs_pins == (0, 16)
-        assert status.rollback_available
+        assert not status.rollback_available
         assert not persistence.saved
         assert "device_verified" not in status.progress
         assert sanitize_payload(status)["communication_failed_cs_pins"] == [0, 16]
