@@ -15,6 +15,7 @@ from typing import Any
 
 # isort: off
 import pytest
+from aioesphomeapi import APIConnectionError
 from aioesphomeapi import ButtonInfo as ApiButtonInfo
 from aioesphomeapi import NumberInfo as ApiNumberInfo
 from aioesphomeapi import SensorInfo as ApiSensorInfo
@@ -736,6 +737,20 @@ def test_offset_safe_errors_distinguish_communication_diagnostics_and_identity()
         (2, "offset_diagnostics_incomplete", "Fresh offset diagnostics are incomplete"),
         (3, "offset_chip_identity_unavailable", "The selected chip identity could not be verified"),
         (4, "meter_communication_failed", "Meter chip communication could not be verified"),
+    ]
+
+
+def test_start_session_reports_an_unreachable_meter_without_connection_details() -> None:
+    connection = FakeConnection()
+
+    _send_safe_error(
+        connection, 1, APIConnectionError("private network address"), operation="start_session"
+    )
+    _send_safe_error(connection, 2, APIConnectionError("private network address"))
+
+    assert connection.errors == [
+        (1, "meter_unavailable", "The selected meter could not be reached"),
+        (2, "operation_failed", "The request could not be completed"),
     ]
 
 
@@ -2100,6 +2115,7 @@ def test_builder_session_uses_legacy_snapshot_configuration_for_calibration(
                 f"  current_cal_ct{channel}: 27518\n"
                 for channel in range(1, 13)
             )
+            + "sensor:\n  - platform: atm90e32\n    id: meter_main1\n    phase_a:\n      offset_voltage: -928\n"
         )
         digest = sha256(content.encode()).hexdigest()
         snapshot = ESPHomeConfigSnapshot("meter.yaml", content, digest)
@@ -2205,6 +2221,7 @@ def test_builder_session_uses_legacy_snapshot_configuration_for_calibration(
         session = await workflow.async_start_session("meter")
         handle = workflow._sessions[session.session_id]
 
+        assert session.configured_offset_targets == ((0, 1),)
         assert handle.meter_configuration is not None
         assert handle.meter_configuration.meter.update_interval_s == 60
         assert handle.timing_policy == CalibrationTimingPolicy(60, 3)
@@ -3192,10 +3209,9 @@ def test_total_graph_preview_route_serializes_server_graph_without_transaction()
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("success", (False, True))
-@pytest.mark.parametrize("accepted", (False, True))
-def test_parent_decision_cross_route_persists_only_after_verified_install(success: bool, accepted: bool) -> None:
-    """A typed per-link decision survives preview/routes, not a failed upload."""
+@pytest.mark.parametrize(("accepted", "success"), ((False, True), (True, False), (True, True)))
+def test_parent_decision_cross_route_persists_only_after_verified_install(accepted: bool, success: bool) -> None:
+    """A typed per-link decision is saved after confirmation or a verified upload."""
     from dataclasses import replace
 
     from tests.test_config_transaction import Job
@@ -3230,11 +3246,16 @@ def test_parent_decision_cross_route_persists_only_after_verified_install(succes
             ct_names={channel.channel: channel.name for channel in retained.meter_configuration.channels},
             sensor_entities=retained.expected_sensor_entities)
         transaction = {"transaction_id": status["transaction_id"], "source_sha256": status["source_sha256"]}
-        fixture.builder.upload = Job(success)
-        await call("apply_ct_config", **transaction)
-        await call("compile_ct_config", **transaction)
-        assert await fixture.store.async_get_meter_configuration(MAC) == before
-        final = await call("install_ct_config", **transaction)
+        fixture.builder.upload = Job(success, code=0 if success else 1)
+        final = await call("apply_ct_config", **transaction)
+        if not accepted:
+            assert status["redacted_diff"] == ""
+            assert final["state"] == "verified"
+            assert set(fixture.builder.calls) == {"read"}
+        else:
+            await call("compile_ct_config", **transaction)
+            assert await fixture.store.async_get_meter_configuration(MAC) == before
+            final = await call("install_ct_config", **transaction)
         after = await fixture.store.async_get_meter_configuration(MAC)
         if success:
             assert final["state"] == "verified"

@@ -46,7 +46,7 @@ async def _stale_workflow():
 async def _preview(workflow, plan, verifier):
     requested = replace(
         plan.inventory.configuration,
-        meter=replace(plan.inventory.configuration.meter, electrical_system=ElectricalSystem.SPLIT_PHASE_120_240),
+        meter=replace(plan.inventory.configuration.meter, friendly_name="Updated meter", electrical_system=ElectricalSystem.SPLIT_PHASE_120_240),
         totals_change_intent=TotalsChangeIntent(adopt_managed_totals=True),
     )
     topology = plan.topology
@@ -79,6 +79,48 @@ def test_ordinary_install_reconciles_stale_record_after_verification():
         assert saved.channels[0].name != "Old CT 1"
         assert saved.totals_managed
         assert "metadata_persisted" in installed.progress
+
+    asyncio.run(run())
+
+
+def test_unchanged_configuration_confirms_metadata_without_firmware_install():
+    async def run():
+        workflow, plan, store, builder, _ = await _stale_workflow()
+        preview = await workflow._async_preview_meter_configuration(
+            plan, plan.inventory.configuration,
+        )
+        assert preview.redacted_diff == ""
+        manager = workflow.transactions
+
+        confirmed = await manager.async_confirm_write(preview.transaction_id, "admin")
+
+        assert confirmed.state is ConfigTransactionState.VERIFIED
+        assert not confirmed.full_meter_configuration_verified
+        assert "metadata_persisted" in confirmed.progress
+        assert "ota_attempted" not in confirmed.progress
+        assert builder.calls == ["read"]
+        assert await store.async_get_meter_configuration(MAC) is not None
+
+    asyncio.run(run())
+
+
+def test_unchanged_confirmation_rejects_stale_helper_record_without_upload():
+    async def run():
+        workflow, plan, store, builder, _ = await _stale_workflow()
+        preview = await workflow._async_preview_meter_configuration(
+            plan, plan.inventory.configuration,
+        )
+        store._store.data["meters"][MAC]["interrupted_session"] = {"newer": True}
+        before = deepcopy(store._store.data)
+
+        confirmed = await workflow.transactions.async_confirm_write(
+            preview.transaction_id, "admin",
+        )
+
+        assert confirmed.state is ConfigTransactionState.FAILED
+        assert confirmed.evidence == (TransactionEvidenceCode.PERSISTENCE_FAILED,)
+        assert builder.calls == ["read"]
+        assert store._store.data == before
 
     asyncio.run(run())
 
@@ -158,8 +200,9 @@ def test_exact_fingerprint_cannot_bypass_record_validation(invalid):
 def test_gain_persistence_does_not_use_ordinary_reconciliation_authority():
     """Even a full transaction holding a baseline cannot bypass gain receipt CAS."""
     async def run():
-        workflow, plan, store, _, verifier = await _stale_workflow()
+        workflow, plan, store, builder, verifier = await _stale_workflow()
         preview, mutation = await _preview(workflow, plan, verifier)
+        builder.remote_content = mutation.proposed_content
         transaction = workflow.transactions._transaction(preview.transaction_id)
         assert transaction.meter_record_fingerprint is not None
         transaction.verification_id = "a" * 32

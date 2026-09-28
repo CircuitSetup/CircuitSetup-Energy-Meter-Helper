@@ -150,6 +150,49 @@ MAX_INSPECTION_HANDLES = 8
 _INGRESS_ENTRY_PREFIX = "/api/hassio_ingress/"
 _INGRESS_SESSION_COOKIE = "ingress_session"
 _SUPERVISOR_TOKEN = re.compile(r"[A-Za-z0-9_-]{1,256}\Z", re.ASCII)
+_OFFSET_FIELDS_BY_STAGE = {
+    1: frozenset(("offset_voltage", "offset_current")),
+    2: frozenset(("offset_active_power", "offset_reactive_power")),
+}
+
+
+def _configured_offset_targets(
+    entries: tuple[tuple[str | None, str], ...], board_count: int,
+) -> tuple[tuple[int, int], ...]:
+    targets = []
+    for board in range(board_count):
+        chips = {
+            _instance_id_for_channel(board * 6 + 1),
+            _instance_id_for_channel(board * 6 + 4),
+        }
+        for stage, names in _OFFSET_FIELDS_BY_STAGE.items():
+            owners = {owner for owner, field in entries if field in names}
+            if None in owners or chips & owners:
+                targets.append((board, stage))
+    return tuple(targets)
+
+
+def _completed_configured_offset_targets(
+    nonzero_entries: tuple[tuple[str | None, str], ...],
+    phase_entries: tuple[tuple[str | None, str, str], ...],
+    board_count: int,
+) -> tuple[tuple[int, int], ...]:
+    nonzero = set(nonzero_entries)
+    configured = set(phase_entries)
+    targets = []
+    for board in range(board_count):
+        chips = (
+            _instance_id_for_channel(board * 6 + 1),
+            _instance_id_for_channel(board * 6 + 4),
+        )
+        for stage, names in _OFFSET_FIELDS_BY_STAGE.items():
+            if all(
+                any((chip, field) in nonzero for field in names)
+                and all((chip, phase, field) in configured for phase in ("a", "b", "c") for field in names)
+                for chip in chips
+            ):
+                targets.append((board, stage))
+    return tuple(targets)
 
 
 def _configured_current_sensors(
@@ -370,6 +413,7 @@ class SessionStatus:
     offset_boards: tuple[dict[str, Any], ...] = ()
     has_pending_calibration: bool = False
     calibration_plan: CalibrationPlan = "full"
+    configured_offset_targets: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass(slots=True)
@@ -399,6 +443,8 @@ class _SessionHandle:
     meter_configuration: MeterConfigurationRequest | None = None
     configuration_sha256: str | None = None
     configuration_authoritative: bool = True
+    configured_offset_targets: tuple[tuple[int, int], ...] = ()
+    completed_configured_offset_targets: tuple[tuple[int, int], ...] = ()
     timing_policy: CalibrationTimingPolicy = field(
         default_factory=lambda: CalibrationTimingPolicy(5, 3)
     )
@@ -429,9 +475,13 @@ class _SessionHandle:
             disposition = "partial" if self.offset_results else "skipped"
         elif any(state in {"partial", "indeterminate"} for state in stage_states):
             disposition = "partial"
-        elif stage_states and all(state == "completed" for state in stage_states):
+        elif stage_states and all(
+            stage["state"] == "completed"
+            for board in boards
+            for stage in board["stages"]
+        ):
             disposition = "completed"
-        elif self.offset_active is not None or self.offset_results:
+        elif self.offset_active is not None or self.offset_results or self.completed_configured_offset_targets:
             disposition = "in_progress"
         else:
             disposition = "not_started"
@@ -461,6 +511,7 @@ class _SessionHandle:
             disposition,
             boards,
             calibration_plan=self.calibration_plan,
+            configured_offset_targets=self.configured_offset_targets,
         )
 
     def _offset_stage_state(self, board_index: int, stage: int) -> str:
@@ -476,7 +527,13 @@ class _SessionHandle:
             ):
                 return "completed"
             return result.state.value
-        return "skipped" if self.offset_skipped else "not_started"
+        if self.offset_skipped:
+            return "skipped"
+        return (
+            "completed"
+            if (board_index, stage) in self.completed_configured_offset_targets
+            else "not_started"
+        )
 
     def scrub(self) -> None:
         self.substitutions.clear()
@@ -936,7 +993,7 @@ class EntryWorkflow:
         return {
             "session": session,
             "transaction": (
-                self.transactions.active_status(mac)
+                await self.transactions.async_recover_install(mac)
                 if self.transactions is not None
                 else None
             ),
@@ -1444,6 +1501,22 @@ class EntryWorkflow:
             configuration_authoritative=(
                 snapshot.configuration_authoritative if snapshot is not None else True
             ),
+            configured_offset_targets=(
+                _configured_offset_targets(
+                    document.configured_offset_entries, topology.board_count,
+                )
+                if snapshot is not None
+                else ()
+            ),
+            completed_configured_offset_targets=(
+                _completed_configured_offset_targets(
+                    document.configured_offset_entries,
+                    document.configured_offset_phase_entries,
+                    topology.board_count,
+                )
+                if snapshot is not None
+                else ()
+            ),
             timing_policy=CalibrationTimingPolicy(
                 (
                     meter_configuration.meter.update_interval_s
@@ -1618,6 +1691,30 @@ class EntryWorkflow:
             self._validate_offset_target(handle, board_index, stage)
             if handle.offset_skipped:
                 raise WorkflowHandleError("offset calibration is already finalized")
+            stage_one_configured = False
+            if handle.configuration is not None:
+                snapshot = await self._require_builder().async_get_config(
+                    handle.configuration
+                )
+                if (
+                    sha256(snapshot.content.encode()).hexdigest() != snapshot.sha256
+                    or snapshot.sha256 != handle.configuration_sha256
+                ):
+                    raise WorkflowHandleError("calibration configuration is stale")
+                document = ESPHomeConfigDocument.parse(snapshot.content)
+                entries = document.configured_offset_entries
+                targets = _configured_offset_targets(
+                    entries,
+                    handle.topology.board_count,
+                )
+                if (board_index, stage) in targets:
+                    raise WorkflowHandleError(
+                        "Config offset values must be removed before re-running this calibration"
+                    )
+                stage_one_configured = (board_index, 1) in _completed_configured_offset_targets(
+                    entries, document.configured_offset_phase_entries,
+                    handle.topology.board_count,
+                )
             handle.offset_active = (board_index, stage)
             active = True
             self._publish(handle)
@@ -1629,6 +1726,7 @@ class EntryWorkflow:
                 stage,
                 confirm_retry=confirm_retry,
                 timing_policy=handle.timing_policy,
+                stage_one_configured=stage_one_configured,
             )
             self._assert_claim(handle, revision)
             handle.offset_results[(board_index, stage)] = result
@@ -2338,7 +2436,7 @@ class EntryWorkflow:
                         )
                         exact_claim()
                         await recovery.async_require_finalization(
-                            lease, final, installed=True
+                            lease, final, installed=True, require_confirmed=False
                         )
                         exact_claim()
                         self._sessions_owner.consume_finalized_offsets(
@@ -2465,6 +2563,16 @@ class EntryWorkflow:
                     handle.configuration
                 )
                 _validate_source(source, handle.topology)
+                document = ESPHomeConfigDocument.parse(source.content)
+                entries = document.configured_offset_entries
+                targets = _configured_offset_targets(
+                    entries,
+                    handle.topology.board_count,
+                )
+                if (board_index, stage) in targets:
+                    raise WorkflowHandleError(
+                        "Config offset values must be removed before re-running this calibration"
+                    )
                 if (
                     source.configuration != record.original.configuration
                     or source.sha256 != prepared.proposed_sha256
@@ -2476,9 +2584,7 @@ class EntryWorkflow:
                     )
                 substitutions = {
                     key: scalar.value
-                    for key, scalar in ESPHomeConfigDocument.parse(
-                        source.content
-                    ).substitutions.items()
+                    for key, scalar in document.substitutions.items()
                 }
                 if handle.binding.connection_generation != api.connection_generation:
                     handle.binding = self._calibration._rebind_after_reconnect(
@@ -2504,6 +2610,10 @@ class EntryWorkflow:
                 ),
                 claim_guard=lambda: self._assert_claim(handle, revision),
                 timing_policy=handle.timing_policy,
+                stage_one_configured=(board_index, 1) in _completed_configured_offset_targets(
+                    entries, document.configured_offset_phase_entries,
+                    handle.topology.board_count,
+                ),
             )
             self._assert_claim(handle, revision)
             handle.offset_results[(board_index, stage)] = result
@@ -2523,14 +2633,7 @@ class EntryWorkflow:
     async def async_skip_offset_calibration(self, session_id: str) -> SessionStatus:
         handle, revision = self._claim_ready_session(session_id)
         try:
-            if handle.offset_skipped or (
-                len(handle.offset_results) == handle.topology.board_count * 2
-                and all(
-                    result.state
-                    is OffsetCalibrationState.APPLIED_PENDING_RESTART_VERIFICATION
-                    for result in handle.offset_results.values()
-                )
-            ):
+            if handle.offset_skipped or handle.status().offset_disposition == "completed":
                 raise WorkflowHandleError("offset calibration is already finalized")
             self._assert_claim(handle, revision)
             handle.offset_skipped = True

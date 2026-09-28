@@ -401,6 +401,9 @@ class CalibrationEngine:
                     session,
                     generation=generation,
                     expected_instance_ids=expected_instance_ids,
+                    allowed_instance_ids={
+                        _instance_id(group.key) for group in binding.groups
+                    },
                     expected_categories=expected_categories,
                     operation_sequence=operation_sequence,
                     started_after=restore_started,
@@ -601,6 +604,7 @@ class CalibrationEngine:
         *,
         confirm_retry: bool = False,
         timing_policy: CalibrationTimingPolicy | None = None,
+        stage_one_configured: bool = False,
     ) -> OffsetCalibrationResult:
         """Run one offset stage for both chips on a selected board."""
         if stage not in (1, 2):
@@ -638,7 +642,7 @@ class CalibrationEngine:
             if origin is not None:
                 origin = await self._calibration_origin(lease, session, binding)
             expected = _pending_offset_tables(origin, stage)
-            if stage == 2 and not all(
+            if stage == 2 and not stage_one_configured and not all(
                 origin is not None and instance_id in origin.expected_phase_offsets
                 for _, _, instance_id in selected
             ):
@@ -752,6 +756,7 @@ class CalibrationEngine:
         source_reader: Callable[[], Awaitable[ESPHomeConfigSnapshot]],
         claim_guard: Callable[[], None] = lambda: None,
         timing_policy: CalibrationTimingPolicy | None = None,
+        stage_one_configured: bool = False,
     ) -> OffsetCalibrationResult:
         """Capture stock candidates through a backed-up native or legacy preparation.
 
@@ -916,7 +921,7 @@ class CalibrationEngine:
             stage_one = {item.instance_id for item in record.results if item.stage == 1}
             if pending is not None:
                 stage_one.update(pending.expected_phase_offsets)
-            if stage == 2 and not {item[2] for item in selected} <= stage_one:
+            if stage == 2 and not stage_one_configured and not {item[2] for item in selected} <= stage_one:
                 raise ValueError("Stage 1 must complete for both selected chips")
             for _, _, instance in selected:
                 if instance not in unfinished:
@@ -1590,6 +1595,9 @@ class CalibrationEngine:
                 expected_instance_ids={
                     instance_id for _group, instance_id, _sequence, _after in runs
                 },
+                allowed_instance_ids={
+                    _instance_id(group.key) for group in zeroer.binding.groups
+                },
                 expected_categories={
                     instance_id: {"gain"}
                     for _group, instance_id, _sequence, _after in runs
@@ -1798,12 +1806,13 @@ class CalibrationEngine:
                 target_instance_id=instance_id,
                 button_name=button_name,
                 dispatched_after=dispatched_after,
+                timeout=self._evidence_timeout if timeout is None else timeout,
             )
 
             async def wait_for_evidence() -> GainRunEvidence:
                 try:
                     async with asyncio.timeout(
-                        self._evidence_timeout if timeout is None else timeout
+                        (self._evidence_timeout if timeout is None else timeout) + 0.1
                     ):
                         return await evidence
                 finally:
@@ -1888,6 +1897,7 @@ class CalibrationEngine:
         *,
         generation: int,
         expected_instance_ids: set[str],
+        allowed_instance_ids: set[str],
         expected_categories: dict[str, set[Literal["gain", "offset", "power_offset"]]],
         operation_sequence: int,
         started_after: float,
@@ -1907,6 +1917,7 @@ class CalibrationEngine:
                     await wait(
                         connection_generation=generation,
                         expected_instance_ids=expected_instance_ids,
+                        allowed_instance_ids=allowed_instance_ids,
                         expected_categories=expected_categories,
                         operation_sequence=operation_sequence,
                         started_after=started_after,
@@ -1937,6 +1948,7 @@ class CalibrationEngine:
             correlated,
             connection_generation=generation,
             expected_instance_ids=expected_instance_ids,
+            allowed_instance_ids=allowed_instance_ids,
             started_after=started_after,
             operation_sequence=operation_sequence,
             expected_categories=expected_categories,

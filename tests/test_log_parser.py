@@ -1248,6 +1248,85 @@ def test_gain_only_restore_ignores_unrequested_offset_config_fallback() -> None:
     assert restored.phase_power_offsets is None
 
 
+def test_restore_accepts_known_unchanged_chip_while_selecting_requested_categories() -> None:
+    lines = log_lines("restore_positive.log", sequence=0)
+    lines.extend(
+        CalibrationLogLine(
+            3,
+            0,
+            50.0 + index,
+            item.line.replace("meter_main1", "meter_main2"),
+        )
+        for index, item in enumerate(log_lines("restore_positive.log", sequence=0))
+    )
+    lines.append(
+        CalibrationLogLine(
+            3,
+            0,
+            99.0,
+            "[W][atm90e32:1000] [CALIBRATION][meter_main2] No stored gain calibrations found. Using config file values.",
+        )
+    )
+
+    restored = parse_restore(
+        lines,
+        connection_generation=3,
+        expected_instance_ids={"meter_main1"},
+        allowed_instance_ids={"meter_main1", "meter_main2"},
+        started_after=10.0,
+        operation_sequence=0,
+        expected_categories={"meter_main1": {"gain", "offset"}},
+    )
+
+    assert set(restored) == {"meter_main1"}
+    assert restored["meter_main1"].phase_gains == (
+        (7305, 27518),
+        (7305, 28312),
+        (7305, 27518),
+    )
+    assert restored["meter_main1"].phase_offsets == ((-12, 31), (-13, 32), (-14, 33))
+
+
+@pytest.mark.parametrize(
+    ("extra", "match"),
+    (
+        (
+            (
+                "[I] [CALIBRATION][meter_main2] Restoring saved gain calibrations to registers",
+            ),
+            "gain table columns",
+        ),
+        (
+            (
+                "[I] [CALIBRATION][meter_main2] Offset calibration restore verified.",
+                "[I] [CALIBRATION][meter_main2] Offset calibration restore verified.",
+            ),
+            "offset restore verification.*duplicate",
+        ),
+    ),
+    ids=("incomplete-gain-header", "duplicate-offset-verification"),
+)
+def test_restore_rejects_malformed_known_unchanged_chip_evidence(
+    extra: tuple[str, ...], match: str
+) -> None:
+    lines = log_lines("restore_positive.log", sequence=0)
+    lines.extend(
+        CalibrationLogLine(3, 0, 50.0 + index, line)
+        for index, line in enumerate(extra)
+    )
+
+    with pytest.raises(LogEvidenceError, match=match):
+        parse_restore(
+            lines,
+            connection_generation=3,
+            expected_instance_ids={"meter_main1"},
+            allowed_instance_ids={"meter_main1", "meter_main2"},
+            started_after=10.0,
+            operation_sequence=0,
+            expected_categories={"meter_main1": {"gain", "offset", "power_offset"}},
+        )
+
+
 def test_offset_restore_rejects_terminal_and_table_from_different_sequences() -> None:
     lines = [
         CalibrationLogLine(

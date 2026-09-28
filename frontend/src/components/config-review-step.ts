@@ -10,8 +10,9 @@ export function configReview(
   configuration: MeterConfigurationRequest | null = null,
   impact: ConfigurationImpact | null = null,
   totals: TotalsInventory | null = null,
+  unchanged = false,
 ): TemplateResult {
-  const diff = (status?.redacted_diff || "No reviewed configuration changes yet.").split(/\r?\n/);
+  const diff = (status?.redacted_diff || (unchanged ? "No configuration file changes." : "No reviewed configuration changes yet.")).split(/\r?\n/);
   const diffLine = (line: string) => {
     const kind = line.startsWith("+") ? "added" : line.startsWith("-") ? "removed" : "context";
     const prefixed = line.startsWith(" ") || line.startsWith("+") || line.startsWith("-");
@@ -32,7 +33,8 @@ export function configReview(
   return html`
     <section class="review-region" aria-labelledby="review-heading">
       <h2 id="review-heading">Review changes</h2>
-      <p class="warning-band">Firmware changes can alter Home Assistant entity names and keys. Review every change before Apply.</p>
+      ${unchanged ? html`<p>Review the configuration before confirming the unchanged file.</p>`
+        : html`<p class="warning-band">Firmware changes can alter Home Assistant entity names and keys. Review every change before Apply.</p>`}
       ${configuration ? html`
         <h3>Meter</h3>
         <dl class="status-list"><div><dt>Electrical profile</dt><dd>${configuration.meter.electrical_system.replaceAll("_", " ")} · ${configuration.meter.line_frequency_hz} Hz</dd></div><div><dt>Reporting interval</dt><dd>${configuration.meter.update_interval_s} seconds</dd></div><div><dt>Friendly name</dt><dd>${configuration.meter.friendly_name}</dd></div></dl>
@@ -54,9 +56,9 @@ export function configReview(
         <dl class="status-list"><div><dt>Power quality</dt><dd>${pqBoards.length ? `Boards ${pqBoards.join(", ")} · reactive power, apparent power, and power factor for each used CT` : "Not selected"}</dd></div><div><dt>Phase status</dt><dd>${statusBoards.length ? `Boards ${statusBoards.join(", ")} · native API diagnostics, disabled by default in Home Assistant` : "Not selected"}</dd></div>${impact ? html`<div><dt>Helper-managed measurements</dt><dd>${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text, ${impact.energy_entity_count} energy; ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec</dd></div>` : ""}</dl>
       ` : ""}
       <dl class="status-list">
-        <div><dt>Validation</dt><dd>${status?.state === "validated" || status?.progress.includes("config_validated") ? "Validated" : "Pending"}</dd></div>
-        <div><dt>Compile</dt><dd>${status?.state === "compiled" || status?.progress.includes("firmware_compiled") ? "Compiled" : "Pending"}</dd></div>
-        <div><dt>Install</dt><dd>${status?.state === "install_confirmation_required" ? "Confirmation required" : status?.state ?? "Pending"}</dd></div>
+        <div><dt>Validation</dt><dd>${unchanged ? "Not needed" : status?.state === "validated" || status?.progress.includes("config_validated") ? "Validated" : "Pending"}</dd></div>
+        <div><dt>Compile</dt><dd>${unchanged ? "Not needed" : status?.state === "compiled" || status?.progress.includes("firmware_compiled") ? "Compiled" : "Pending"}</dd></div>
+        <div><dt>Install</dt><dd>${unchanged ? "Not needed" : status?.state === "install_confirmation_required" ? "Confirmation required" : status?.state ?? "Pending"}</dd></div>
       </dl>
       <details>
         <summary>Configuration differences</summary>

@@ -9,6 +9,8 @@ from time import monotonic
 from typing import Any
 
 import pytest
+from homeassistant.core import CoreState
+from homeassistant.util.file import WriteError
 
 from custom_components.circuitsetup_energy_meter_helper.calibration_engine import (
     CalibrationInvariantError,
@@ -660,28 +662,55 @@ def test_wrong_operation_correlation_fails_closed() -> None:
     asyncio.run(run())
 
 
-def test_marker_persistence_failure_prevents_every_mutation() -> None:
+def test_marker_persistence_failure_prevents_every_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     async def run() -> None:
+        from types import SimpleNamespace
+
+        from custom_components.circuitsetup_energy_meter_helper.store import HelperStore
+
+        async def executor(function: Any, *args: Any) -> Any:
+            return await asyncio.to_thread(function, *args)
+
+        hass = SimpleNamespace(
+            data={}, state=CoreState.running, loop=asyncio.get_running_loop(),
+            config=SimpleNamespace(
+                config_dir=str(tmp_path),
+                path=lambda *parts: str(tmp_path.joinpath(*parts)),
+            ),
+            async_add_executor_job=executor,
+            bus=SimpleNamespace(async_listen_once=lambda *_args: lambda: None),
+        )
+        store = HelperStore(hass)
+        await store._store.async_save_verified({"meters": {}})
         meter = binding(0)
         session = FakeCalibrationSession(
             gain_evidence("meter_main1", reference_currents=(10.0, 0.0, 0.0))
         )
         sessions = SessionManager()
 
-        async def fail_persistence(
-            _mac: str, _marker: StoredInterruptedSession | None
-        ) -> None:
-            raise OSError("store unavailable")
+        async def failed_write(_data: dict[str, Any]) -> None:
+            raise WriteError("disk full")
 
-        engine = CalibrationEngine(sessions, fail_persistence)
-        with pytest.raises(OSError, match="store unavailable"):
-            await engine.async_calibrate_current(
-                "aabbccddeeff", session, meter, 1, 10.0, 1.0, 1.0
-            )
+        engine = CalibrationEngine(sessions, store.async_save_interrupted_session)
+        with monkeypatch.context() as patch:
+            patch.setattr(store._store, "_async_write_data", failed_write)
+            with pytest.raises(OSError, match="durable"):
+                await engine.async_calibrate_current(
+                    "aabbccddeeff", session, meter, 1, 10.0, 1.0, 1.0
+                )
 
         assert not any(event[0] in {"number", "button"} for event in session.events)
         assert not sessions.is_config_locked("aabbccddeeff")
         assert not sessions.is_calibration_locked("aabbccddeeff")
+
+        hass.state = CoreState.stopping
+        with pytest.raises(OSError, match="shutdown"):
+            await engine.async_calibrate_current(
+                "aabbccddeeff", session, meter, 1, 10.0, 1.0, 1.0
+            )
+        assert not any(event[0] in {"number", "button"} for event in session.events)
 
     asyncio.run(run())
 

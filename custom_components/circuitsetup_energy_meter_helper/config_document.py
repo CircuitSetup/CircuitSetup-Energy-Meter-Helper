@@ -15,6 +15,10 @@ METER_SETTING_RE = re.compile(
     r"^(?:friendly_name|update_time|electric_freq|csemh_config_contract)$"
 )
 CALIBRATION_FLAG_RE = re.compile(r"^(?:offset_calibration|gain_calibration)$")
+OFFSET_FIELD_KEYS = frozenset(
+    ("offset_voltage", "offset_current", "offset_active_power", "offset_reactive_power")
+)
+_METER_INSTANCE_RE = re.compile(r"^(?:meter_main[12]|addon[1-6]_[12])$")
 _KEY_TOKEN_RE = r'''(?:<<|[\w-]+|'(?:[^']|'')*'|"(?:[^"\\]|\\.)*")'''
 _MAPPING_RE = re.compile(
     rf"^(?P<indent> *)(?P<key>{_KEY_TOKEN_RE})[ \t]*:(?P<rest>(?:[ \t].*)?)$"
@@ -164,6 +168,9 @@ class ESPHomeConfigDocument:
     code_lines: tuple[str, ...] = field(repr=False)
     package_references: tuple[PackageFileReference, ...] = ()
     unresolved_package_sources: bool = False
+    configured_offset_fields: tuple[str, ...] = ()
+    configured_offset_entries: tuple[tuple[str | None, str], ...] = ()
+    configured_offset_phase_entries: tuple[tuple[str | None, str, str], ...] = ()
 
     @classmethod
     def parse(cls, content: str) -> ESPHomeConfigDocument:
@@ -216,6 +223,8 @@ class _DocumentParser:
         dashboard = self._section_scalar("dashboard_import", "package_import_url")
         sensor = self._writable_sensor_section()
         package_references = self._package_references()
+        substitutions = self._substitutions()
+        offset_entries, offset_phase_entries = self._configured_offset_entries(sensor, substitutions)
         return document_type(
             content=self.content,
             lines=self.lines,
@@ -223,7 +232,7 @@ class _DocumentParser:
             project_name_span=project.span if project else None,
             dashboard_import=dashboard.value if dashboard else None,
             dashboard_import_span=dashboard.span if dashboard else None,
-            substitutions=self._substitutions(),
+            substitutions=substitutions,
             package_files=tuple(
                 reference.path
                 for reference in package_references
@@ -238,6 +247,9 @@ class _DocumentParser:
             ),
             package_references=package_references,
             unresolved_package_sources=self._unresolved_package_sources(package_references),
+            configured_offset_fields=tuple(sorted({field for _, field in offset_entries})),
+            configured_offset_entries=offset_entries,
+            configured_offset_phase_entries=offset_phase_entries,
         )
 
     def _unresolved_package_sources(
@@ -257,6 +269,84 @@ class _DocumentParser:
             not any(first <= reference.line - 1 < last for reference in references)
             for first, last in zip(declarations, [*declarations[1:], end])
         )
+
+    def _configured_offset_entries(
+        self, sensor: tuple[SourceSpan, int] | None, substitutions: dict[str, ConfigScalar]
+    ) -> tuple[tuple[tuple[str | None, str], ...], tuple[tuple[str | None, str, str], ...]]:
+        entries: list[tuple[str | None, str]] = []
+        phase_entries: list[tuple[str | None, str, str]] = []
+        item_fields: list[str] = []
+        item_phase_fields: list[tuple[str, str]] = []
+        owner: str | None = None
+        phase: str | None = None
+        in_item = False
+        item_indent = sensor[1] if sensor is not None else -1
+        for index in range(len(self.lines)):
+            sequence = self._sequence_mapping(index)
+            mapping = self._mapping(index) or sequence
+            in_sensor = (
+                sensor is not None
+                and sensor[0].start <= self._offsets[index] < sensor[0].end
+            )
+            if in_item and not in_sensor:
+                entries.extend((owner, field) for field in item_fields)
+                phase_entries.extend((owner, phase, field) for phase, field in item_phase_fields)
+                item_fields = []
+                item_phase_fields = []
+                owner = None
+                phase = None
+                in_item = False
+            if in_sensor and sequence is not None and sequence.indent == item_indent:
+                entries.extend((owner, field) for field in item_fields)
+                phase_entries.extend((owner, phase, field) for phase, field in item_phase_fields)
+                item_fields = []
+                item_phase_fields = []
+                owner = self._offset_owner(index, sequence, substitutions) if sequence.key == "id" else None
+                phase = None
+                in_item = True
+            elif (
+                in_item
+                and in_sensor
+                and mapping is not None
+                and mapping.key == "id"
+                and mapping.indent == item_indent + 2
+            ):
+                owner = self._offset_owner(index, mapping, substitutions)
+            if in_item and in_sensor and mapping is not None and mapping.indent == item_indent + 2:
+                phase = mapping.key[-1] if mapping.key in {"phase_a", "phase_b", "phase_c"} else None
+            if mapping is None or mapping.key not in OFFSET_FIELD_KEYS:
+                continue
+            if in_item and in_sensor and phase is not None and mapping.indent == item_indent + 4:
+                item_phase_fields.append((phase, mapping.key))
+            value = self._scalar(index, mapping).value
+            try:
+                is_zero = int(value, 0) == 0
+            except ValueError:
+                is_zero = value in {"0", "+0", "-0"}
+            if not is_zero:
+                if in_item and in_sensor:
+                    item_fields.append(mapping.key)
+                else:
+                    entries.append((None, mapping.key))
+        entries.extend((owner, field) for field in item_fields)
+        phase_entries.extend((owner, phase, field) for phase, field in item_phase_fields)
+        return tuple(entries), tuple(phase_entries)
+
+    def _offset_owner(
+        self, index: int, mapping: _Mapping, substitutions: dict[str, ConfigScalar]
+    ) -> str | None:
+        raw = self._without_comment(mapping.rest).strip()
+        if raw.startswith("!extend "):
+            value = raw.removeprefix("!extend ")
+        else:
+            try:
+                value = self._scalar(index, mapping).value
+            except ESPHomeConfigParseError:
+                return None
+        if value.startswith("${") and value.endswith("}"):
+            substitution = substitutions.get(value[2:-1])
+            value = substitution.value if substitution is not None else value
+        return value if _METER_INSTANCE_RE.fullmatch(value) else None
 
     def _writable_sensor_section(self) -> tuple[SourceSpan, int] | None:
         roots: list[tuple[int, _Mapping]] = []
