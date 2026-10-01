@@ -15,7 +15,7 @@
   "issue_tracker": "https://github.com/CircuitSetup/CircuitSetup-Energy-Meter-Helper/issues",
   "requirements": [
     "aioesphomeapi>=45.6.1,<47.0.0",
-    "aiohasupervisor==0.6.0"
+    "aiohasupervisor>=0.6.0"
   ],
   "single_config_entry": true,
   "version": "0.3.2"
