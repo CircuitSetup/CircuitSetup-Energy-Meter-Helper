@@ -2305,6 +2305,49 @@ def test_native_only_addon_session_uses_complete_production_binding(
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("target,target_id", (("voltage", "main"), ("current", "1")))
+@pytest.mark.parametrize("values,stable", (((2.0, 2.0, 2.0), True), ((2.0, 8.0, 2.0), False)))
+def test_stability_measures_variation_across_fresh_readings(
+    monkeypatch: pytest.MonkeyPatch, target: str, target_id: str,
+    values: tuple[float, ...], stable: bool,
+) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.state_tracker import (
+        StateTracker,
+    )
+
+    async def run() -> None:
+        workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
+
+        async def window(
+            key: int, *, device_id: int = 0, sample_count: int,
+            after: float, timeout: float,
+        ) -> SensorSampleWindow:
+            tracker = StateTracker()
+            tracker.connect(1)
+            for index, value in enumerate(values, 1):
+                tracker.record(
+                    SimpleNamespace(key=key, device_id=device_id, state=value),
+                    received_at=after + index,
+                )
+            return tracker.sensor_window(
+                SimpleNamespace, key, device_id=device_id,
+                fresh_after=after, sample_count=sample_count,
+            )
+
+        workflow._api.async_wait_for_sensor_window = window  # type: ignore[method-assign,union-attr]
+        status = await workflow.async_start_session("meter")
+        await workflow.async_acknowledge_safety(status.session_id, True)
+        try:
+            result = await workflow.async_check_stability(status.session_id, target, target_id)
+            assert result["stable"] is stable
+            assert result["windows"][0]["samples"] == values
+            assert result["windows"][0]["range_percent"] == (0.0 if stable else 150.0)
+        finally:
+            await workflow.async_close()
+
+    asyncio.run(run())
+
+
 def test_stability_collects_all_phase_windows_concurrently(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2329,7 +2372,7 @@ def test_stability_collects_all_phase_windows_concurrently(
                 all_started.set()
             await all_started.wait()
             return SensorSampleWindow(
-                (120.0,), (1.0,), 120.0, 120.0, 120.0, 0.0
+                (120.0,) * sample_count, (1.0,) * sample_count, 120.0, 120.0, 120.0, 0.0
             )
 
         workflow._api.async_wait_for_sensor_window = window  # type: ignore[method-assign,union-attr]
@@ -2360,7 +2403,7 @@ def test_stability_collects_all_phase_windows_concurrently(
         assert len(started) == 6
         assert len({after for _, after, _ in started}) == 1
         assert all(after is not None for _, after, _ in started)
-        assert sample_counts == [1] * 6
+        assert sample_counts == [3] * 6
         assert all(timeout >= 30 for _, _, timeout in started)
         await workflow.async_close()
 

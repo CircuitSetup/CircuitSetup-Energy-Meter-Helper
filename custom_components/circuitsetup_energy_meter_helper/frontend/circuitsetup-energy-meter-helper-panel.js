@@ -4530,6 +4530,7 @@ class CircuitSetupPanel extends i$2 {
     if (this.api || !this.isConnected || !this.hass || !this.panel?.config.entry_id) return;
     const api = new HelperApi(this.hass, this.panel.config.entry_id);
     this.api = api;
+    this.error = "";
     try {
       const setup2 = await api.setupStatus();
       if (!this.owns(generation, api)) return;
@@ -4548,7 +4549,10 @@ class CircuitSetupPanel extends i$2 {
       if (this.transaction) await this.subscribeTransaction(generation);
       if (this.session && this.session.state !== "cancelled") await this.subscribeSession(generation);
     } catch (error) {
-      if (this.owns(generation, api)) this.fail(error, "Setup status could not be loaded.");
+      if (this.owns(generation, api)) {
+        this.fail(error, "Setup status could not be loaded.");
+        if (this.setupUnsub === null) this.api = null;
+      }
     }
     this.requestUpdate();
   }
@@ -4988,6 +4992,7 @@ class CircuitSetupPanel extends i$2 {
     this.requestUpdate();
   }
   async rescan() {
+    if (!this.api && !this.pendingAction) await this.ensureApi(this.connectionGeneration);
     if (!this.api || this.pendingAction) return;
     this.pendingAction = "rescan";
     this.requestUpdate();
@@ -6843,7 +6848,7 @@ class CircuitSetupPanel extends i$2 {
   }
   hasCompletedCalibration(target) {
     if (target === "voltage") return this.voltageGroupKeys().every((targetId) => this.calibrationByTarget.get(`voltage:${targetId}`)?.state === "applied_pending_restart_verification");
-    const channels = this.meterConfiguration?.configuration.channels.filter((channel) => channel.enabled).map((channel) => channel.channel) ?? this.inventory?.channels.map((channel) => channel.channel) ?? [];
+    const channels = this.meterConfiguration?.configuration.channels.filter((channel) => channel.enabled).map((channel) => channel.channel) ?? this.inventory?.channels.map((channel) => channel.channel) ?? Array.from({ length: this.topology?.ct_count ?? 0 }, (_2, index) => index + 1);
     return channels.length > 0 && channels.every((channel) => this.calibrationByTarget.get(`current:${channel}`)?.state === "applied_pending_restart_verification");
   }
   stabilityFor(target) {

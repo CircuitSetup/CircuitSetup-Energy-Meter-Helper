@@ -2651,7 +2651,7 @@ describe("CircuitSetup panel", () => {
   it("identifies blank CT models before submitting a configuration review", async () => {
     const meter = meterResponse();
     meter.configuration.channels[1]!.model_id = "";
-    const panel = await mount(makeHass({}));
+    const panel = await mount(makeHass({ setup_status: { state: "no_device", devices: [] } }));
     const state = panel as unknown as Record<string, unknown> & {
       setMeterConfiguration(value: typeof meter): void;
       previewCanonicalConfiguration(): Promise<void>;
@@ -4508,6 +4508,32 @@ describe("CircuitSetup panel", () => {
     expect(continueButton?.disabled).toBe(true);
   });
 
+  it("allows calibration-only current completion after every runtime channel succeeds", async () => {
+    const panel = await mount(makeHass({ setup_status: runtimeOnlyScenario.setup }));
+    const state = panel as unknown as Record<string, unknown>;
+    state.configurationMode = "runtime_only";
+    state.topology = meterResponse().topology;
+    state.inventory = null;
+    state.meterConfiguration = null;
+    state.reportingMultiplier = 1;
+    state.session = { session_id: "session", device_id: device.entry_id, state: "applied_pending_restart_verification",
+      safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] }, has_pending_calibration: true };
+    const results = new Map(Array.from({ length: 5 }, (_, index) => [`current:${index + 1}`, {
+      state: "applied_pending_restart_verification", group_key: "main_1", phase: null,
+      changed_channels: [index + 1], iteration: 1, before_values: [5], after_values: [5],
+      error_percent_values: [0], gain_evidence: null, restore_evidence: null, retry_allowed: false,
+    }]));
+    state.calibrationByTarget = results;
+    panel.showState("current"); await panel.updateComplete;
+    const continueButton = () => [...panel.shadowRoot!.querySelectorAll<HTMLButtonElement>(".action-footer button")]
+      .find((button) => button.textContent?.trim() === "Continue")!;
+    expect(continueButton().disabled).toBe(true);
+    results.set("current:6", { ...results.get("current:5")!, changed_channels: [6] });
+    panel.requestUpdate(); await panel.updateComplete;
+    expect(continueButton().disabled).toBe(false);
+    expect(state.currentSkipped).toBe(false);
+  });
+
   it("allows current completion only after every enabled target is calibrated", async () => {
     const panel = await mount(makeHass({ setup_status: { state: "device_discovered", devices: [device] } }));
     const state = panel as unknown as Record<string, unknown>;
@@ -4654,7 +4680,11 @@ describe("CircuitSetup panel", () => {
   it("shows one three-CT group and skips blank current references", async () => {
     const sent: Array<Record<string, unknown>> = [];
     const panel = await mount({
-      callWS: async <T>(message: Record<string, unknown>) => { sent.push(message); return {} as T; },
+      callWS: async <T>(message: Record<string, unknown>) => {
+        sent.push(message);
+        return (String(message.type).endsWith("/setup_status")
+          ? { state: "device_discovered", devices: [device] } : {}) as T;
+      },
       connection: { subscribeMessage: async () => () => undefined },
     });
     const state = panel as unknown as Record<string, unknown>;
@@ -5011,6 +5041,42 @@ describe("CircuitSetup panel", () => {
     expect(messages.map((message) => String(message.type).split("/").at(-1))).not.toContain("preview_ct_config");
     expect(messages.map((message) => String(message.type).split("/").at(-1))).not.toContain("start_session");
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Calibration Plan");
+  });
+
+  it.each([
+    ["setup_status", "hass"], ["subscribe_setup", "hass"],
+    ["setup_status", "rescan"], ["subscribe_setup", "rescan"],
+  ])("retries discovery after an initial %s failure through %s", async (failure, retry) => {
+    let failed = false;
+    let callback: ((snapshot: unknown) => void) | undefined;
+    const snapshot = { state: "no_device", devices: [] };
+    const hass = makeHass({ setup_status: snapshot, set_installer_intent: snapshot, rescan: snapshot });
+    const call = hass.callWS;
+    hass.callWS = async <T>(message: Record<string, unknown>): Promise<T> => {
+      if (String(message.type).endsWith(`/${failure}`) && !failed) {
+        failed = true;
+        throw new Error("Disconnected");
+      }
+      return call<T>(message);
+    };
+    hass.connection.subscribeMessage = async (listener) => {
+      if (failure === "subscribe_setup" && !failed) {
+        failed = true;
+        throw new Error("Disconnected");
+      }
+      callback = listener as (snapshot: unknown) => void;
+      return () => undefined;
+    };
+    const panel = await mount(hass);
+    expect(panel.shadowRoot?.querySelector("[role=alert]")?.textContent).toContain("Setup status could not be loaded");
+    if (retry === "rescan") await (panel as unknown as { rescan(): Promise<void> }).rescan();
+    else panel.hass = { ...hass };
+    await tick(); await panel.updateComplete;
+    expect(panel.shadowRoot?.querySelector("[role=alert]")).toBeNull();
+    const devices = [device, { ...device, entry_id: "meter-2", title: "Second meter" }];
+    callback?.({ state: "device_discovered", devices });
+    await panel.updateComplete;
+    expect((panel as unknown as { setup: { devices: typeof devices } }).setup.devices).toEqual(devices);
   });
 
   it("owns late subscriptions by connection generation and resubscribes live handles", async () => {
