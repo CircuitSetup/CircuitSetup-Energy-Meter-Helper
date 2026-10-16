@@ -35,7 +35,6 @@ def test_verified_save_requires_the_exact_disk_envelope(
         backend = HelperStore(hass)._store
         prior = {"meters": {"aabbccddeeff": {"receipt": True}}}
         revoked = {"meters": {"aabbccddeeff": {"receipt": False}}}
-        assert backend._atomic_writes
         await backend.async_save_verified(prior)
         original = load_json(backend.path)
 

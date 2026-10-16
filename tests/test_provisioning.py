@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -71,7 +72,9 @@ class FakeHass:
 
     def __init__(self) -> None:
         self.config_entries = FakeConfigEntries()
-        self.config = SimpleNamespace(config_dir=".")
+        self.config = SimpleNamespace(
+            config_dir=".", path=lambda *parts: str(Path(".").joinpath(*parts)),
+        )
         self.data: dict[str, object] = {}
 
     def async_create_task(self, coroutine):

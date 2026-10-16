@@ -121,7 +121,10 @@ class FakeConfigEntries:
 class FakeHass:
     def __init__(self, entry: FakeEntry | None = None) -> None:
         self.config_entries = FakeConfigEntries(entry or FakeEntry())
-        self.config = SimpleNamespace(time_zone="America/New_York", config_dir=".")
+        self.config = SimpleNamespace(
+            time_zone="America/New_York", config_dir=".",
+            path=lambda *parts: str(Path(".").joinpath(*parts)),
+        )
         self.data: dict[str, object] = {}
 
     def async_create_task(
