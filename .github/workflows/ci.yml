@@ -121,7 +121,11 @@ jobs:
       - run: uv sync --all-groups
       - name: Install Home Assistant dev
         if: matrix.ha-channel == 'dev'
-        run: uv pip install --upgrade git+https://github.com/home-assistant/core.git@dev
+        run: |
+          uv pip install --upgrade git+https://github.com/home-assistant/core.git@dev
+          contract_hassio_manifest="$(uv run --no-sync python -c "from importlib.resources import files; print(files('homeassistant') / 'components/hassio/manifest.json')")"
+          mapfile -t contract_hassio_requirements < <(jq -r '.requirements[]' "$contract_hassio_manifest")
+          uv pip install "${contract_hassio_requirements[@]}"
       - name: Show Home Assistant version
         run: |
           uv run --no-sync python -c "from homeassistant.const import __version__; print(f'Home Assistant version: {__version__}')"
