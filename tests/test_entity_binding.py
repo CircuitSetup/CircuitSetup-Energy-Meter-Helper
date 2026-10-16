@@ -6,6 +6,7 @@ import re
 from asyncio import run
 from dataclasses import dataclass, replace
 from hashlib import sha256
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -840,7 +841,9 @@ def _label_workflow(monkeypatch: pytest.MonkeyPatch) -> tuple[EntryWorkflow, _La
         return target(*args)
     hass = SimpleNamespace(
         data={},
-        config=SimpleNamespace(config_dir="."),
+        config=SimpleNamespace(
+            config_dir=".", path=lambda *parts: str(Path(".").joinpath(*parts)),
+        ),
         config_entries=SimpleNamespace(async_get_entry=lambda entry_id: entry if entry_id == "meter" else None,
             async_entries=lambda _domain: []),
         async_add_executor_job=executor_job,

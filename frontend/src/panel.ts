@@ -295,6 +295,7 @@ export class CircuitSetupPanel extends LitElement {
     if (this.api || !this.isConnected || !this.hass || !this.panel?.config.entry_id) return;
     const api = new HelperApi(this.hass, this.panel.config.entry_id);
     this.api = api;
+    this.error = "";
     try {
       const setup = await api.setupStatus();
       if (!this.owns(generation, api)) return;
@@ -315,7 +316,10 @@ export class CircuitSetupPanel extends LitElement {
       if (this.transaction) await this.subscribeTransaction(generation);
       if (this.session && this.session.state !== "cancelled") await this.subscribeSession(generation);
     } catch (error) {
-      if (this.owns(generation, api)) this.fail(error, "Setup status could not be loaded.");
+      if (this.owns(generation, api)) {
+        this.fail(error, "Setup status could not be loaded.");
+        if (this.setupUnsub === null) this.api = null;
+      }
     }
     this.requestUpdate();
   }
@@ -792,6 +796,7 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private async rescan(): Promise<void> {
+    if (!this.api && !this.pendingAction) await this.ensureApi(this.connectionGeneration);
     if (!this.api || this.pendingAction) return;
     this.pendingAction = "rescan";
     this.requestUpdate();
@@ -2543,7 +2548,7 @@ export class CircuitSetupPanel extends LitElement {
     const channels = this.meterConfiguration?.configuration.channels
       .filter((channel) => channel.enabled).map((channel) => channel.channel)
       ?? this.inventory?.channels.map((channel) => channel.channel)
-      ?? [];
+      ?? Array.from({ length: this.topology?.ct_count ?? 0 }, (_, index) => index + 1);
     return channels.length > 0 && channels.every((channel) =>
       this.calibrationByTarget.get(`current:${channel}`)?.state === "applied_pending_restart_verification");
   }

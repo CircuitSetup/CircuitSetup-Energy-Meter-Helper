@@ -1999,8 +1999,7 @@ def test_unload_keeps_started_store_commit_owned_until_terminal_state() -> None:
         await persistence.started.wait()
         transaction = manager._transaction(preview.transaction_id)
         transaction.expires_at = 0
-        with pytest.raises(KeyError, match="expired"):
-            manager.status(preview.transaction_id)
+        assert manager.status(preview.transaction_id).state is ConfigTransactionState.RECONNECTING
         assert transaction.meter_configuration == configuration and not transaction.closed
 
         unload = asyncio.create_task(sessions.async_unload())
@@ -2235,6 +2234,54 @@ def test_expiry_release_failure_or_cancellation_always_scrubs_transaction() -> N
         assert transaction.meter_configuration is None
         assert not transaction.expected_sensor_entities
         assert manager.sessions._get_transaction(preview.transaction_id) is None
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("operation", ("compile", "upload"))
+def test_status_after_deadline_preserves_active_operation_and_meter_lock(
+    operation: str,
+) -> None:
+    async def run() -> None:
+        now = 0.0
+        builder = Builder()
+        release = builder.pause(operation)
+        sessions = SessionManager()
+        manager = ConfigTransactionManager(
+            builder, Verifier(_evidence()), Persistence(), sessions,
+            confirmation_ttl=5.0, clock=lambda: now, reconnect_timeout=0.01,
+        )
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        if operation == "upload":
+            await manager.async_compile(preview.transaction_id)
+        task = asyncio.create_task(
+            manager.async_confirm_install(preview.transaction_id, "admin")
+            if operation == "upload" else manager.async_compile(preview.transaction_id)
+        )
+        await asyncio.wait_for(builder.started[operation].wait(), 1)
+        try:
+            now = 6.0
+            status = manager.active_status("aabbccddeeff")
+            assert status is not None
+            assert status.transaction_id == preview.transaction_id
+            assert status.state is (
+                ConfigTransactionState.INSTALLING if operation == "upload"
+                else ConfigTransactionState.VALIDATED
+            )
+            assert manager.status(preview.transaction_id) == status
+            assert await manager.async_recover_install("aabbccddeeff") == status
+            assert sessions.is_config_locked("aabbccddeeff")
+            assert not task.done()
+            assert builder.calls.count(operation) == 1
+            assert "restore" not in builder.calls
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+        assert (await task).state is (
+            ConfigTransactionState.VERIFIED if operation == "upload"
+            else ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+        )
 
     asyncio.run(run())
 

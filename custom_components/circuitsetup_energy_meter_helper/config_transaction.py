@@ -2073,15 +2073,10 @@ class ConfigTransactionManager:
         transaction = self.sessions._get_transaction(transaction_id)
         if not isinstance(transaction, _ConfigTransaction):
             raise KeyError("unknown configuration transaction")
-        if self._clock() >= transaction.expires_at and not self._task_owns(transaction):
+        if self._clock() >= transaction.expires_at and not transaction.active_tasks:
             self._expire(transaction)
             raise KeyError("expired configuration transaction")
         return transaction
-
-    @staticmethod
-    def _task_owns(transaction: _ConfigTransaction) -> bool:
-        task = asyncio.current_task()
-        return task is not None and task in transaction.active_tasks
 
     def _refresh_deadline(self, transaction: _ConfigTransaction) -> None:
         transaction.expires_at = self._clock() + self._confirmation_ttl
@@ -2092,7 +2087,7 @@ class ConfigTransactionManager:
             transaction.closed
             or transaction.expiry_cleanup_started
             or transaction.persistence_commit_started
-            or self._task_owns(transaction)
+            or transaction.active_tasks
         ):
             return
         recover_write = (

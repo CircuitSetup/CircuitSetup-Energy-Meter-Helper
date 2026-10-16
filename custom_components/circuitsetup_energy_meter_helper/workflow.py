@@ -1590,11 +1590,9 @@ class EntryWorkflow:
                         api.async_wait_for_sensor_window(
                             entity.descriptor.key,
                             device_id=entity.descriptor.device_id,
-                            sample_count=1,
+                            sample_count=handle.timing_policy.sample_count,
                             after=boundary,
-                            timeout=CalibrationTimingPolicy(
-                                handle.timing_policy.update_interval_s, 1
-                            ).sensor_window_timeout_s,
+                            timeout=handle.timing_policy.sensor_window_timeout_s,
                         )
                         for entity in entities
                     )
