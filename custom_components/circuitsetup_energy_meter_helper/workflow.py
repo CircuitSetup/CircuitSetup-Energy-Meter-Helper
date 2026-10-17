@@ -20,10 +20,12 @@ from aioesphomeapi.model import build_device_unique_id
 from aiohasupervisor import SupervisorNotFoundError, SupervisorResponseError
 from aiohasupervisor.models import AddonState as SupervisorAddonState
 from aiohasupervisor.models.addons import InstalledAddonComplete
+from aiohasupervisor.models.ingress import CreateSessionOptions
 from aiohttp import hdrs
 from homeassistant.components.hassio import HassIO, get_supervisor_client
 from homeassistant.components.hassio.const import (
     DATA_COMPONENT,
+    DATA_HASSIO_SUPERVISOR_USER,
     X_HASS_SOURCE,
     X_INGRESS_PATH,
 )
@@ -3959,11 +3961,11 @@ async def create_device_builder(
         )
     ingress_token = ingress_entry.removeprefix(_INGRESS_ENTRY_PREFIX)
     _validate_supervisor_token(ingress_token, "Device Builder ingress")
-    await _async_validated_ingress_session(supervisor)
+    await _async_validated_ingress_session(hass, supervisor)
     url = str(hassio.base_url.with_path(f"/ingress/{ingress_token}"))
 
     async def connect(websocket_url: str) -> Any:
-        session = await _async_validated_ingress_session(supervisor)
+        session = await _async_validated_ingress_session(hass, supervisor)
         cookie = SimpleCookie()
         cookie[_INGRESS_SESSION_COOKIE] = session
         return await hassio.websession.ws_connect(
@@ -3984,10 +3986,23 @@ def _validate_supervisor_token(value: Any, label: str) -> None:
         raise SupervisorResponseError(f"Supervisor returned malformed {label} metadata")
 
 
-async def _async_validated_ingress_session(supervisor: Any) -> str:
+async def _async_validated_ingress_session(
+    hass: HomeAssistant, supervisor: Any
+) -> str:
     """Issue one safe Supervisor cookie token or raise a retryable response error."""
+    user = hass.data.get(DATA_HASSIO_SUPERVISOR_USER)
+    if (
+        user is None
+        or not isinstance(user.id, str)
+        or not user.id
+        or not user.is_active
+        or not user.is_admin
+    ):
+        raise SupervisorResponseError("Home Assistant Supervisor user is unavailable")
     try:
-        session = await supervisor.ingress.create_session()
+        session = await supervisor.ingress.create_session(
+            CreateSessionOptions(user_id=user.id)
+        )
     except (LookupError, TypeError, ValueError) as error:
         raise SupervisorResponseError(
             "Supervisor returned malformed ingress session metadata"

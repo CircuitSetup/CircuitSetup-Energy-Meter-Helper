@@ -21,7 +21,7 @@ from aioesphomeapi import NumberInfo as ApiNumberInfo
 from aioesphomeapi import SensorInfo as ApiSensorInfo
 from aiohttp import ClientConnectionError, WSMessage, WSMsgType
 from homeassistant.components.hassio import HassIO
-from homeassistant.components.hassio.const import DATA_COMPONENT
+from homeassistant.components.hassio.const import DATA_COMPONENT, DATA_HASSIO_SUPERVISOR_USER
 from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.exceptions import ConfigEntryNotReady, Unauthorized
 import voluptuous as vol
@@ -305,7 +305,11 @@ class FakeHass:
     def __init__(
         self, entries: tuple[object, ...] = (), events: list[tuple[str, Any]] | None = None
     ) -> None:
-        self.data: dict[str, Any] = {}
+        self.data: dict[str, Any] = {
+            DATA_HASSIO_SUPERVISOR_USER: SimpleNamespace(
+                id="supervisor-user", is_active=True, is_admin=True, system_generated=False
+            )
+        }
         self.config_entries = FakeConfigEntries(entries, events)
         self.loop = asyncio.get_event_loop()
         self.config = SimpleNamespace(config_dir=".", path=lambda *parts: str(Path(".").joinpath(*parts)))
@@ -524,6 +528,9 @@ class SupervisorTransport:
                 addon.pop(self.addon_missing, None)
             return SupervisorResponse(addon, self.addon_status)
         if str(url).endswith("/ingress/session"):
+            payload = kwargs.get("json")
+            assert isinstance(payload, dict) and set(payload) == {"user_id"}
+            assert isinstance(payload["user_id"], str) and payload["user_id"]
             return SupervisorResponse(
                 {}
                 if self.session_value is _MISSING
@@ -1461,6 +1468,81 @@ def test_setup_primes_ct_catalog_outside_event_loop(
         assert len(load_threads) == 1
         assert load_threads[0] != event_loop_thread
         assert await async_unload_entry(hass, entry)
+
+    asyncio.run(run())
+
+
+def test_production_builder_ingress_uses_supervisor_user_on_setup_and_reconnect() -> None:
+    """Supervisor requires its designated user's ID for every ingress session."""
+
+    async def run() -> None:
+        websocket = BuilderTransportWebSocket("")
+        transport = SupervisorTransport(websocket)
+        hass = FakeHass()
+        hass.data[DATA_COMPONENT] = HassIO(asyncio.get_running_loop(), transport, "supervisor")
+        entry = FakeEntry(data={})
+
+        assert await async_setup_entry(hass, entry)
+        try:
+            builder = hass.data[DOMAIN][entry.entry_id]["device_builder"]
+            assert await builder.async_list_devices() == {
+                "configured": [{"name": "meter", "configuration": "meter.yaml"}]
+            }
+            listener = builder._client._listener
+            await websocket.close()
+            await asyncio.wait_for(listener, timeout=1)
+            hass.data[DATA_HASSIO_SUPERVISOR_USER] = SimpleNamespace(
+                id="replacement-supervisor", is_active=True, is_admin=True
+            )
+            transport.websocket = BuilderTransportWebSocket("")
+            assert await builder.async_list_devices() == {
+                "configured": [{"name": "meter", "configuration": "meter.yaml"}]
+            }
+            assert [
+                kwargs["json"]
+                for method, url, kwargs in transport.requests
+                if method == "POST" and url.endswith("/ingress/session")
+            ] == [
+                {"user_id": "supervisor-user"},
+                {"user_id": "supervisor-user"},
+                {"user_id": "replacement-supervisor"},
+            ]
+        finally:
+            await async_unload_entry(hass, entry)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "user",
+    [
+        None,
+        SimpleNamespace(id="", is_active=True, is_admin=True),
+        SimpleNamespace(id=123, is_active=True, is_admin=True),
+        SimpleNamespace(id="supervisor-user", is_active=False, is_admin=True),
+        SimpleNamespace(id="supervisor-user", is_active=True, is_admin=False),
+    ],
+    ids=["missing", "empty-id", "non-string-id", "inactive", "non-admin"],
+)
+def test_unavailable_supervisor_user_retries_without_requesting_ingress(user: Any) -> None:
+    """Never open ingress with a missing or unauthorized Supervisor identity."""
+
+    async def run() -> None:
+        transport = SupervisorTransport(BuilderTransportWebSocket(""))
+        hass = FakeHass()
+        if user is None:
+            hass.data.pop(DATA_HASSIO_SUPERVISOR_USER)
+        else:
+            hass.data[DATA_HASSIO_SUPERVISOR_USER] = user
+        hass.data[DATA_COMPONENT] = HassIO(asyncio.get_running_loop(), transport, "supervisor")
+        entry = FakeEntry(data={})
+
+        with pytest.raises(ConfigEntryNotReady, match="temporarily unavailable"):
+            await async_setup_entry(hass, entry)
+
+        assert entry.entry_id not in hass.data[DOMAIN]
+        assert all(not url.endswith("/ingress/session") for _, url, _ in transport.requests)
+        assert not transport.websocket_requests
 
     asyncio.run(run())
 
@@ -4241,7 +4323,7 @@ def test_setup_uses_the_home_assistant_diagnostics_snapshot_for_the_panel() -> N
         assert connection.results[-1] == (
             1,
             {
-                "integration_version": "0.3.3",
+                "integration_version": "0.3.4",
                 "home_assistant_version": HA_VERSION,
                 "config_entry_version": 1,
                 "setup_state": "no_device",
