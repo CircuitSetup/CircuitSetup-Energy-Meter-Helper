@@ -41,6 +41,8 @@ silently replaced by another channel. If an existing Helper installation has
 multiple builders and no saved choice, setup waits until you select one in
 Configure. Finish any active calibration or build before changing builders.
 
+If a Device Builder connection fails during startup, the Helper retries automatically.
+
 This selection controls configuration, compilation, and OTA uploads. Initial USB
 installation still uses the prebuilt binaries from
 [CircuitSetup ESPWebInstaller](https://circuitsetup.github.io/ESPWebInstaller/).

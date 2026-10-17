@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from threading import get_ident
+from traceback import format_exception
 from types import SimpleNamespace
 from typing import Any
 
@@ -19,7 +20,7 @@ from aioesphomeapi import APIConnectionError
 from aioesphomeapi import ButtonInfo as ApiButtonInfo
 from aioesphomeapi import NumberInfo as ApiNumberInfo
 from aioesphomeapi import SensorInfo as ApiSensorInfo
-from aiohttp import ClientConnectionError, WSMessage, WSMsgType
+from aiohttp import ClientConnectionError, WSMessage, WSMsgType, WSServerHandshakeError
 from homeassistant.components.hassio import HassIO
 from homeassistant.components.hassio.const import DATA_COMPONENT
 from homeassistant.const import __version__ as HA_VERSION
@@ -1767,6 +1768,64 @@ def test_setup_requires_choice_when_multiple_builders_installed():
         with pytest.raises(ConfigEntryNotReady, match="Choose.*Device Builder"):
             await async_setup_entry(hass, FakeEntry(data={}))
         assert not transport.websocket_requests
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "connect_error",
+    [
+        ClientConnectionError("offline"),
+        WSServerHandshakeError(
+            SimpleNamespace(real_url="http://supervisor/ingress/private-entry/ws"),
+            (),
+            status=403,
+            message="Forbidden",
+        ),
+    ],
+    ids=["connection-lost", "core-starting"],
+)
+def test_device_builder_connection_failure_retries_after_owner_cleanup(
+    monkeypatch: pytest.MonkeyPatch, connect_error: BaseException,
+) -> None:
+    """A failed ingress handshake retries cleanly once Supervisor can reach Core."""
+
+    async def run() -> None:
+        stopped = 0
+        original_stop = ProvisioningCoordinator.async_stop
+
+        async def tracked_stop(owner: ProvisioningCoordinator) -> None:
+            nonlocal stopped
+            stopped += 1
+            await original_stop(owner)
+
+        monkeypatch.setattr(ProvisioningCoordinator, "async_stop", tracked_stop)
+        transport = SupervisorTransport(BuilderTransportWebSocket(""))
+        connect = transport.ws_connect
+
+        async def unavailable(_url: str, **_kwargs: Any) -> BuilderTransportWebSocket:
+            raise connect_error
+
+        monkeypatch.setattr(transport, "ws_connect", unavailable)
+        hass = FakeHass()
+        hass.data[DATA_COMPONENT] = HassIO(asyncio.get_running_loop(), transport, "supervisor")
+        entry = FakeEntry(data={})
+
+        with pytest.raises(ConfigEntryNotReady, match="temporarily unavailable") as retry:
+            await async_setup_entry(hass, entry)
+
+        assert stopped == 1
+        assert entry.entry_id not in hass.data[DOMAIN]
+        assert "private-entry" not in "".join(format_exception(retry.value))
+
+        monkeypatch.setattr(transport, "ws_connect", connect)
+        assert await async_setup_entry(hass, entry)
+        builder = hass.data[DOMAIN][entry.entry_id]["device_builder"]
+        assert await builder.async_list_devices() == {
+            "configured": [{"name": "meter", "configuration": "meter.yaml"}]
+        }
+        await async_unload_entry(hass, entry)
+        assert stopped == 2
+
     asyncio.run(run())
 
 
@@ -4330,7 +4389,7 @@ def test_setup_uses_the_home_assistant_diagnostics_snapshot_for_the_panel() -> N
         assert connection.results[-1] == (
             1,
             {
-                "integration_version": "0.3.4",
+                "integration_version": "0.3.5",
                 "home_assistant_version": HA_VERSION,
                 "config_entry_version": 1,
                 "setup_state": "no_device",

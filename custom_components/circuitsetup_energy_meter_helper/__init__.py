@@ -6,6 +6,7 @@ import asyncio
 from typing import Any
 
 from aiohasupervisor import SupervisorError
+from aiohttp import ClientError
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
@@ -147,6 +148,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             ) from error
         if cleanup_cancelled:
             raise asyncio.CancelledError
+        if isinstance(error, ClientError):
+            raise ConfigEntryNotReady(
+                "ESPHome Device Builder connection is temporarily unavailable"
+            ) from None
         if isinstance(error, SupervisorError):
             raise ConfigEntryNotReady(
                 "ESPHome Device Builder discovery is temporarily unavailable"
