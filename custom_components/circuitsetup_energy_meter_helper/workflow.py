@@ -25,13 +25,19 @@ from aiohttp import hdrs
 from homeassistant.components.hassio import HassIO, get_supervisor_client
 from homeassistant.components.hassio.const import (
     DATA_COMPONENT,
-    DATA_HASSIO_SUPERVISOR_USER,
     X_HASS_SOURCE,
     X_INGRESS_PATH,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import entity_registry as er
+
+try:
+    from homeassistant.components.http.const import DATA_SUPERVISOR_USER  # type: ignore[attr-defined]
+except ImportError:
+    from homeassistant.components.hassio.const import (
+        DATA_HASSIO_SUPERVISOR_USER as DATA_SUPERVISOR_USER,
+    )
 
 from .calibration_engine import (
     CalibrationEngine,
@@ -3990,7 +3996,7 @@ async def _async_validated_ingress_session(
     hass: HomeAssistant, supervisor: Any
 ) -> str:
     """Issue one safe Supervisor cookie token or raise a retryable response error."""
-    user = hass.data.get(DATA_HASSIO_SUPERVISOR_USER)
+    user = hass.data.get(DATA_SUPERVISOR_USER)
     if (
         user is None
         or not isinstance(user.id, str)

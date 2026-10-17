@@ -21,11 +21,18 @@ from aioesphomeapi import NumberInfo as ApiNumberInfo
 from aioesphomeapi import SensorInfo as ApiSensorInfo
 from aiohttp import ClientConnectionError, WSMessage, WSMsgType
 from homeassistant.components.hassio import HassIO
-from homeassistant.components.hassio.const import DATA_COMPONENT, DATA_HASSIO_SUPERVISOR_USER
+from homeassistant.components.hassio.const import DATA_COMPONENT
 from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.exceptions import ConfigEntryNotReady, Unauthorized
 import voluptuous as vol
 # isort: on
+
+try:
+    from homeassistant.components.http.const import DATA_SUPERVISOR_USER
+except ImportError:
+    from homeassistant.components.hassio.const import (
+        DATA_HASSIO_SUPERVISOR_USER as DATA_SUPERVISOR_USER,
+    )
 
 from custom_components.circuitsetup_energy_meter_helper import (
     async_setup_entry,
@@ -306,7 +313,7 @@ class FakeHass:
         self, entries: tuple[object, ...] = (), events: list[tuple[str, Any]] | None = None
     ) -> None:
         self.data: dict[str, Any] = {
-            DATA_HASSIO_SUPERVISOR_USER: SimpleNamespace(
+            DATA_SUPERVISOR_USER: SimpleNamespace(
                 id="supervisor-user", is_active=True, is_admin=True, system_generated=False
             )
         }
@@ -1491,7 +1498,7 @@ def test_production_builder_ingress_uses_supervisor_user_on_setup_and_reconnect(
             listener = builder._client._listener
             await websocket.close()
             await asyncio.wait_for(listener, timeout=1)
-            hass.data[DATA_HASSIO_SUPERVISOR_USER] = SimpleNamespace(
+            hass.data[DATA_SUPERVISOR_USER] = SimpleNamespace(
                 id="replacement-supervisor", is_active=True, is_admin=True
             )
             transport.websocket = BuilderTransportWebSocket("")
@@ -1531,9 +1538,9 @@ def test_unavailable_supervisor_user_retries_without_requesting_ingress(user: An
         transport = SupervisorTransport(BuilderTransportWebSocket(""))
         hass = FakeHass()
         if user is None:
-            hass.data.pop(DATA_HASSIO_SUPERVISOR_USER)
+            hass.data.pop(DATA_SUPERVISOR_USER)
         else:
-            hass.data[DATA_HASSIO_SUPERVISOR_USER] = user
+            hass.data[DATA_SUPERVISOR_USER] = user
         hass.data[DATA_COMPONENT] = HassIO(asyncio.get_running_loop(), transport, "supervisor")
         entry = FakeEntry(data={})
 
