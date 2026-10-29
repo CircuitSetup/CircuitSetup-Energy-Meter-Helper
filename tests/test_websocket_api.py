@@ -433,6 +433,9 @@ class SupervisorResponse:
     async def text(self) -> str:
         return json.dumps({"result": "ok", "data": self._data})
 
+    def close(self) -> None:
+        """No network resources are held by this in-memory response."""
+
 
 class BuilderTransportWebSocket:
     """Protocol transport fake; DeviceBuilderClient business methods stay real."""

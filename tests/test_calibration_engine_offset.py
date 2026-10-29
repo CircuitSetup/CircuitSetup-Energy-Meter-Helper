@@ -45,8 +45,15 @@ POWER_TABLES = (
 
 
 @pytest.mark.parametrize("late_failure", (False, True))
-def test_stock_offset_collection_waits_for_full_window(late_failure: bool) -> None:
+def test_stock_offset_collection_waits_for_full_window(
+    late_failure: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
     async def run() -> None:
+        now = 0.0
+        monkeypatch.setattr(
+            "custom_components.circuitsetup_energy_meter_helper.calibration_engine.monotonic",
+            lambda: now,
+        )
         session = SimpleNamespace(
             connected=True,
             connection_generation=3,
@@ -72,6 +79,7 @@ def test_stock_offset_collection_waits_for_full_window(late_failure: bool) -> No
         )
         await asyncio.sleep(0)
         assert not pending.done()
+        now = 1.0
         if late_failure:
             session.log_lines.append(
                 "[CALIBRATION][meter_main1] Failed to save offset calibration to memory!"
@@ -85,8 +93,15 @@ def test_stock_offset_collection_waits_for_full_window(late_failure: bool) -> No
     asyncio.run(run())
 
 
-def test_stock_offset_collection_rejects_reconnect_during_window() -> None:
+def test_stock_offset_collection_rejects_reconnect_during_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     async def run() -> None:
+        now = 0.0
+        monkeypatch.setattr(
+            "custom_components.circuitsetup_energy_meter_helper.calibration_engine.monotonic",
+            lambda: now,
+        )
         session = SimpleNamespace(
             connected=True,
             connection_generation=3,
@@ -112,6 +127,7 @@ def test_stock_offset_collection_rejects_reconnect_during_window() -> None:
         )
         await asyncio.sleep(0)
         session.connection_generation += 1
+        now = 1.0
         with pytest.raises(CalibrationError, match="stale after reconnect"):
             await pending
 

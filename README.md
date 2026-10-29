@@ -1,5 +1,34 @@
 # CircuitSetup Energy Meter Helper
 
+## Installation and updates
+
+Requires Home Assistant 2026.8.0 or newer.
+
+### Home Assistant 2026.11 and newer
+
+1. Open **Settings → Marketplace** and select **Add from link**.
+2. Enter `https://github.com/CircuitSetup/CircuitSetup-Energy-Meter-Helper` and
+   select **Add**. If prompted for a type, select **Integration**.
+3. Open **CircuitSetup Energy Meter Helper** and install it. Restart Home
+   Assistant if requested.
+4. Complete the setup dialog. If it does not open automatically, open
+   **Settings → Devices & services → Add integration** and select
+   **CircuitSetup Energy Meter Helper**.
+
+### Home Assistant 2026.8–2026.10
+
+Add this repository in **HACS → Custom repositories**, with category
+**Integration**, then download **CircuitSetup Energy Meter Helper** and restart
+Home Assistant. Add the integration under **Settings → Devices & services**.
+
+[Open this repository in HACS or the Marketplace](https://my.home-assistant.io/redirect/hacs_repository/?owner=CircuitSetup&repository=CircuitSetup-Energy-Meter-Helper&category=integration).
+
+When upgrading to Home Assistant 2026.11, the Marketplace automatically takes
+over installed HACS repositories and their update entities. You do not need to
+reinstall the Helper. Find future updates under **Settings → Updates**. See
+[Coming from HACS](https://rc.home-assistant.io/integrations/marketplace/#coming-from-hacs)
+for the migration details.
+
 ## Guided meter setup
 
 The helper adapts the setup path to the meter it finds:

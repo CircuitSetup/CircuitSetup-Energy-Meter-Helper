@@ -111,6 +111,8 @@ jobs:
         include:
           - ha-channel: stable
             experimental: false
+          - ha-channel: beta
+            experimental: false
           - ha-channel: dev
             experimental: true
     steps:
@@ -119,13 +121,17 @@ jobs:
         with:
           python-version: "3.14"
       - run: uv sync --all-groups
+      - name: Install Home Assistant beta
+        if: matrix.ha-channel == 'beta'
+        run: uv pip install --upgrade --prerelease=allow homeassistant
       - name: Install Home Assistant dev
         if: matrix.ha-channel == 'dev'
+        run: uv pip install --upgrade git+https://github.com/home-assistant/core.git@dev
+      - name: Install Home Assistant integration requirements
         run: |
-          uv pip install --upgrade git+https://github.com/home-assistant/core.git@dev
-          contract_hassio_manifest="$(uv run --no-sync python -c "from importlib.resources import files; print(files('homeassistant') / 'components/hassio/manifest.json')")"
-          mapfile -t contract_hassio_requirements < <(jq -r '.requirements[]' "$contract_hassio_manifest")
-          uv pip install "${contract_hassio_requirements[@]}"
+          contract_components="$(uv run --no-sync python -c "from importlib.resources import files; print(files('homeassistant') / 'components')")"
+          mapfile -t contract_requirements < <(jq -r '.requirements[]' "$contract_components/esphome/manifest.json" "$contract_components/hassio/manifest.json")
+          uv pip install "${contract_requirements[@]}"
       - name: Show Home Assistant version
         run: |
           uv run --no-sync python -c "from homeassistant.const import __version__; print(f'Home Assistant version: {__version__}')"
