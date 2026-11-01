@@ -113,6 +113,10 @@ export const panelStyles = css`
   .ct-table { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow-x: auto; overflow-y: hidden; }
   .ct-header, .ct-row { display: grid; grid-template-columns: .45fr .45fr 1.35fr 1fr 1.45fr 1fr; align-items: start; gap: 10px; padding: 8px 10px; }
   .ct-header { font-weight: var(--ha-font-weight-bold, 700); background: var(--surface-alt); }
+  .ct-names-only .ct-header, .ct-name-row { grid-template-columns: .45fr 1fr; }
+  .ct-unused-row { grid-template-columns: .45fr .45fr 4.8fr; min-height: 0; }
+  .ct-model-field, .ct-model-field > label { display: grid; gap: 4px; min-width: 0; }
+  .required-voltage-fields { display: grid; gap: 12px; }
   .ct-row { min-height: 60px; border-top: 1px solid var(--border); }
   .ct-index { font-weight: var(--ha-font-weight-bold, 700); }
   .ct-row > label { display: grid; align-content: start; gap: 4px; }

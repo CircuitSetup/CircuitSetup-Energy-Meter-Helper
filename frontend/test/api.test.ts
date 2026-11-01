@@ -1361,3 +1361,16 @@ describe("HelperApi", () => {
     expect(received).toHaveLength(2);
   });
 });
+
+it("validates optional server import provenance", async () => {
+  const hass = new FakeHass();
+  const api = new HelperApi(hass, "helper");
+  for (const imported of [true, false]) {
+    hass.responses.adopt_device = { device_id: "meter-1", configuration: "meter.yaml", imported };
+    expect((await api.adoptDevice("meter-1")).imported).toBe(imported);
+  }
+  hass.responses.adopt_device = { device_id: "meter-1", configuration: "meter.yaml", imported: "true" };
+  await expect(api.adoptDevice("meter-1")).rejects.toThrow("response is invalid");
+  hass.responses.adopt_device = { device_id: "meter-1", configuration: "meter.yaml" };
+  expect((await api.adoptDevice("meter-1")).imported).toBeUndefined();
+});

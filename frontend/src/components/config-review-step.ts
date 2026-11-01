@@ -29,13 +29,14 @@ export function configReview(
       : aggregate.measurement_method === "both_conductors_one_ct" ? `${value} (both conductors)` : value;
   };
   const outputs = (value: { watts: boolean; amps: boolean; kwh: boolean }) =>
-    `${value.watts ? "Public" : "Hidden"} Watts; ${value.amps ? "public" : "hidden"} Amps; ${value.kwh ? "public" : "hidden"} kWh`;
+    `${value.watts ? "Public" : "Hidden"} Watts; ${value.amps ? "public" : "hidden"} Amps; ${value.kwh ? "kWh energy sensor exists" : "kWh sensor removed"}`;
   return html`
     <section class="review-region" aria-labelledby="review-heading">
       <h2 id="review-heading">Review changes</h2>
       ${unchanged ? html`<p>Review the configuration before confirming the unchanged file.</p>`
         : html`<p class="warning-band">Firmware changes can alter Home Assistant entity names and keys. Review every change before Apply.</p>`}
-      ${configuration ? html`
+      ${status?.changes.length ? html`<table aria-label="Changed settings"><thead><tr><th>Setting</th><th>Before</th><th>After</th></tr></thead><tbody>${status.changes.map((change) => html`<tr><td>${change.key}</td><td>${change.old_value ?? "Not previously set"}</td><td>${change.new_value}</td></tr>`)}</tbody></table>` : ""}
+      ${configuration ? html`<details class="full-configuration"><summary>Full configuration</summary>
         <h3>Meter</h3>
         <dl class="status-list"><div><dt>Electrical profile</dt><dd>${configuration.meter.electrical_system.replaceAll("_", " ")} · ${configuration.meter.line_frequency_hz} Hz</dd></div><div><dt>Reporting interval</dt><dd>${configuration.meter.update_interval_s} seconds</dd></div><div><dt>Friendly name</dt><dd>${configuration.meter.friendly_name}</dd></div></dl>
         <h3>Voltage references</h3>
@@ -45,16 +46,13 @@ export function configReview(
         <ul class="status-list">${channels.map((channel) => html`<li>CT${channel.channel} ${channel.name}: ${channel.enabled ? `${channel.role.replaceAll("_", " ")} on ${channel.voltage_reference_id}; ${channel.model_id || "no model"} × ${channel.reporting_multiplier}` : "unused"}</li>`)}</ul>
         <h3>Default meter totals</h3>
         <ul><li>Overall meter total: ${outputs(configuration.default_totals.overall)}</li>${configuration.default_totals.boards.map((board) => html`<li>${board.board_index === 0 ? "Main Board" : `Add-on ${board.board_index}`} total: ${outputs(board.outputs)}</li>`)}</ul>
-        <h3>Suggested circuit totals</h3>
-        <ul>${totals?.automatic_totals.map((item) => html`<li>${item.candidate.name}: ${item.enabled ? outputs(item.outputs) : "Disabled"}</li>`)}</ul>
-        <h3>Advanced total hierarchy</h3>
-        ${configuration.aggregates.length ? html`<ul class="status-list">${configuration.aggregates.map((aggregate) => html`<li>${aggregate.name} = ${formula(aggregate)} · ${aggregate.measurement_method.replaceAll("_", " ")} · ${aggregate.energy_mode} energy · ${outputs(aggregate.outputs)}</li>`)}</ul>` : html`<p class="info-band">No aggregate totals are configured.</p>`}
-        <h3>Legacy relationship migration</h3>
-        <ul>${configuration.totals_change_intent?.legacy_parent_decisions.map((decision) => html`<li>${configuration.aggregates.find((item) => item.aggregate_id === decision.child_id)?.name ?? decision.child_id} → ${configuration.aggregates.find((item) => item.aggregate_id === decision.proposed_parent_id)?.name ?? decision.proposed_parent_id}: ${decision.accepted ? "Use this parent relationship" : "Keep totals independent"}; awaiting successful commit.</li>`)}</ul>
+        ${totals?.automatic_totals.length ? html`<h3>Suggested circuit totals</h3><ul>${totals.automatic_totals.map((item) => html`<li>${item.candidate.name}: ${item.enabled ? outputs(item.outputs) : "Disabled"}</li>`)}</ul>` : ""}
+        ${configuration.aggregates.length ? html`<h3>Advanced total hierarchy</h3><ul class="status-list">${configuration.aggregates.map((aggregate) => html`<li>${aggregate.name} = ${formula(aggregate)} · ${aggregate.measurement_method.replaceAll("_", " ")} · ${aggregate.energy_mode} energy · ${outputs(aggregate.outputs)}</li>`)}</ul>` : ""}
+        ${configuration.totals_change_intent?.legacy_parent_decisions.length ? html`<h3>Legacy relationship migration</h3><ul>${configuration.totals_change_intent.legacy_parent_decisions.map((decision) => html`<li>${configuration.aggregates.find((item) => item.aggregate_id === decision.child_id)?.name ?? decision.child_id} → ${configuration.aggregates.find((item) => item.aggregate_id === decision.proposed_parent_id)?.name ?? decision.proposed_parent_id}: ${decision.accepted ? "Use this parent relationship" : "Keep totals independent"}; awaiting successful commit.</li>`)}</ul>` : ""}
         ${impact ? html`<p>${impact.public_total_entity_count} public total entities; ${impact.internal_total_sensor_count} internal total sensors. Hidden outputs can remain internal dependencies.</p>` : html`<p>Current total counts are unavailable.</p>`}
         <h3>Package and entity impact</h3>
         <dl class="status-list"><div><dt>Power quality</dt><dd>${pqBoards.length ? `Boards ${pqBoards.join(", ")} · reactive power, apparent power, and power factor for each used CT` : "Not selected"}</dd></div><div><dt>Phase status</dt><dd>${statusBoards.length ? `Boards ${statusBoards.join(", ")} · native API diagnostics, disabled by default in Home Assistant` : "Not selected"}</dd></div>${impact ? html`<div><dt>Helper-managed measurements</dt><dd>${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text, ${impact.energy_entity_count} energy; ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec</dd></div>` : ""}</dl>
-      ` : ""}
+      </details>` : ""}
       <dl class="status-list">
         <div><dt>Validation</dt><dd>${unchanged ? "Not needed" : status?.state === "validated" || status?.progress.includes("config_validated") ? "Validated" : "Pending"}</dd></div>
         <div><dt>Compile</dt><dd>${unchanged ? "Not needed" : status?.state === "compiled" || status?.progress.includes("firmware_compiled") ? "Compiled" : "Pending"}</dd></div>

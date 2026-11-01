@@ -37,13 +37,48 @@ export function summaryOutcome(input: SummaryOutcomeInput): SummaryOutcome {
   if (offset) return { heading, configurationStatus: calibrationOnly ? "ESPHome configuration was left untouched." : "Configuration authority is unchanged.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Offsets remain in meter flash.", authorityMessage: "Offsets remain in meter flash.", warnings: [...warnings, "Offsets remain in meter flash."] };
   if (input.completedWithoutChanges) return { heading, configurationStatus: input.configurationInstalled ? "Configuration installed in ESPHome." : input.configurationMode === "runtime_only" ? "ESPHome source unchanged; no authoritative configuration was available." : calibrationOnly ? "ESPHome configuration was left untouched." : input.verifiedConfiguration ? "Helper-managed configuration was left unchanged." : "Configuration was left unchanged.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Existing calibration was kept unchanged.", authorityMessage: "No restart-verified calibration record required.", warnings };
   if (input.configurationMode === "runtime_only") return { heading: "Setup complete", configurationStatus: "ESPHome source unchanged; no authoritative configuration was available.", migrationStatus: null, calibrationStatus: "Calibration is in meter flash; later firmware installs may replace it.", authorityMessage: "No authoritative ESPHome source is available.", warnings: [...warnings, "Calibration is in meter flash; later firmware installs may replace it."] };
-  if (calibrationOnly && input.restart?.source_authority === "configuration") return { heading, configurationStatus: "ESPHome configuration was left untouched.", migrationStatus: null, calibrationStatus: "Calibration gains saved; legacy configuration was not migrated.", authorityMessage: "Calibration gains are installed in ESPHome.", warnings };
-  if (calibrationOnly) return { heading, configurationStatus: "ESPHome configuration was left untouched.", migrationStatus: null, calibrationStatus: "ESPHome configuration was left untouched.", authorityMessage: "Calibration is in meter flash.", warnings: [...warnings, "Calibration is in meter flash; later firmware installs may replace it."] };
+  if (calibrationOnly && input.restart?.source_authority === "configuration") return { heading, configurationStatus: "Calibration gains changed in ESPHome; other configuration and external ownership were preserved.", migrationStatus: null, calibrationStatus: "Calibration gains saved; legacy configuration was not migrated.", authorityMessage: "Calibration gains are installed in ESPHome.", warnings };
+  if (calibrationOnly) return { heading, configurationStatus: "ESPHome configuration was left untouched.", migrationStatus: null, calibrationStatus: "Calibration saved on the meter and checked after restart.", authorityMessage: "Calibration is in meter flash.", warnings: [...warnings, "Calibration is in meter flash; later firmware installs may replace it."] };
   if (input.restart?.source_authority === "configuration") return { heading, configurationStatus: "Configuration installed in ESPHome.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Configuration and calibration installed in ESPHome.", authorityMessage: "Calibration is stored in ESPHome.", warnings };
-  return { heading, configurationStatus: input.verifiedConfiguration ? "Configuration authority is available." : "Configuration authority is unavailable.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Calibration is in meter flash; later firmware installs may replace it.", authorityMessage: "Calibration is in meter flash.", warnings: [...warnings, "Calibration is in meter flash; later firmware installs may replace it."] };
+  return { heading, configurationStatus: input.configurationInstalled ? "Configuration is installed on the meter." : "Meter configuration is unchanged.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Calibration is in meter flash; later firmware installs may replace it.", authorityMessage: "Calibration is in meter flash.", warnings: [...warnings, "Calibration is in meter flash; later firmware installs may replace it."] };
 }
 
-export function summaryStep(topology: MeterTopology | null, session: SessionStatus | null, transaction: TransactionStatus | null, stability: Map<string, StabilityResult>, calibration: Map<string, CalibrationResult>, restart: RestartVerificationResult | null, completedWithoutChanges: boolean, projectVersion: string | null, saveCalibration: () => void, back: () => void, meterConfiguration: MeterConfiguration | null = null, impact: ConfigurationImpact | null = null, finish: () => void = () => undefined, keepCalibrationInFlash: () => void = () => undefined, configurationMode: ConfigurationMode = "helper_managed", legacyChoice: ExistingConfigurationChoice = null, configurationInstalled = false, handoffDeclined = false, sourceConfiguration: MeterConfiguration | null = null, offsetFinalization: OffsetFinalizationStatus | null = null, newCycleAcknowledged = false, setNewCycleAcknowledged: (value: boolean) => void = () => undefined, newCycle: () => void = () => undefined, busy = false): TemplateResult {
+export function calibrationPersistence(data: { installed?: boolean; busy?: boolean }, actions: { keep: () => void; save: () => void }): TemplateResult {
+  return html`<section aria-label="Keep calibration"><p>${data.installed ? "Calibration is installed in ESPHome. Finish clearing the saved meter values." : "Choose where to keep verified calibration. A future firmware installation may replace calibration kept only on the meter."}</p><div class="confirmation-actions">${!data.installed ? html`<button class="secondary" data-action="keep-calibration-flash" ?disabled=${data.busy} @click=${actions.keep}>Keep calibration on meter</button>` : ""}<button class="primary" data-action="save-calibration" ?disabled=${data.busy} @click=${actions.save}>${data.installed ? "Retry clearing saved flash values" : "Save to ESPHome and install"}</button></div></section>`;
+}
+
+export interface SummaryData {
+  topology: MeterTopology | null;
+  session: SessionStatus | null;
+  transaction: TransactionStatus | null;
+  stability: Map<string, StabilityResult>;
+  calibration: Map<string, CalibrationResult>;
+  restart: RestartVerificationResult | null;
+  completedWithoutChanges: boolean;
+  projectVersion: string | null;
+  meterConfiguration?: MeterConfiguration | null;
+  impact?: ConfigurationImpact | null;
+  configurationMode?: ConfigurationMode;
+  legacyChoice?: ExistingConfigurationChoice;
+  configurationInstalled?: boolean;
+  handoffDeclined?: boolean;
+  sourceConfiguration?: MeterConfiguration | null;
+  offsetFinalization?: OffsetFinalizationStatus | null;
+  newCycleAcknowledged?: boolean;
+  busy?: boolean;
+}
+export interface SummaryActions {
+  saveCalibration: () => void;
+  back: () => void;
+  finish?: () => void;
+  keepCalibrationInFlash?: () => void;
+  setNewCycleAcknowledged?: (value: boolean) => void;
+  newCycle?: () => void;
+}
+export function summaryStep(data: SummaryData, actions: SummaryActions): TemplateResult {
+  const { topology, session, transaction, stability, calibration, restart, completedWithoutChanges, projectVersion, meterConfiguration = null, impact = null, configurationMode = "helper_managed", legacyChoice = null, configurationInstalled = false, handoffDeclined = false, sourceConfiguration = null, offsetFinalization = null, newCycleAcknowledged = false, busy = false } = data;
+  const { saveCalibration, back, finish = () => undefined, keepCalibrationInFlash = () => undefined, setNewCycleAcknowledged = () => undefined, newCycle = () => undefined } = actions;
+
   const hasOffsets = Boolean(restart?.offset_groups?.length || restart?.power_offset_groups?.length);
   const handoffAction = !offsetFinalization?.backup_available && !handoffDeclined && restart?.source_authority === "saved_flash" && restart.config_filename && !hasOffsets && (restart.source_handoff_available || restart.source_handoff_firmware_installed);
   const offsetComplete = offsetFinalization?.configuration_selected && offsetFinalization.action_ready && session?.has_pending_calibration === false;
@@ -73,7 +108,7 @@ export function summaryStep(topology: MeterTopology | null, session: SessionStat
   const unmanagedLegacyItems = totalsEvidence?.warnings.filter((warning) => warning.includes("unmanaged"));
   const outcome = summaryOutcome({ configurationMode, legacyChoice, completedWithoutChanges, configurationInstalled, restart, offsetFinalization,
     verifiedConfiguration: meterConfiguration !== null, ...(unmanagedLegacyItems ? { unmanagedLegacyItems } : {}) });
-  const boards = (values: boolean[]) => values.flatMap((enabled, board) => enabled ? [board === 0 ? "Main board" : `Add-on ${board}`] : []);
+  const boards = (values: boolean[]) => values.flatMap((enabled, board) => enabled ? [board === 0 ? "Main Board" : `Add-on ${board}`] : []);
   return html`<section class="step-content" aria-labelledby="step-heading">
     <div class=${offsetComplete || restart || completedWithoutChanges ? "success-band" : "recovery-panel"} role="status">${offsetFinalization?.backup_available || restart || completedWithoutChanges ? outcome.calibrationStatus : html`<strong>Restart verification is not complete</strong><p>Summary stays unverified until authoritative restart evidence returns.</p>`}</div>
     ${offsetFinalization?.backup_available ? html`<section aria-label="Retained offset calibration"><h2>Offset configuration and retained backup</h2>
@@ -82,7 +117,8 @@ export function summaryStep(topology: MeterTopology | null, session: SessionStat
       <label class="check-row"><input type="checkbox" .checked=${newCycleAcknowledged} @change=${(event: Event) => setNewCycleAcknowledged((event.target as HTMLInputElement).checked)}> I acknowledge a new offset cycle and backup retention.</label>
       <button class="secondary" ?disabled=${busy || !newCycleAcknowledged || !offsetComplete} @click=${newCycle}>Start new offset cycle</button>
     </section>` : ""}
-    <dl class="summary-list"><div><dt>Meter topology</dt><dd>${topology?.ct_count ?? "—"} CTs in ${topology?.group_count ?? "—"} groups</dd></div><div><dt>Project version</dt><dd>${projectVersion ?? "Unavailable"}</dd></div><div><dt>Configuration status</dt><dd>${outcome.configurationStatus}</dd></div>${outcome.migrationStatus ? html`<div><dt>Migration</dt><dd>${outcome.migrationStatus}</dd></div>` : ""}<div><dt>Calibration outcome</dt><dd>${outcome.calibrationStatus}</dd></div><div><dt>Calibration authority</dt><dd>${outcome.authorityMessage}</dd></div>${meterConfiguration ? html`<div><dt>Installed electrical profile</dt><dd>${meterConfiguration.configuration.meter.electrical_system.replaceAll("_", " ")} · ${meterConfiguration.configuration.meter.line_frequency_hz} Hz</dd></div><div><dt>Voltage references</dt><dd>${meterConfiguration.configuration.meter.voltage_references.length}</dd></div><div><dt>Used channels</dt><dd>${meterConfiguration.configuration.channels.filter((channel) => channel.enabled).length}</dd></div><div><dt>Installed package scope</dt><dd>PQ: ${boards(meterConfiguration.configuration.power_quality).join(", ") || "none"} · reactive power, apparent power, and power factor for used CTs; status: ${boards(meterConfiguration.configuration.status_fields).join(", ") || "none"} · native API diagnostics disabled by default in Home Assistant</dd></div><div><dt>Reporting and measurements</dt><dd>${meterConfiguration.configuration.meter.update_interval_s} seconds${impact ? `; ${impact.numeric_entity_count + impact.text_entity_count} Helper-managed measurements, ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec` : ""}</dd></div>` : ""}</dl>
+    <p>${outcome.configurationStatus}</p>
+    <details><summary>Configuration and meter details</summary><dl class="summary-list"><div><dt>Meter topology</dt><dd>${topology?.ct_count ?? "—"} CTs in ${topology?.group_count ?? "—"} groups</dd></div><div><dt>Project version</dt><dd>${projectVersion ?? "Unavailable"}</dd></div><div><dt>Configuration status</dt><dd>${outcome.configurationStatus}</dd></div>${outcome.migrationStatus ? html`<div><dt>Migration</dt><dd>${outcome.migrationStatus}</dd></div>` : ""}<div><dt>Calibration outcome</dt><dd>${outcome.calibrationStatus}</dd></div><div><dt>Calibration authority</dt><dd>${outcome.authorityMessage}</dd></div>${meterConfiguration ? html`<div><dt>Installed electrical profile</dt><dd>${meterConfiguration.configuration.meter.electrical_system.replaceAll("_", " ")} · ${meterConfiguration.configuration.meter.line_frequency_hz} Hz</dd></div><div><dt>Voltage references</dt><dd>${meterConfiguration.configuration.meter.voltage_references.length}</dd></div><div><dt>Used channels</dt><dd>${meterConfiguration.configuration.channels.filter((channel) => channel.enabled).length}</dd></div><div><dt>Installed package scope</dt><dd>PQ: ${boards(meterConfiguration.configuration.power_quality).join(", ") || "none"} · reactive power, apparent power, and power factor for used CTs; status: ${boards(meterConfiguration.configuration.status_fields).join(", ") || "none"} · native API diagnostics disabled by default in Home Assistant</dd></div><div><dt>Reporting and measurements</dt><dd>${meterConfiguration.configuration.meter.update_interval_s} seconds${impact ? `; ${impact.numeric_entity_count + impact.text_entity_count} Helper-managed measurements, ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec` : ""}</dd></div>` : ""}</dl>
     ${totalsEvidence ? html`<section aria-labelledby="summary-totals-heading"><h2 id="summary-totals-heading">${!meterConfiguration || totalsEvidence.capabilities.reason_codes.includes("totals_adoption_required") ? "Legacy read-only totals" : "Helper-managed totals"}</h2>
       ${!meterConfiguration ? html`<p>Source snapshot: totals were not adopted or verified as installed by this workflow.</p>` : ""}
       ${totalsImpact ? html`<p>${totalsImpact.public_total_entity_count} public total entities; ${totalsImpact.internal_total_sensor_count} internal total sensors; ${totalsImpact.energy_entity_count} public energy entities.</p>` : html`<p>Current total counts are unavailable.</p>`}
@@ -103,8 +139,9 @@ export function summaryStep(topology: MeterTopology | null, session: SessionStat
         : html`<p>No pending legacy relationships.</p>`}
       ${totalsEvidence.totals.migration.native_visibility_confirmation_required ? html`<p>Native visibility confirmation is pending a verified save.</p>` : ""}
       ${legacyTotalsNotice(totalsEvidence.capabilities)}</section>` : ""}
-    ${outcome.warnings.map((warning) => html`<p class="warning-band" role="status">${warning}</p>`)}
+    </details>
+    ${outcome.warnings.filter((warning) => !(handoffAction && warning.includes("later firmware")) && warning !== outcome.calibrationStatus).map((warning) => html`<p class="warning-band" role="status">${warning}</p>`)}
     ${technicalDetails(topology, session, transaction, stability, calibration, restart, completedWithoutChanges)}
-    <footer class="action-footer"><button class="secondary" @click=${back}>Back</button>${handoffAction ? html`${!restart?.source_handoff_firmware_installed ? html`<button class="secondary" data-action="keep-calibration-flash" @click=${keepCalibrationInFlash}>Keep calibration in meter flash</button>` : ""}<button class="primary" data-action="save-calibration" @click=${saveCalibration}>${restart?.source_handoff_firmware_installed ? "Retry clearing saved flash values" : "Save calibration to YAML"}</button>` : html`<button class="primary" data-action="finish" @click=${finish}>Finish</button>`}</footer>
+    <footer class="action-footer"><button class="secondary" ?disabled=${busy} @click=${back}>Back</button>${handoffAction ? calibrationPersistence({ installed: restart?.source_handoff_firmware_installed, busy }, { keep: keepCalibrationInFlash, save: saveCalibration }) : html`<button class="primary" data-action="finish" ?disabled=${busy} @click=${finish}>Finish</button>`}</footer>
   </section>`;
 }

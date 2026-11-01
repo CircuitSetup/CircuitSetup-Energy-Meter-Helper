@@ -38,13 +38,13 @@ export function defaultTotalsSection(
     ${visibilityUnresolved ? html`<p class="info-band" role="status">Native visibility is unconfirmed; controls show requested outputs, not installed publications.</p>` : nothing}
     ${graphState === "pending" ? html`<p class="info-band" role="status">Total graph updating; native cards remain available.</p>` : graphState === "invalid" ? html`<p class="warning-band" role="status">Total graph unavailable; native cards show saved draft status, not current dependencies.</p>` : nothing}
     <p>Watts and Amps control Home Assistant visibility. kWh adds or removes the energy sensor.</p>
-    <ul class="native-total-status" role="status">
+    <details class="total-technical-details"><summary>Output details</summary><ul class="native-total-status" role="status">
       <li>Off Watts stays hidden in Home Assistant but remains internal when needed by Overall meter total, enabled kWh, or other totals.</li>
       <li>Off Amps stays hidden in Home Assistant but remains internal when needed by Overall meter total or other totals.</li>
       <li>kWh is checked when an energy sensor exists, including hidden sensors. Turning it off removes that sensor.</li>
-    </ul>
+    </ul></details>
     ${overall ? html`<fieldset class="default-total-card"><legend>Overall meter total (all monitored channels)</legend>
-      <p>${boardFormula || "All monitored channels"}. Circuit CTs can double-count service mains, so this native total is not relabeled Mains.</p>
+      <p>Circuit CTs can double-count service mains, so this native total is not relabeled Mains.</p><details class="total-technical-details"><summary>Formula details</summary><p>${boardFormula || "All monitored channels"}</p></details>
       <p>Covers: ${boardRanges || range(overall.leaf_channels)}.</p>
       <div class="default-total-controls">
         ${control("Overall meter total Watts", configuration.default_totals.overall.watts, (watts) => patch({ ...configuration.default_totals.overall, watts }), existingConfiguration?.default_totals.overall.watts)}

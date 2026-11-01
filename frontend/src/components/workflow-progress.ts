@@ -3,14 +3,11 @@ import { html, nothing, type TemplateResult } from "lit";
 import type { WorkflowPhase, WorkflowPhaseId } from "../workflow-model";
 
 const LABELS: Record<WorkflowPhaseId, string> = {
-  device: "Device",
-  "legacy-review": "Review Existing Setup",
-  meter: "Meter",
-  ct: "Circuits & CTs",
-  "install-configuration": "Install Configuration",
-  calibration: "Calibration",
-  "save-calibration": "Save Calibration",
-  complete: "Complete",
+  device: "Choose meter",
+  meter: "Configure meter",
+  "install-configuration": "Review and install",
+  calibration: "Calibrate — optional",
+  complete: "Done",
 };
 
 export function workflowProgress(
@@ -29,10 +26,10 @@ export function workflowProgress(
           <li class=${phase.status}>
             ${phase.id === "device" && phase.status === "completed"
               ? html`<button class="step-button" ?disabled=${busy} @click=${navigateToSetup}>
-                  <span class="number">${phase.index + 1}</span><span>${LABELS[phase.id]}</span>
+                  <span class="number">${phase.index + 1}</span><span>Choose another meter</span>
                 </button>`
               : html`<div class="step-button" aria-current=${phase.status === "current" ? "step" : nothing}>
-                  <span class="number">${phase.index + 1}</span><span>${LABELS[phase.id]}</span>
+                  <span class="number">${phase.index + 1}</span><span>${LABELS[phase.id]}${phase.status === "skipped" ? " · Not needed" : ""}</span>
                 </div>`}
           </li>
         `)}</ol>

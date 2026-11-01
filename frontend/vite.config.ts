@@ -39,7 +39,7 @@ function copyStableBundle(): Plugin {
       order: "post",
       handler: (code) => ({ code: normalizeWhitespace(code), map: null }),
     },
-    async closeBundle() {
+    async writeBundle() {
       await rm(componentDir, { recursive: true, force: true });
       await cp(distDir, componentDir, { recursive: true });
     },

@@ -4,24 +4,42 @@ import type { TransactionPurpose } from "../workflow-model";
 import { configReview } from "./config-review-step";
 import { totalsMigrationReview } from "./totals-migration-review";
 
-export function buildInstallStep(
-  purpose: Exclude<TransactionPurpose, null>,
-  status: TransactionStatus | null,
-  apply: () => void,
-  compile: () => void,
-  install: () => void,
-  rollback: () => void,
-  back: () => void,
-  continueFlow: () => void,
-  configuration: MeterConfigurationRequest | null = null,
-  impact: ConfigurationImpact | null = null,
-  reviewBackBusy = false,
-  correctionPending = false,
-  pendingAction = "",
-  legacyMigration = false,
-  meterInventory: MeterConfiguration | null = null,
-  totalPreview: TotalGraphPreview | null = null,
-): TemplateResult {
+export function canLeaveTransaction(status: TransactionStatus | null, edit = false): boolean {
+  if (!status || status.state === "previewed" || status.state === "rolled_back") return true;
+  if (status.state === "verified") return !edit;
+  if (status.purpose.startsWith("offset_")) return status.state === "failed";
+  if (status.purpose !== "install_configuration") return false;
+  return status.state === "install_confirmation_required"
+    ? status.evidence.some((code) => ["upload_outcome_unknown", "reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed", "source_changed"].includes(code))
+    : status.state === "failed" && !status.rollback_available
+      && status.evidence.some((code) => ["persistence_failed", "upload_failed", "identity_mismatch", "topology_mismatch"].includes(code));
+}
+
+export interface BuildInstallData {
+  purpose: Exclude<TransactionPurpose, null>;
+  status: TransactionStatus | null;
+  configuration?: MeterConfigurationRequest | null;
+  impact?: ConfigurationImpact | null;
+  reviewBackBusy?: boolean;
+  correctionPending?: boolean;
+  pendingAction?: string;
+  legacyMigration?: boolean;
+  meterInventory?: MeterConfiguration | null;
+  totalPreview?: TotalGraphPreview | null;
+  backBlockedReason?: string;
+}
+export interface BuildInstallActions {
+  apply: () => void;
+  compile: () => void;
+  install: () => void;
+  rollback: () => void;
+  back: () => void;
+  continueFlow: () => void;
+}
+export function buildInstallStep(data: BuildInstallData, actions: BuildInstallActions): TemplateResult {
+  const { purpose, status, configuration = null, impact = null, reviewBackBusy = false, correctionPending = false, pendingAction = "", legacyMigration = false, meterInventory = null, totalPreview = null, backBlockedReason = "Complete this transaction or use its recovery action before editing the configuration." } = data;
+  const { apply, compile, install, rollback, back, continueFlow } = actions;
+
   if (!status) return html`
     <section class="step-content" aria-labelledby="step-heading">
       <div class="recovery-panel" role="status"><strong>No active review</strong><p>Return to the previous step to review the current configuration.</p></div>
@@ -64,6 +82,7 @@ export function buildInstallStep(
       ${purpose === "offset_preparation" ? html`<p>Installs a reviewed zero baseline for unfinished chips only. It does not calibrate. Return to the same board and stage, repeat physical preparation, then check readiness before Run.</p>` : ""}
       ${purpose === "offset_finalization" ? html`<p>Installs captured signed offsets, including zeros, with native restore disabled. Confirm configuration selection after install. This is not register readback and does not clear gain calibration.</p>` : ""}
       ${unchanged ? html`<p class="info-band" role="status">Configuration file is unchanged. Confirm to save Helper settings and continue. No firmware build or upload is needed.</p>` : ""}
+      <p class="info-band" role="status">${unchanged ? "Save Helper settings" : state === "previewed" ? "Changes have not been saved. Review → save and check → build → install" : state === "validated" ? "Saved to ESPHome; not installed on the meter. Build firmware next." : state === "install_confirmation_required" ? "Firmware is ready to install." : state === "verified" ? "Changes are active on the meter." : state.replaceAll("_", " ")}</p>
       ${configReview(status, configuration, impact, meterInventory?.totals, unchanged)}
       ${meterInventory ? totalsMigrationReview(meterInventory, () => undefined, totalPreview, impact !== null, true) : ""}
       ${state === "failed" || retryableInstall ? html`
@@ -98,9 +117,9 @@ export function buildInstallStep(
       ${unchanged ? html`<div class="confirmation-actions">
         ${state === "previewed" ? html`<button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending}>${pendingAction === "apply" ? "Confirming…" : "Confirm unchanged configuration"}</button>` : ""}
       </div>` : html`<div class="confirmation-actions">
-        <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : labels.apply}</button>
-        <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : labels.compile}</button>
-        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || (state !== "install_confirmation_required" && !retryClear)}>${pendingAction === "install" ? retryableInstall && !retryUpload ? "Checking…" : "Installing…" : retryClear ? "Retry clearing saved flash values" : retryUpload && state === "install_confirmation_required" ? "Retry installation" : persistenceFailure && deviceVerified ? "Retry completion" : retryableInstall ? "Retry verification" : labels.install}</button>
+        ${state === "previewed" ? html`<button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending}>${pendingAction === "apply" ? "Applying…" : labels.apply}</button>` : ""}
+        ${state === "validated" ? html`<button class="primary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending}>${pendingAction === "compile" ? "Compiling…" : labels.compile}</button>` : ""}
+        ${state === "install_confirmation_required" || retryClear ? html`<button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending}>${pendingAction === "install" ? retryableInstall && !retryUpload ? "Checking…" : "Installing…" : retryClear ? "Retry clearing saved flash values" : retryUpload && state === "install_confirmation_required" ? "Retry installation" : persistenceFailure && deviceVerified ? "Finish saving Helper data" : retryableInstall ? "Retry verification" : labels.install}</button>` : ""}
       </div>`}
       ${status?.validation_detail ? html`<dl class="status-list evidence-list">
         <div><dt>Validation code</dt><dd>${status.validation_detail.code ?? "unavailable"}</dd></div>
@@ -114,9 +133,10 @@ export function buildInstallStep(
           : html`<progress max="100" value=${percentage} aria-label="${progressAction} progress: ${percentage}%"></progress>`}
       </div>` : ""}
       <footer class="action-footer">
-        <button class="secondary" @click=${back} ?disabled=${busy || reviewBackBusy}>${reviewBackBusy ? "Loading…" : "Back"}</button>
-        <button class="primary" data-action="continue" @click=${continueFlow} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "verified"}>Continue</button>
+        <button class="secondary" @click=${back} ?disabled=${busy || reviewBackBusy || !canLeaveTransaction(status, true)} aria-describedby=${!canLeaveTransaction(status, true) ? "transaction-back-reason" : ""}>${reviewBackBusy ? "Loading…" : "Back"}</button>
+        ${state === "verified" && !retryClear ? html`<button class="primary" data-action="continue" @click=${continueFlow} ?disabled=${busy || reviewBackBusy || correctionPending}>Continue</button>` : ""}
       </footer>
+      ${!canLeaveTransaction(status, true) ? html`<p id="transaction-back-reason" class="field-help">${backBlockedReason}</p>` : ""}
     </section>
   `;
 }

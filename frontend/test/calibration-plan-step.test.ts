@@ -9,8 +9,8 @@ describe("calibrationPlanStep", () => {
     const root = document.createElement("div");
     render(calibrationPlanStep(null, choose, () => {}, false, false), root);
     expect(root.textContent).to.contain("Keep existing calibration");
-    expect(root.textContent).to.contain("Standard calibration");
-    expect(root.textContent).to.contain("Full calibration");
+    expect(root.textContent).to.contain("Calibrate voltage and current");
+    expect(root.textContent).to.contain("Include offset calibration");
   });
 
   it("lays out the calibration choices as three aligned rows", () => {
@@ -19,7 +19,7 @@ describe("calibrationPlanStep", () => {
     render(html`<style>${panelStyles.cssText}</style>${calibrationPlanStep(null, vi.fn(), vi.fn(), false, false)}`, root);
 
     const fieldset = root.querySelector("fieldset");
-    const labels = [...root.querySelectorAll("fieldset > label")];
+    const labels = [...root.querySelectorAll("fieldset label")];
     expect(labels).toHaveLength(3);
     expect(getComputedStyle(fieldset!).display).toBe("grid");
     expect(labels.map((label) => getComputedStyle(label).display)).toEqual(["flex", "flex", "flex"]);
@@ -50,4 +50,16 @@ describe("calibrationPlanStep", () => {
     expect(root.querySelector("fieldset")?.disabled).toBe(true);
     expect(root.querySelector("button")?.disabled).toBe(true);
   });
+});
+
+it("selects a plan without proceeding until the explicit primary action", () => {
+  const root = document.createElement("div");
+  const choose = vi.fn(), proceed = vi.fn();
+  render(calibrationPlanStep("standard", choose, vi.fn(), false, false, proceed), root);
+  const radio = root.querySelectorAll<HTMLInputElement>('input[type="radio"]')[0]!;
+  radio.dispatchEvent(new Event("change"));
+  expect(choose).toHaveBeenCalledWith("keep_existing");
+  expect(proceed).not.toHaveBeenCalled();
+  root.querySelector<HTMLButtonElement>('[data-action="start-calibration"]')!.click();
+  expect(proceed).toHaveBeenCalledOnce();
 });

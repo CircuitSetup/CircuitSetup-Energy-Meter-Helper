@@ -422,6 +422,7 @@ class SessionStatus:
     has_pending_calibration: bool = False
     calibration_plan: CalibrationPlan = "full"
     configured_offset_targets: tuple[tuple[int, int], ...] = ()
+    has_pending_gain_calibration: bool = False
 
 
 @dataclass(slots=True)
@@ -995,7 +996,7 @@ class EntryWorkflow:
         with self._guard(mac):
             self._prune_device_sessions_locked(mac)
             session = next(
-                (item.status() for item in self._sessions.values() if item.mac == mac),
+                (self._status(item) for item in self._sessions.values() if item.mac == mac),
                 None,
             )
         return {
@@ -1008,7 +1009,7 @@ class EntryWorkflow:
             "verified_calibration": await self._store.async_get_verified_calibration(mac),
         }
 
-    async def async_adopt_device(self, device_id: str) -> dict[str, str]:
+    async def async_adopt_device(self, device_id: str) -> dict[str, str | bool]:
         device = self._adoption_device(device_id)
         self._assert_rebind_idle(device_id)
         builder = self._require_builder()
@@ -1021,6 +1022,7 @@ class EntryWorkflow:
             return {
                 "device_id": device_id,
                 "configuration": inspection.configuration,
+                "imported": False,
             }
         name = getattr(entry, "data", {}).get("device_name")
         if not isinstance(name, str):
@@ -1031,7 +1033,7 @@ class EntryWorkflow:
             strict=inspection is not None,
         )
         if status.configuration is not None:
-            return {"device_id": device_id, "configuration": status.configuration}
+            return {"device_id": device_id, "configuration": status.configuration, "imported": False}
         import_data = status.import_data
         if import_data is None:
             info = getattr(getattr(entry, "runtime_data", None), "device_info", None)
@@ -1046,7 +1048,7 @@ class EntryWorkflow:
         configuration = await builder.async_import_device(
             import_data
         )
-        return {"device_id": device_id, "configuration": configuration}
+        return {"device_id": device_id, "configuration": configuration, "imported": True}
 
     async def async_preview_ct_config(
         self,
@@ -1611,15 +1613,6 @@ class EntryWorkflow:
             handle.state = "stable" if stable else "unstable"
             self._refresh(handle)
             self._publish(handle)
-            if target == "voltage":
-                return {
-                    "target": target,
-                    "target_id": target_id,
-                    "stable": stable,
-                    "windows": tuple(
-                        _public_sample_window(window) for window in windows
-                    ),
-                }
             return {
                 "target": target,
                 "target_id": target_id,
@@ -3820,6 +3813,10 @@ class EntryWorkflow:
         return replace(
             status,
             has_pending_calibration=self._has_pending_calibration(handle.mac),
+            has_pending_gain_calibration=bool(
+                (pending := self._sessions_owner.pending_calibration(handle.mac))
+                and pending.gain_groups
+            ),
         )
 
     def _has_pending_calibration(self, mac: str) -> bool:

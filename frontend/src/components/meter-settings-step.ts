@@ -41,6 +41,10 @@ export function meterSettingsStep(
       && reference.nominal_voltage_v >= 1 && reference.nominal_voltage_v <= 600
       && Number.isInteger(reference.gain_voltage) && reference.gain_voltage >= 1 && reference.gain_voltage <= 65535
       && reference.group_keys.length) && (!multiReference || acknowledged);
+  const blockedReason = !profileConfirmed ? "Confirm the electrical profile and frequency."
+    : !draft.friendly_name.trim() ? "Enter a friendly name."
+      : multiReference && !acknowledged ? "Confirm that you prepared the separate voltage references."
+        : !valid ? "Complete each voltage reference: label, phase, voltage (1–600 V), gain (1–65535), and assigned group." : "";
   const patch = (change: Partial<MeterSettingsDraft>) => {
     setAcknowledged(false);
     update({ ...draft, ...change });
@@ -115,7 +119,11 @@ export function meterSettingsStep(
       ${intervalImpact(draft.update_interval_s) ? html`<p class="info-band" role="status">${intervalImpact(draft.update_interval_s)}</p>` : nothing}
       <h3>Voltage references</h3>
       <p class="info-band">Match this voltage-reference setup to the meter's physical wiring. By default, the main-board reference applies to every board.</p>
-      <details class="advanced-voltage-options" data-section="advanced-voltage-options"><summary>Advanced voltage options</summary><div class="voltage-options-content"><div class="voltage-reference-cards">${draft.voltage_references.map((reference) => html`
+      <div class="required-voltage-fields">${draft.voltage_references.map((reference) => html`<div aria-label=${`${reference.label || reference.reference_id} required voltage settings`}>            ${["three_phase", "custom"].includes(draft.electrical_system) ? html`<label>Nominal voltage <input aria-label=${`${reference.reference_id} nominal voltage`} type="number" min="1" max="600" step="0.1" .value=${String(reference.nominal_voltage_v)}
+              @input=${(event: Event) => setNominalVoltage(reference.reference_id, Number((event.target as HTMLInputElement).value))} /></label>` : nothing}
+            ${reference.transformer_model_id !== "custom" ? html`<p>Starting gain: ${reference.gain_voltage}</p>` : html`<label>Custom voltage gain <input aria-label=${`${reference.reference_id} custom voltage gain`} type="number" min="1" max="65535" step="1" .value=${String(reference.gain_voltage)}
+              @input=${(event: Event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, gain_voltage: Number((event.target as HTMLInputElement).value) } : item) })} /></label>`}</div>`)}</div>
+      <details class="advanced-voltage-options" data-section="advanced-voltage-options" ?open=${draft.voltage_references.some((reference) => !reference.label.trim() || !reference.phase_label.trim() || !reference.group_keys.length)}><summary>Advanced voltage options</summary><div class="voltage-options-content"><div class="voltage-reference-cards">${draft.voltage_references.map((reference) => html`
         <section class="voltage-reference-card" aria-label=${`${reference.label} voltage reference`}>
           <div class="voltage-reference-column">
             <label>Label <input aria-label=${`${reference.reference_id} label`} maxlength="64" .value=${reference.label}
@@ -125,10 +133,7 @@ export function meterSettingsStep(
               ${catalog.presets.map((preset) => html`<option value=${preset.model_id}>${preset.label}</option>`)}
               <option value="custom">Custom starting gain</option>
               ${reference.transformer_model_id !== "custom" && !catalog.presets.some((preset) => preset.model_id === reference.transformer_model_id) ? html`<option value=${reference.transformer_model_id}>${reference.transformer_model_id}</option>` : ""}</select></label>` : nothing}
-            ${["three_phase", "custom"].includes(draft.electrical_system) ? html`<label>Nominal voltage <input aria-label=${`${reference.reference_id} nominal voltage`} type="number" min="1" max="600" step="0.1" .value=${String(reference.nominal_voltage_v)}
-              @input=${(event: Event) => setNominalVoltage(reference.reference_id, Number((event.target as HTMLInputElement).value))} /></label>` : nothing}
-            ${reference.transformer_model_id !== "custom" ? html`<p>Starting gain: ${reference.gain_voltage}</p>` : html`<label>Custom voltage gain <input aria-label=${`${reference.reference_id} custom voltage gain`} type="number" min="1" max="65535" step="1" .value=${String(reference.gain_voltage)}
-              @input=${(event: Event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, gain_voltage: Number((event.target as HTMLInputElement).value) } : item) })} /></label>`}
+
           </div>
           <div class="voltage-reference-column voltage-phase-column">
             <label>Phase label <input aria-label=${`${reference.reference_id} phase label`} aria-describedby=${`${reference.reference_id}-phase-help`} maxlength="64" .value=${reference.phase_label}
@@ -142,16 +147,17 @@ export function meterSettingsStep(
       <p id="voltage-assignment-help">Each group has three CT channels and one voltage reference. Changes update the draft. Moving the last group requires a confirmed swap. Review in Circuits &amp; CTs, then Apply. Compile and Install activate assignments on the meter.</p>
       <div class="meter-settings-grid">${draft.voltage_references.flatMap((reference) => reference.group_keys).sort().map((group) => html`<label>${group}<select aria-label=${`${group} voltage reference`} aria-describedby="voltage-assignment-help" .value=${draft.voltage_references.find((reference) => reference.group_keys.includes(group))?.reference_id ?? ""}
         @change=${(event: Event) => moveGroup(group, (event.target as HTMLSelectElement).value, event.target as HTMLSelectElement)}>${draft.voltage_references.map((reference) => html`<option value=${reference.reference_id}>${reference.label || reference.reference_id}</option>`)}</select></label>`)}</div>
-      ${multiReference ? html`<label class="check-row"><input type="checkbox" aria-label="Multi-reference preparation acknowledgement" .checked=${acknowledged}
-        @change=${(event: Event) => setAcknowledged((event.target as HTMLInputElement).checked)} />I prepared the separate voltage references.</label>` : ""}
       </div>
       </details>
+      ${multiReference ? html`<label class="check-row"><input type="checkbox" aria-label="Multi-reference preparation acknowledgement" .checked=${acknowledged}
+        @change=${(event: Event) => setAcknowledged((event.target as HTMLInputElement).checked)} />I prepared the separate voltage references.</label>` : ""}
       <details data-section="advanced-meter-settings"><summary>Advanced meter settings</summary>
       <div class="voltage-options-content">
       ${boardPackages ? packageOptions(boardPackages, setBoardPackages, packageCapabilities) : ""}
       </div></details>
       <label class="check-row"><input type="checkbox" aria-label="Confirm electrical profile" .checked=${profileConfirmed}
         @change=${(event: Event) => setProfileConfirmed((event.target as HTMLInputElement).checked)} />I confirm the electrical profile and frequency.</label>
+      ${blockedReason ? html`<p data-meter-blocked-reason class="warning-band" role="status">${blockedReason}</p>` : nothing}
       <footer class="action-footer"><button class="secondary" @click=${back}>Back</button><button class="primary" data-action="continue-meter-settings" ?disabled=${!valid} @click=${continueToCircuits}>Continue to Circuits & CTs</button></footer>
     </section>
   `;

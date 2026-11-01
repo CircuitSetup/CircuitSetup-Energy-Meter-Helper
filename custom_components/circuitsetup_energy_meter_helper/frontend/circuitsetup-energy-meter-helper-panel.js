@@ -1207,6 +1207,7 @@ function session(value, label) {
     });
     if (targets.some(([board, stage]) => board < 0 || board > 6 || stage !== 1 && stage !== 2) || new Set(targets.map(([board, stage]) => `${board}:${stage}`)).size !== targets.length) throw new Error(`${label} response is invalid`);
   }
+  if (item.has_pending_gain_calibration !== void 0) boolean(item.has_pending_gain_calibration, label);
   const offsetFields = [item.offset_capability, item.offset_disposition, item.offset_boards, item.has_pending_calibration];
   if (offsetFields.every((field) => field === void 0)) return value;
   if (offsetFields.some((field) => field === void 0)) throw new Error(`${label} response is invalid`);
@@ -1629,6 +1630,7 @@ class HelperApi {
       const item = record(value, "adopt_device");
       string(item.device_id, "adopt_device");
       string(item.configuration, "adopt_device");
+      if (item.imported !== void 0) boolean(item.imported, "adopt_device");
       return value;
     }, { device_id: deviceId });
     this.previewCtConfig = (deviceId, planId, sourceSha256, changes, packageOptions2) => this.call("preview_ct_config", (value) => transaction(value, "preview_ct_config"), {
@@ -1952,12 +1954,13 @@ function configReview(status, configuration = null, impact = null, totals = null
     }
     return aggregate.measurement_method === "one_ct_double_power" ? `2 × ${value}` : aggregate.measurement_method === "both_conductors_one_ct" ? `${value} (both conductors)` : value;
   };
-  const outputs = (value) => `${value.watts ? "Public" : "Hidden"} Watts; ${value.amps ? "public" : "hidden"} Amps; ${value.kwh ? "public" : "hidden"} kWh`;
+  const outputs = (value) => `${value.watts ? "Public" : "Hidden"} Watts; ${value.amps ? "public" : "hidden"} Amps; ${value.kwh ? "kWh energy sensor exists" : "kWh sensor removed"}`;
   return b`
     <section class="review-region" aria-labelledby="review-heading">
       <h2 id="review-heading">Review changes</h2>
       ${unchanged ? b`<p>Review the configuration before confirming the unchanged file.</p>` : b`<p class="warning-band">Firmware changes can alter Home Assistant entity names and keys. Review every change before Apply.</p>`}
-      ${configuration ? b`
+      ${status?.changes.length ? b`<table aria-label="Changed settings"><thead><tr><th>Setting</th><th>Before</th><th>After</th></tr></thead><tbody>${status.changes.map((change) => b`<tr><td>${change.key}</td><td>${change.old_value ?? "Not previously set"}</td><td>${change.new_value}</td></tr>`)}</tbody></table>` : ""}
+      ${configuration ? b`<details class="full-configuration"><summary>Full configuration</summary>
         <h3>Meter</h3>
         <dl class="status-list"><div><dt>Electrical profile</dt><dd>${configuration.meter.electrical_system.replaceAll("_", " ")} · ${configuration.meter.line_frequency_hz} Hz</dd></div><div><dt>Reporting interval</dt><dd>${configuration.meter.update_interval_s} seconds</dd></div><div><dt>Friendly name</dt><dd>${configuration.meter.friendly_name}</dd></div></dl>
         <h3>Voltage references</h3>
@@ -1967,16 +1970,13 @@ function configReview(status, configuration = null, impact = null, totals = null
         <ul class="status-list">${channels.map((channel) => b`<li>CT${channel.channel} ${channel.name}: ${channel.enabled ? `${channel.role.replaceAll("_", " ")} on ${channel.voltage_reference_id}; ${channel.model_id || "no model"} × ${channel.reporting_multiplier}` : "unused"}</li>`)}</ul>
         <h3>Default meter totals</h3>
         <ul><li>Overall meter total: ${outputs(configuration.default_totals.overall)}</li>${configuration.default_totals.boards.map((board) => b`<li>${board.board_index === 0 ? "Main Board" : `Add-on ${board.board_index}`} total: ${outputs(board.outputs)}</li>`)}</ul>
-        <h3>Suggested circuit totals</h3>
-        <ul>${totals?.automatic_totals.map((item) => b`<li>${item.candidate.name}: ${item.enabled ? outputs(item.outputs) : "Disabled"}</li>`)}</ul>
-        <h3>Advanced total hierarchy</h3>
-        ${configuration.aggregates.length ? b`<ul class="status-list">${configuration.aggregates.map((aggregate) => b`<li>${aggregate.name} = ${formula(aggregate)} · ${aggregate.measurement_method.replaceAll("_", " ")} · ${aggregate.energy_mode} energy · ${outputs(aggregate.outputs)}</li>`)}</ul>` : b`<p class="info-band">No aggregate totals are configured.</p>`}
-        <h3>Legacy relationship migration</h3>
-        <ul>${configuration.totals_change_intent?.legacy_parent_decisions.map((decision) => b`<li>${configuration.aggregates.find((item) => item.aggregate_id === decision.child_id)?.name ?? decision.child_id} → ${configuration.aggregates.find((item) => item.aggregate_id === decision.proposed_parent_id)?.name ?? decision.proposed_parent_id}: ${decision.accepted ? "Use this parent relationship" : "Keep totals independent"}; awaiting successful commit.</li>`)}</ul>
+        ${totals?.automatic_totals.length ? b`<h3>Suggested circuit totals</h3><ul>${totals.automatic_totals.map((item) => b`<li>${item.candidate.name}: ${item.enabled ? outputs(item.outputs) : "Disabled"}</li>`)}</ul>` : ""}
+        ${configuration.aggregates.length ? b`<h3>Advanced total hierarchy</h3><ul class="status-list">${configuration.aggregates.map((aggregate) => b`<li>${aggregate.name} = ${formula(aggregate)} · ${aggregate.measurement_method.replaceAll("_", " ")} · ${aggregate.energy_mode} energy · ${outputs(aggregate.outputs)}</li>`)}</ul>` : ""}
+        ${configuration.totals_change_intent?.legacy_parent_decisions.length ? b`<h3>Legacy relationship migration</h3><ul>${configuration.totals_change_intent.legacy_parent_decisions.map((decision) => b`<li>${configuration.aggregates.find((item) => item.aggregate_id === decision.child_id)?.name ?? decision.child_id} → ${configuration.aggregates.find((item) => item.aggregate_id === decision.proposed_parent_id)?.name ?? decision.proposed_parent_id}: ${decision.accepted ? "Use this parent relationship" : "Keep totals independent"}; awaiting successful commit.</li>`)}</ul>` : ""}
         ${impact ? b`<p>${impact.public_total_entity_count} public total entities; ${impact.internal_total_sensor_count} internal total sensors. Hidden outputs can remain internal dependencies.</p>` : b`<p>Current total counts are unavailable.</p>`}
         <h3>Package and entity impact</h3>
         <dl class="status-list"><div><dt>Power quality</dt><dd>${pqBoards.length ? `Boards ${pqBoards.join(", ")} · reactive power, apparent power, and power factor for each used CT` : "Not selected"}</dd></div><div><dt>Phase status</dt><dd>${statusBoards.length ? `Boards ${statusBoards.join(", ")} · native API diagnostics, disabled by default in Home Assistant` : "Not selected"}</dd></div>${impact ? b`<div><dt>Helper-managed measurements</dt><dd>${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text, ${impact.energy_entity_count} energy; ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec</dd></div>` : ""}</dl>
-      ` : ""}
+      </details>` : ""}
       <dl class="status-list">
         <div><dt>Validation</dt><dd>${unchanged ? "Not needed" : status?.state === "validated" || status?.progress.includes("config_validated") ? "Validated" : "Pending"}</dd></div>
         <div><dt>Compile</dt><dd>${unchanged ? "Not needed" : status?.state === "compiled" || status?.progress.includes("firmware_compiled") ? "Compiled" : "Pending"}</dd></div>
@@ -2060,7 +2060,16 @@ function totalsMigrationReview(meter, update, preview = null, fresh = true, read
   })}
     </section>` : A}`;
 }
-function buildInstallStep(purpose, status, apply, compile, install, rollback, back, continueFlow, configuration = null, impact = null, reviewBackBusy = false, correctionPending = false, pendingAction = "", legacyMigration = false, meterInventory = null, totalPreview = null) {
+function canLeaveTransaction(status, edit = false) {
+  if (!status || status.state === "previewed" || status.state === "rolled_back") return true;
+  if (status.state === "verified") return !edit;
+  if (status.purpose.startsWith("offset_")) return status.state === "failed";
+  if (status.purpose !== "install_configuration") return false;
+  return status.state === "install_confirmation_required" ? status.evidence.some((code) => ["upload_outcome_unknown", "reconnect_unavailable", "entity_mismatch", "sensor_count_mismatch", "meter_communication_failed", "persistence_failed", "source_changed"].includes(code)) : status.state === "failed" && !status.rollback_available && status.evidence.some((code) => ["persistence_failed", "upload_failed", "identity_mismatch", "topology_mismatch"].includes(code));
+}
+function buildInstallStep(data, actions) {
+  const { purpose, status, configuration = null, impact = null, reviewBackBusy = false, correctionPending = false, pendingAction = "", legacyMigration = false, meterInventory = null, totalPreview = null, backBlockedReason = "Complete this transaction or use its recovery action before editing the configuration." } = data;
+  const { apply, compile, install, rollback, back, continueFlow } = actions;
   if (!status) return b`
     <section class="step-content" aria-labelledby="step-heading">
       <div class="recovery-panel" role="status"><strong>No active review</strong><p>Return to the previous step to review the current configuration.</p></div>
@@ -2094,6 +2103,7 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
       ${purpose === "offset_preparation" ? b`<p>Installs a reviewed zero baseline for unfinished chips only. It does not calibrate. Return to the same board and stage, repeat physical preparation, then check readiness before Run.</p>` : ""}
       ${purpose === "offset_finalization" ? b`<p>Installs captured signed offsets, including zeros, with native restore disabled. Confirm configuration selection after install. This is not register readback and does not clear gain calibration.</p>` : ""}
       ${unchanged ? b`<p class="info-band" role="status">Configuration file is unchanged. Confirm to save Helper settings and continue. No firmware build or upload is needed.</p>` : ""}
+      <p class="info-band" role="status">${unchanged ? "Save Helper settings" : state === "previewed" ? "Changes have not been saved. Review → save and check → build → install" : state === "validated" ? "Saved to ESPHome; not installed on the meter. Build firmware next." : state === "install_confirmation_required" ? "Firmware is ready to install." : state === "verified" ? "Changes are active on the meter." : state.replaceAll("_", " ")}</p>
       ${configReview(status, configuration, impact, meterInventory?.totals, unchanged)}
       ${meterInventory ? totalsMigrationReview(meterInventory, () => void 0, totalPreview, impact !== null, true) : ""}
       ${state === "failed" || retryableInstall ? b`
@@ -2127,9 +2137,9 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
       ${unchanged ? b`<div class="confirmation-actions">
         ${state === "previewed" ? b`<button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending}>${pendingAction === "apply" ? "Confirming…" : "Confirm unchanged configuration"}</button>` : ""}
       </div>` : b`<div class="confirmation-actions">
-        <button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "previewed"}>${pendingAction === "apply" ? "Applying…" : labels.apply}</button>
-        <button class="secondary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "validated"}>${pendingAction === "compile" ? "Compiling…" : labels.compile}</button>
-        <button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "install_confirmation_required" && !retryClear}>${pendingAction === "install" ? retryableInstall && !retryUpload ? "Checking…" : "Installing…" : retryClear ? "Retry clearing saved flash values" : retryUpload && state === "install_confirmation_required" ? "Retry installation" : persistenceFailure && deviceVerified ? "Retry completion" : retryableInstall ? "Retry verification" : labels.install}</button>
+        ${state === "previewed" ? b`<button class="primary" @click=${apply} ?disabled=${busy || reviewBackBusy || correctionPending}>${pendingAction === "apply" ? "Applying…" : labels.apply}</button>` : ""}
+        ${state === "validated" ? b`<button class="primary" @click=${compile} ?disabled=${busy || reviewBackBusy || correctionPending}>${pendingAction === "compile" ? "Compiling…" : labels.compile}</button>` : ""}
+        ${state === "install_confirmation_required" || retryClear ? b`<button class="primary" @click=${install} ?disabled=${busy || reviewBackBusy || correctionPending}>${pendingAction === "install" ? retryableInstall && !retryUpload ? "Checking…" : "Installing…" : retryClear ? "Retry clearing saved flash values" : retryUpload && state === "install_confirmation_required" ? "Retry installation" : persistenceFailure && deviceVerified ? "Finish saving Helper data" : retryableInstall ? "Retry verification" : labels.install}</button>` : ""}
       </div>`}
       ${status?.validation_detail ? b`<dl class="status-list evidence-list">
         <div><dt>Validation code</dt><dd>${status.validation_detail.code ?? "unavailable"}</dd></div>
@@ -2141,16 +2151,17 @@ function buildInstallStep(purpose, status, apply, compile, install, rollback, ba
         ${percentage === null ? b`<progress max="100" aria-label="${progressAction} progress: in progress"></progress>` : b`<progress max="100" value=${percentage} aria-label="${progressAction} progress: ${percentage}%"></progress>`}
       </div>` : ""}
       <footer class="action-footer">
-        <button class="secondary" @click=${back} ?disabled=${busy || reviewBackBusy}>${reviewBackBusy ? "Loading…" : "Back"}</button>
-        <button class="primary" data-action="continue" @click=${continueFlow} ?disabled=${busy || reviewBackBusy || correctionPending || state !== "verified"}>Continue</button>
+        <button class="secondary" @click=${back} ?disabled=${busy || reviewBackBusy || !canLeaveTransaction(status, true)} aria-describedby=${!canLeaveTransaction(status, true) ? "transaction-back-reason" : ""}>${reviewBackBusy ? "Loading…" : "Back"}</button>
+        ${state === "verified" && !retryClear ? b`<button class="primary" data-action="continue" @click=${continueFlow} ?disabled=${busy || reviewBackBusy || correctionPending}>Continue</button>` : ""}
       </footer>
+      ${!canLeaveTransaction(status, true) ? b`<p id="transaction-back-reason" class="field-help">${backBlockedReason}</p>` : ""}
     </section>
   `;
 }
-function calibrationPlanStep(selected, choose, back, runtimeOnly, busy) {
+function calibrationPlanStep(selected, choose, back, runtimeOnly, busy, proceed = () => void 0) {
   return b`<section class="step-content" aria-labelledby="calibration-plan-heading" aria-busy=${busy ? "true" : "false"}>
     <h2 id="calibration-plan-heading">Choose calibration</h2>
-    <p>Verified calibration stays in meter flash until an ESPHome handoff.</p>
+    <p>Choose whether to keep existing calibration or calibrate selected measurements.</p>
     ${runtimeOnly ? b`<section class="info-band" aria-label="Runtime-only capabilities">
       <strong>Meter connected to Home Assistant.</strong>
       <p>ESPHome source editing is unavailable.</p>
@@ -2160,12 +2171,12 @@ function calibrationPlanStep(selected, choose, back, runtimeOnly, busy) {
       <p>Current calibration requires a reporting multiplier because authoritative CT inventory is unavailable.</p>
     </section>` : ""}
     <fieldset class="name-mode" ?disabled=${busy}><legend>Calibration plan</legend>
-      <label><input type="radio" name="calibration-plan" .checked=${selected === "keep_existing"} @change=${() => choose("keep_existing")}> Keep existing calibration — no live session or safety acknowledgement.</label>
-      <label><input type="radio" name="calibration-plan" .checked=${selected === "standard"} @change=${() => choose("standard")}> Standard calibration — preserve existing offset values, then calibrate voltage and current.</label>
-      <label><input type="radio" name="calibration-plan" .checked=${selected === "full"} @change=${() => choose("full")}> Full calibration — includes optional offset calibration before voltage and current.</label>
+      <label><input type="radio" name="calibration-plan" value="keep_existing" .checked=${selected === "keep_existing"} @change=${() => choose("keep_existing")}> Keep existing calibration</label>
+      <label><input type="radio" name="calibration-plan" value="standard" .checked=${selected === "standard"} @change=${() => choose("standard")}> Calibrate voltage and current</label>
+      <details ?open=${selected === "full"}><summary>Advanced calibration</summary><label><input type="radio" name="calibration-plan" value="full" .checked=${selected === "full"} @change=${() => choose("full")}> Include offset calibration</label></details>
     </fieldset>
     ${busy ? b`<p role="status"><span class="loading-spinner" aria-hidden="true"></span>Loading calibration…</p>` : ""}
-    <footer class="action-footer"><button class="secondary" ?disabled=${busy} @click=${back}>Back</button></footer>
+    <footer class="action-footer"><button class="secondary" ?disabled=${busy} @click=${back}>Back</button><button class="primary" data-action="start-calibration" ?disabled=${busy || !selected} @click=${proceed}>${busy ? "Loading calibration..." : selected === "keep_existing" ? "Continue with existing calibration" : "Continue to calibration"}</button></footer>
   </section>`;
 }
 const t = { ATTRIBUTE: 1, CHILD: 2, PROPERTY: 3, BOOLEAN_ATTRIBUTE: 4 }, e = (t2) => (...e2) => ({ _$litDirective$: t2, values: e2 });
@@ -2248,13 +2259,13 @@ function defaultTotalsSection(configuration, totals, readable, writable, update,
     ${visibilityUnresolved ? b`<p class="info-band" role="status">Native visibility is unconfirmed; controls show requested outputs, not installed publications.</p>` : A}
     ${graphState === "pending" ? b`<p class="info-band" role="status">Total graph updating; native cards remain available.</p>` : graphState === "invalid" ? b`<p class="warning-band" role="status">Total graph unavailable; native cards show saved draft status, not current dependencies.</p>` : A}
     <p>Watts and Amps control Home Assistant visibility. kWh adds or removes the energy sensor.</p>
-    <ul class="native-total-status" role="status">
+    <details class="total-technical-details"><summary>Output details</summary><ul class="native-total-status" role="status">
       <li>Off Watts stays hidden in Home Assistant but remains internal when needed by Overall meter total, enabled kWh, or other totals.</li>
       <li>Off Amps stays hidden in Home Assistant but remains internal when needed by Overall meter total or other totals.</li>
       <li>kWh is checked when an energy sensor exists, including hidden sensors. Turning it off removes that sensor.</li>
-    </ul>
+    </ul></details>
     ${overall ? b`<fieldset class="default-total-card"><legend>Overall meter total (all monitored channels)</legend>
-      <p>${boardFormula || "All monitored channels"}. Circuit CTs can double-count service mains, so this native total is not relabeled Mains.</p>
+      <p>Circuit CTs can double-count service mains, so this native total is not relabeled Mains.</p><details class="total-technical-details"><summary>Formula details</summary><p>${boardFormula || "All monitored channels"}</p></details>
       <p>Covers: ${boardRanges || range(overall.leaf_channels)}.</p>
       <div class="default-total-controls">
         ${control("Overall meter total Watts", configuration.default_totals.overall.watts, (watts) => patch({ ...configuration.default_totals.overall, watts }), existingConfiguration?.default_totals.overall.watts)}
@@ -2333,11 +2344,12 @@ function automaticTotalsSection(configuration, totals, writable, update, existin
       changeOutput(key, input.checked);
     }} />${label}</label>`;
     return b`<fieldset class="automatic-total-card"><legend>${currentName}</legend>
-        <p class="aggregate-id">Total ID: <code>${resolved.candidate.aggregate_id}</code></p>
+
         <label class="automatic-total-name">Name <input aria-label=${`${resolved.candidate.candidate_id} suggested total name`} maxlength="64" required .value=${l(currentName)} ?disabled=${!writable}
           @input=${(event) => patch(resolved.candidate.candidate_id, current, { name: event.target.value })} /></label>
-        ${savedSensorIds ? b`<p class="aggregate-id">Existing sensor IDs are preserved; see Configuration review for exact IDs.</p>` : b`<p class="aggregate-id">Proposed sensor IDs: <code>${sensorIds.length ? sensorIds.join(", ") : currentName.trim() ? "none until an output is selected" : "enter a name first"}</code></p>`}
-        <p>Sources: ${sources}</p><p>Formula: ${sourceFormula(resolved.candidate.sources, totals, configuration.aggregates)} · ${resolved.candidate.role.replaceAll("_", " ")} · ${resolved.candidate.measurement_method.replaceAll("_", " ")}</p>
+<p>Sources: ${sources}</p><details class="total-technical-details"><summary>Technical details</summary><p class="aggregate-id">Total ID: <code>${resolved.candidate.aggregate_id}</code></p>        ${savedSensorIds ? b`<p class="aggregate-id">Existing sensor IDs are preserved; see Configuration review for exact IDs.</p>` : b`<p class="aggregate-id">Proposed sensor IDs: <code>${sensorIds.length ? sensorIds.join(", ") : currentName.trim() ? "none until an output is selected" : "enter a name first"}</code></p>`}
+        <p>Formula: ${sourceFormula(resolved.candidate.sources, totals, configuration.aggregates)} · ${resolved.candidate.role.replaceAll("_", " ")} · ${resolved.candidate.measurement_method.replaceAll("_", " ")}</p>
+</details>
         ${parents.length ? b`<p>Feeds into: ${parents.map((parent) => parent.name).join(" and ")}</p>` : ""}
         <label class="automatic-total-control"><input type="checkbox" role="switch" aria-label=${`Create ${currentName} total`} .checked=${current.enabled} ?disabled=${!writable} @change=${changeEnabled} />Create this total</label>
         <div class="automatic-total-controls">${control("watts", "Watts")}${control("amps", "Amps")}${control("kwh", "kWh", resolved.candidate.energy_mode === "none")}</div>
@@ -2443,7 +2455,7 @@ function advancedTotalsEditor(configuration, drafts, update, writable, reason, t
       origin: "advanced"
     }] });
   };
-  return b`<section aria-labelledby="advanced-totals-heading"><details class="advanced-totals"><summary id="advanced-totals-heading">Advanced totals</summary>
+  return b`<section aria-labelledby="advanced-totals-heading"><details class="advanced-totals" ?open=${!fresh || configuration.aggregates.length > 0 || catalog.stale_automatic_total_settings.length > 0}><summary id="advanced-totals-heading">Advanced totals</summary>
     <p>Watts and Amps control Home Assistant visibility. kWh controls the energy sensor, including hidden sensors; turning it off removes it.</p>
     ${!writable ? b`<p class="info-band" role="status">Aggregate editing unavailable: ${reason === "unmanaged_total_present" ? "This meter has legacy unmanaged totals." : "This meter does not expose managed totals."} Upgrade the meter configuration before editing. Existing aggregates remain reviewable.</p>` : A}
     ${!fresh ? b`<p class="info-band" role="status">Total graph unavailable or updating. Draft sources can still be edited or removed; complete the graph before continuing.</p>` : A}
@@ -2529,8 +2541,9 @@ function advancedTotalsEditor(configuration, drafts, update, writable, reason, t
       }
       patch(aggregate, { name: input.value });
     }} /></label>
-            <p class="aggregate-id">Total ID: <code>${aggregate.aggregate_id}</code></p>
+            <details class="total-technical-details"><summary>Identity details</summary><p class="aggregate-id">Total ID: <code>${aggregate.aggregate_id}</code></p>
             ${existingConfiguration && !existingConfiguration.aggregates.some((item) => item.aggregate_id === aggregate.aggregate_id) ? b`<p class="proposed-sensor-id">Proposed sensor ID prefix: <code>${generatedTotalId(aggregate.name)}</code></p>` : A}
+            </details>
           </div>
           <label>Role <select aria-label=${`${aggregate.aggregate_id} aggregate role`} .value=${aggregate.role}
             @change=${(event) => {
@@ -2585,7 +2598,7 @@ function advancedTotalsEditor(configuration, drafts, update, writable, reason, t
       return b`<option value=${item.aggregate_id} ?selected=${item.aggregate_id === parent} ?disabled=${Boolean(blocked)}>${item.name}${blocked ? ` — ${blocked}` : ""}</option>`;
     })}</select></label>
         </div>
-        <p class="aggregate-formula">Formula: ${aggregate.sources.length ? aggregate.sources.map(label).join(" + ") : "Select sources"}</p>
+        <p>Sources: ${aggregate.sources.length ? aggregate.sources.map(label).join(", ") : "Select sources"}</p><details class="total-technical-details"><summary>Formula details</summary><p class="aggregate-formula">Formula: ${aggregate.sources.length ? aggregate.sources.map(label).join(" + ") : "Select sources"}</p></details>
         ${fresh && !problem ? b`<p>Coverage: ${coverageLabel(leaves)}</p>` : A}
         ${problem ? b`<p class="warning-band" role="status">${problem} Complete the total before continuing.</p>` : A}
         ${overlaps ? b`<p class="warning-band" role="note">This total overlaps another report. Keep them separate; do not add them together.</p>` : A}
@@ -2630,7 +2643,35 @@ function recommendedReportingMultiplier(ratedCurrentA) {
   return ratedCurrentA <= 65.535 ? 1 : ratedCurrentA <= 131.07 ? 2 : ratedCurrentA <= 262.14 ? 4 : ratedCurrentA <= 524.28 ? 8 : null;
 }
 const resultingGain = (preset, multiplier, customGain) => (preset?.default_gain_ct ?? customGain) == null || !Number.isFinite(multiplier) || multiplier <= 0 ? null : Math.round((preset?.default_gain_ct ?? customGain) / multiplier);
-function ctInventoryStep(inventory, board, drafts, setBoard, update, back, review, labelOnly = false, busy = false, configuration = null, updateConfiguration = () => void 0, disableChannel = () => void 0, managedTotals = true, managedTotalsReason = "", allowPreserveExistingGain = false, continueAllowed = true, totals = null, nativeTotalsReadable = false, nativeTotalsWritable = false, nativePreview = null, freshTotals = true, nativeGraphState = "ready", automaticTotalsWritable = false, meterInventory = null, automaticSourcesFresh = freshTotals, existingConfiguration = null, skip = () => void 0, reviewRequirements = A) {
+function ctInventoryStep(data, actions) {
+  const {
+    inventory,
+    board,
+    drafts,
+    labelOnly = false,
+    busy = false,
+    configuration = null,
+    managedTotals = true,
+    managedTotalsReason = "",
+    allowPreserveExistingGain = false,
+    continueAllowed = true,
+    totals = null,
+    nativeTotalsReadable = false,
+    nativeTotalsWritable = false,
+    nativePreview = null,
+    freshTotals = true,
+    nativeGraphState = "ready",
+    automaticTotalsWritable = false,
+    meterInventory = null,
+    automaticSourcesFresh = freshTotals,
+    existingConfiguration = null,
+    reviewRequirements = A,
+    actionLabel = "Review configuration changes",
+    busyLabel = "Preparing configuration review...",
+    impact = null,
+    blockedReason = ""
+  } = data;
+  const { setBoard, update, back, review, updateConfiguration = () => void 0, disableChannel = () => void 0, setLabelOnly, skip } = actions;
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
   const referenceByGroup = new Map(configuration?.meter.voltage_references.flatMap((reference) => reference.group_keys.map((group) => [group, reference])) ?? []);
@@ -2641,21 +2682,24 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
   });
   return b`
     <section class="step-content ct-step" aria-labelledby="step-heading">
-      <p class="info-band">CT numbering starts at the top-left connector on each board and continues counterclockwise, then continues upward through the board stack. A circuit's voltage reference is determined by the physical voltage setup and cannot be changed in software.</p>
-      <p class="warning-band" role="note"><strong>Physical work required:</strong> CT wiring and panel changes must be performed safely; the helper cannot verify them.</p>
+      ${meterInventory && !labelOnly ? b`<div class="graph-status"><details><summary>Measurement details</summary>${impact ? b`<p>${impact.enabled_channel_count} enabled channels; ${impact.numeric_entity_count + impact.text_entity_count} ${meterInventory.totals.migration.native_visibility_resolved ? "Helper-managed measurements" : "confirmed Helper-managed measurements (incomplete: native visibility unresolved)"} (${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text), ${impact.energy_entity_count} energy; ${impact.public_total_entity_count} public total entities; ${impact.internal_total_sensor_count} internal total sensors; approximately ${impact.approximate_publications_per_second.toFixed(1)} publications/sec.</p>` : b`<p role="status">${nativeGraphState === "pending" ? "Updating total graph and counts…" : "Total graph unavailable: correct the draft before reviewing counts."}</p>`}</details></div>` : A}
+      ${impact && impact.numeric_entity_count + impact.text_entity_count >= 100 && !labelOnly ? b`<p class="warning-band" role="status">Warning: high entity count. Review enabled measurements if Home Assistant becomes slow.</p>` : A}
+      ${setLabelOnly ? b`<fieldset class="name-mode" ?disabled=${busy}><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!labelOnly} @change=${() => setLabelOnly(false)}>Meter configuration</label><label><input type="radio" name="name-mode" .checked=${labelOnly} @change=${() => setLabelOnly(true)}>Home Assistant names only</label></fieldset>` : A}
+      ${labelOnly ? A : b`<p class="info-band">CT numbering starts at the top-left connector on each board and continues counterclockwise, then continues upward through the board stack. A circuit's voltage reference is determined by the physical voltage setup and cannot be changed in software.</p>
+      <p class="warning-band" role="note"><strong>Physical work required:</strong> CT wiring and panel changes must be performed safely; the helper cannot verify them.</p>`}
       <div class="board-tabs" role="tablist" aria-label="Meter boards" aria-orientation="horizontal">
         ${Array.from({ length: boardCount }, (_2, index) => b`
-          <button role="tab" id=${`board-tab-${index}`} data-board-tab=${index} aria-selected=${index === board}
+          <button ?disabled=${busy} role="tab" id=${`board-tab-${index}`} data-board-tab=${index} aria-selected=${index === board}
             aria-controls="board-panel" tabindex=${index === board ? "0" : "-1"}
             @keydown=${(event) => moveTab(event, index)}
             @click=${() => setBoard(index)}>${index === 0 ? "Main Board" : `Add-on ${index}`}</button>
         `)}
       </div>
-      <p>Choose a CT model for each circuit. Reporting range is set automatically.</p>
+      <p>${labelOnly ? "Edit the names shown in Home Assistant." : "Choose a CT model for each used circuit. Reporting range is set automatically."}</p>
       <div id="board-panel" role="tabpanel" aria-labelledby=${`board-tab-${board}`}>
-      <div class="ct-table" role="table" aria-rowcount=${inventory.channels.length + 1}>
+      <div class=${`ct-table${labelOnly ? " ct-names-only" : ""}`} role="table" aria-rowcount=${inventory.channels.length + 1}>
         <div class="ct-header" role="row" aria-rowindex="1">
-          <span role="columnheader">CT</span><span role="columnheader">Used</span><span role="columnheader">Circuit name</span><span role="columnheader">Circuit type</span><span role="columnheader">CT model / rating</span><span role="columnheader">Range status</span>
+          <span role="columnheader">CT</span>${labelOnly ? b`<span role="columnheader">Home Assistant name</span>` : b`<span role="columnheader">Used</span><span role="columnheader">Circuit name</span><span role="columnheader">Circuit type</span><span role="columnheader">CT model / rating</span><span role="columnheader">Range status</span>`}
         </div>
         <div class="ct-window" aria-label="Current transformers">
           ${rows.map((channel) => {
@@ -2674,6 +2718,11 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
     const effectiveRange = draft.multiplier * 65.535;
     const circuit = configuration?.channels.find((item) => item.channel === channel.channel);
     const reference = referenceByGroup.get(`${channel.address.board_index === 0 ? "main" : `addon${channel.address.board_index}`}_${channel.address.group_index + 1}`);
+    if (labelOnly) return b`<div class="ct-row ct-name-row" data-ct-row role="row" aria-rowindex=${channel.channel + 1} aria-label=${`CT${channel.channel}`}>
+              <strong role="cell">CT${channel.channel}</strong><label role="cell"><span class="mobile-label">Home Assistant name</span><input aria-label=${`CT${channel.channel} name`} .value=${l(draft.name)} @input=${(event) => update(channel.channel, { name: event.target.value })} /></label></div>`;
+    if (circuit && !circuit.enabled) return b`<div class="ct-row ct-unused-row" data-ct-row role="row" aria-rowindex=${channel.channel + 1} aria-label=${`CT${channel.channel}`}>
+              <strong role="cell">CT${channel.channel}</strong><label role="cell" class="check-row"><input type="checkbox" aria-label=${`CT${channel.channel} used`} .checked=${false} @change=${() => patchChannel(channel.channel, { enabled: true, role: circuit.role === "unused" ? "branch" : circuit.role })} />Used</label>
+              <span role="cell" aria-colspan="4">${draft.name}  -  unused; saved CT settings kept.</span></div>`;
     return b`
               <div class="ct-row" data-ct-row data-ct-group=${channel.address.group_index} role="row" aria-rowindex=${channel.channel + 1} aria-label=${`CT${channel.channel}`}>
                 <strong class="ct-index" role="cell">CT${channel.channel}</strong>
@@ -2684,7 +2733,7 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
                 ${circuit ? b`<label role="cell"><span class="mobile-label">Circuit type</span><select aria-label=${`CT${channel.channel} role`} .value=${circuit.role} ?disabled=${!circuit.enabled}
                   @change=${(event) => patchChannel(channel.channel, { role: event.target.value })}>
                   ${ROLES.filter((role) => role !== "unused").map((role) => b`<option value=${role} ?selected=${role === circuit.role}>${roleLabel(role)}</option>`)}</select></label>` : b`<span role="cell"><span class="mobile-label">Role</span>—</span>`}
-                <label role="cell"><span class="mobile-label">CT model / rating</span><select aria-label=${`CT${channel.channel} model`} .value=${draft.modelId} ?disabled=${labelOnly || draft.preserveExistingGain}
+                <div role="cell" class="ct-model-field"><label><span class="mobile-label">CT model / rating</span><select aria-label=${`CT${channel.channel} model`} .value=${draft.modelId} ?disabled=${labelOnly || draft.preserveExistingGain}
                   @change=${(event) => {
       const modelId = event.target.value;
       const selectedPreset = inventory.catalog.presets.find((item) => item.model_id === modelId);
@@ -2694,33 +2743,33 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
         multiplier: draft.multiplierMode === "manual" ? draft.multiplier : selectedPreset ? recommendedReportingMultiplier(selectedPreset.rated_current_a) ?? draft.multiplier : draft.multiplier,
         multiplierMode: draft.multiplierMode ?? "automatic",
         burdenAcknowledged: (existing ? existing.burden_output_acknowledged : channel.selection_verified_against_config) && modelId === channel.selected_model_id && (modelId === "custom" || selectedPreset?.requires_burden_jumper_cut === true),
-        expanded: true
+        expanded: false
       });
     }}>
                   <option value="" ?selected=${draft.modelId === ""}>Choose model</option>
                   ${inventory.catalog.presets.map((item) => b`<option value=${item.model_id} ?selected=${draft.modelId === item.model_id}>${item.label}</option>`)}
                   <option value="custom" ?selected=${draft.modelId === "custom"}>Custom Gain</option>
-                </select>${preset ? b`<small>${preset.rated_current_a} A</small>` : A}<span class="sr-status" data-voltage-reference>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span></label>
-                <span role="cell"><span class="mobile-label">Range status</span>${draft.preserveExistingGain ? "Existing gain kept" : recommendation === null && preset ? "Rating exceeds ×8 range" : effectiveRange < (preset?.rated_current_a ?? 0) ? `Too small: ${effectiveRange} A` : `Up to ${effectiveRange} A`}</span>
-              </div>
-              ${allowPreserveExistingGain && !channel.selection_verified_against_config && channel.raw_gain_ct > 0 ? b`<label class="check-row preserve-gain"><input type="checkbox" aria-label=${`CT${channel.channel} keep existing gain`} ?disabled=${labelOnly} .checked=${draft.preserveExistingGain === true}
-                @change=${(event) => update(channel.channel, { preserveExistingGain: event.target.checked, expanded: true })} />Keep existing gain; CT model not recorded.</label>` : A}
-              ${!draft.preserveExistingGain && preset && (recommendation === null || effectiveRange < preset.rated_current_a) ? b`<div class="warning-band" role="status">CT${channel.channel}: this selection needs a range of at least ${preset.rated_current_a} A. Continue is blocked.</div>` : A}
-              <details class="technical-details" ?open=${draft.expanded} @toggle=${(event) => update(channel.channel, { expanded: event.currentTarget.open })}><summary>Technical details</summary>
-                ${draft.modelId === "custom" && draft.expanded ? b`<div class="ct-detail custom-fields">
+                </select>${preset ? b`<small>${preset.rated_current_a} A</small>` : A}<span class="sr-status" data-voltage-reference>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span></label>                ${!draft.preserveExistingGain && draft.modelId === "custom" ? b`<div class="ct-detail custom-fields">
                   <label>Custom Gain <input type="number" min="1" max="65535" step="1" aria-label=${`CT${channel.channel} custom gain`}
                     ?disabled=${labelOnly}
                     .value=${draft.customGainCt === void 0 ? "" : String(draft.customGainCt)}
                     @input=${(event) => update(channel.channel, { customGainCt: Number(event.target.value) })} /></label>
                 </div>` : A}
-                ${draft.expanded && retained && !draft.burdenAcknowledged && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? b`<p class="info-band">Existing CT settings retained. Changing CT settings requires any applicable burden-output confirmation.</p>` : A}
-                ${draft.expanded && !retained && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? b`<div class="warning-band">
+                ${retained && !draft.burdenAcknowledged && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? b`<p class="info-band">Existing CT settings retained. Changing CT settings requires any applicable burden-output confirmation.</p>` : A}
+                ${!draft.preserveExistingGain && !retained && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? b`<div class="warning-band">
                   <label class="check-row"><input type="checkbox" aria-label=${`CT${channel.channel} burden output acknowledgement`}
                     ?disabled=${labelOnly}
                     .checked=${draft.burdenAcknowledged}
                     @change=${(event) => update(channel.channel, { burdenAcknowledged: event.target.checked })} />
                     I checked the burden-output requirement for CT${channel.channel}</label>
                 </div>` : A}
+</div>
+                <span role="cell"><span class="mobile-label">Range status</span>${draft.preserveExistingGain ? "Existing gain kept" : recommendation === null && preset ? "Rating exceeds ×8 range" : effectiveRange < (preset?.rated_current_a ?? 0) ? `Too small: ${effectiveRange} A` : `Up to ${effectiveRange} A`}</span>
+              </div>
+              ${allowPreserveExistingGain && !channel.selection_verified_against_config && channel.raw_gain_ct > 0 ? b`<label class="check-row preserve-gain"><input type="checkbox" aria-label=${`CT${channel.channel} keep existing gain`} ?disabled=${labelOnly} .checked=${draft.preserveExistingGain === true}
+                @change=${(event) => update(channel.channel, { preserveExistingGain: event.target.checked, expanded: true })} />Keep existing gain; CT model not recorded.</label>` : A}
+              ${!draft.preserveExistingGain && preset && (recommendation === null || effectiveRange < preset.rated_current_a) ? b`<div class="warning-band" role="status">CT${channel.channel}: this selection needs a range of at least ${preset.rated_current_a} A. Continue is blocked.</div>` : A}
+              <details class="technical-details" ?open=${draft.expanded} @toggle=${(event) => update(channel.channel, { expanded: event.currentTarget.open })}><summary>Technical details</summary>
                 <dl class="ct-detail">
                   <div><dt>Raw gain</dt><dd>${channel.raw_gain_ct}</dd></div>
                   <div><dt>Divided gain</dt><dd>${gain ?? "—"}</dd></div>
@@ -2741,18 +2790,35 @@ function ctInventoryStep(inventory, board, drafts, setBoard, update, back, revie
       </div>
       </div>
       <p class="row-count">Showing ${rows[0]?.channel ?? 0}–${rows.at(-1)?.channel ?? 0} of ${inventory.channels.length} CTs</p>
-      ${configuration && meterInventory ? totalsMigrationReview(meterInventory, updateConfiguration, nativePreview, freshTotals) : A}
-      ${configuration && totals ? defaultTotalsSection(configuration, totals, nativeTotalsReadable, nativeTotalsWritable, updateConfiguration, nativeGraphState, meterInventory?.capabilities.reason_codes, existingConfiguration) : A}
-      ${configuration && totals ? automaticTotalsSection(configuration, freshTotals || preserveNamedAutomaticDraft ? totals : null, automaticTotalsWritable, updateConfiguration, existingConfiguration) : A}
-      ${configuration ? advancedTotalsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason, totals, nativePreview, freshTotals, automaticSourcesFresh, existingConfiguration) : A}
+      ${!labelOnly && configuration && meterInventory ? totalsMigrationReview(meterInventory, updateConfiguration, nativePreview, freshTotals) : A}
+      ${!labelOnly && configuration && totals ? defaultTotalsSection(configuration, totals, nativeTotalsReadable, nativeTotalsWritable, updateConfiguration, nativeGraphState, meterInventory?.capabilities.reason_codes, existingConfiguration) : A}
+      ${!labelOnly && configuration && totals ? automaticTotalsSection(configuration, freshTotals || preserveNamedAutomaticDraft ? totals : null, automaticTotalsWritable, updateConfiguration, existingConfiguration) : A}
+      ${!labelOnly && configuration ? advancedTotalsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason, totals, nativePreview, freshTotals, automaticSourcesFresh, existingConfiguration) : A}
       ${reviewRequirements}
+      ${!continueAllowed || !draftsAreValid(inventory, drafts, labelOnly, existingConfiguration) ? b`<p class="warning-band" role="status" data-ct-blocked-reason>${blockedReason || ctDraftBlockedReason(inventory, drafts, labelOnly, existingConfiguration) || "Resolve the configuration requirements above before continuing."}</p>` : A}
+      ${skip && existingConfiguration && !labelOnly ? b`<p>Continue with saved meter settings to leave draft configuration changes unapplied.</p>` : A}
       <footer class="action-footer offset-footer">
-        <button class="secondary" @click=${back}>Back</button>
-        <button class="secondary" data-action="skip-ct" ?disabled=${busy} @click=${skip}>Skip to Calibration</button>
-        <button class="primary" data-action="continue" ?disabled=${busy || !continueAllowed || !draftsAreValid(inventory, drafts, labelOnly, existingConfiguration)} @click=${review}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Starting calibration…` : "Continue"}</button>
+        <button class="secondary" ?disabled=${busy} @click=${back}>Back</button>
+        ${skip && existingConfiguration && !labelOnly ? b`<button class="secondary" data-action="skip-circuit-changes" ?disabled=${busy} @click=${skip}>Continue to calibration with saved settings</button>` : A}
+
+        <button class="primary" data-action="continue" ?disabled=${busy || !continueAllowed || !draftsAreValid(inventory, drafts, labelOnly, existingConfiguration)} @click=${review}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>${busyLabel}` : actionLabel}</button>
       </footer>
     </section>
   `;
+}
+function ctDraftBlockedReason(inventory, drafts, labelOnly, existingConfiguration) {
+  for (const channel of inventory.channels) {
+    const draft = drafts.get(channel.channel);
+    const name = `CT${channel.channel}`;
+    if (!draft || !draft.name.trim()) return `${name}: enter a name.`;
+    if (labelOnly || validDraft(inventory, draft, existingConfiguration?.channels.find((item) => item.channel === channel.channel))) continue;
+    if (!draft.modelId) return `${name}: choose a CT model.`;
+    if (draft.modelId === "custom" && (!Number.isInteger(draft.customGainCt) || draft.customGainCt < 1 || draft.customGainCt > 65535)) return `${name}: enter a custom gain from 1 to 65535.`;
+    const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
+    if ((draft.modelId === "custom" || preset?.requires_burden_jumper_cut) && !draft.burdenAcknowledged && !keepsExistingCtSettings(draft, existingConfiguration?.channels.find((item) => item.channel === channel.channel))) return `${name}: confirm the burden-output requirement beside the CT model.`;
+    return `${name}: choose a valid model and reporting range.`;
+  }
+  return "";
 }
 const ROLES = ["grid", "solar", "generator", "subpanel", "branch", "two_pole", "custom", "unused"];
 function roleLabel(role) {
@@ -2832,9 +2898,9 @@ function draftsAreValid(inventory, drafts, labelOnly = false, existingConfigurat
   return true;
 }
 const formatNumber = (value) => value.toFixed(2);
-function calibrationProgress(referenceReady, stability2, result, plan = "full") {
-  const labels = plan === "standard" ? ["Set reference", "Check stability", "Run calibration", "Verify gain"] : ["Set reference", "Check stability", "Run calibration", "Verify gain", "Zero reference"];
-  const complete = labels.map((_2, index) => index < 4 ? [referenceReady, Boolean(stability2?.stable), Boolean(result), Boolean(result?.gain_evidence)][index] : Boolean(result));
+function calibrationProgress(referenceReady, stability2, result, _plan = "full") {
+  const labels = ["Set reference", "Check stability", "Run calibration", "Verify gain"];
+  const complete = [referenceReady, Boolean(stability2?.stable), Boolean(result), Boolean(result?.gain_evidence)];
   const active = complete.findIndex((value) => !value);
   return b`<ol class="progress-steps">${labels.map((label, index) => b`<li
     class=${complete[index] ? "complete" : index === active ? "active" : "pending"}><span
@@ -2844,31 +2910,35 @@ function calibrationSourceEvidence(session2, instanceIds, target, completedInsta
   const sources = Object.entries(session2?.calibration_sources ?? {}).filter(([instance]) => instanceIds.includes(instance));
   return b`<section class="measurement-evidence calibration-source" aria-label=${`${target} calibration source`}>
     <h3>Active gain source</h3>
+    <p>${sources.length ? [...new Set(sources.map(([, source]) => source === "flash" ? "Saved flash" : source === "configuration" ? "Configuration" : "Unknown"))].join(", ") : "Unavailable"}</p>
+    <details><summary>Calibration source details</summary>
     ${sources.length ? b`<table><thead><tr><th>Chip</th><th>Active gain source</th><th>${target} calibrated this session</th></tr></thead><tbody>
       ${sources.map(([instance, source]) => b`<tr><td>${instance}</td><td>${source === "flash" ? "Saved flash" : source === "configuration" ? "Configuration" : "Unknown"}</td><td>${completedInstanceIds.has(instance) ? "Yes" : "No"}</td></tr>`)}
     </tbody></table><p>ATM90E32 stores voltage and current gains together. Active source does not mean this step completed.</p>` : b`<p>Calibration source is not available.</p>`}
+    </details>
   </section>`;
 }
 function stabilityEvidence(result, labels) {
   if (!result) return A;
   const unit = result.target === "voltage" ? "V" : "A";
   return b`<section class="measurement-evidence" aria-label=${`${result.target} ${result.target_id} stability evidence`}>
-    <h3>Stability evidence · ${result.target_id}</h3>
+    <details><summary>Stability samples</summary><h3>Stability evidence · ${result.target_id}</h3>
     ${result.windows.map((window2, index) => b`<dl>
       <div><dt>${labels?.[index] ?? (result.target === "voltage" ? `V${index % 3 + 1}` : `A${index + 1}`)}</dt>
         <dd>${window2.samples.map((value) => `${formatNumber(value)} ${unit}`).join(", ")}</dd></div>
     </dl>`)}
+    </details>
   </section>`;
 }
 function calibrationEvidence(result) {
   if (!result) return A;
   return b`<section class="measurement-evidence" aria-label="Calibration evidence">
-    <h3>Calibration iteration ${result.iteration}</h3>
+    <details><summary>Technical details</summary><h3>Calibration iteration ${result.iteration}</h3>
     <dl>
-        <details><summary>Technical details</summary><div><dt>Backend state</dt><dd>${result.state}</dd></div></details>
+      <div><dt>Backend state</dt><dd>${result.state}</dd></div>
       <div><dt>Changed channels</dt><dd>${result.changed_channels.join(", ") || "None"}</dd></div>
       <div><dt>Before</dt><dd>${result.before_values.map(formatNumber).join(", ") || "Unavailable"}</dd></div>
-      <div><dt>After</dt><dd>${result.after_values.map(formatNumber).join(", ") || "Unavailable"}</dd></div>
+      <div><dt>Expected reading from gain change</dt><dd>${result.after_values.map(formatNumber).join(", ") || "Unavailable"}</dd></div>
       <div><dt>Error</dt><dd>${result.error_percent_values.map((value) => `${formatNumber(value)}%`).join(", ") || "Unavailable"}</dd></div>
       <div><dt>Restore evidence</dt><dd>${result.restore_evidence ? "Available" : "Unavailable"}</dd></div>
     </dl>
@@ -2876,6 +2946,7 @@ function calibrationEvidence(result) {
       <table class="gain-evidence"><thead><tr><th>Phase</th><th>Measured V</th><th>Measured A</th><th>Reference V</th><th>Reference A</th><th>Voltage gain</th><th>Current gain</th></tr></thead><tbody>
         ${result.gain_evidence.phases?.map((phase) => b`<tr><td>${phase.phase}</td><td>${formatNumber(phase.measured_voltage)}</td><td>${formatNumber(phase.measured_current)}</td><td>${formatNumber(phase.reference_voltage)}</td><td>${formatNumber(phase.reference_current)}</td><td>${phase.old_voltage_gain} → ${phase.new_voltage_gain}</td><td>${phase.old_current_gain} → ${phase.new_current_gain}</td></tr>`) ?? A}
       </tbody></table><p>Saved in flash: ${result.gain_evidence.flash_saved ? "Yes" : "No"}</p>` : b`<p>Gain evidence unavailable.</p>`}
+    </details>
   </section>`;
 }
 function currentStep(topology2, inventory, session2, channel, references, reportingMultiplier, stability2, result, completedInstanceIds, select, setReference, setReportingMultiplier, check, calibrate, reconnect, cancel, busy = false) {
@@ -2893,7 +2964,7 @@ function currentStep(topology2, inventory, session2, channel, references, report
     <section class="step-content calibration-step" aria-labelledby="step-heading">
       ${calibrationProgress(referenceReady, stability2, result, session2?.calibration_plan ?? "full")}
       <div class="board-tabs" role="tablist" aria-label="Calibration boards">
-        ${Array.from({ length: Math.ceil(ctCount / 6) }, (_2, index) => b`<button role="tab"
+        ${Array.from({ length: Math.ceil(ctCount / 6) }, (_2, index) => b`<button ?disabled=${busy} role="tab"
           id=${`current-board-tab-${index}`} aria-controls="current-board-panel"
           aria-selected=${index === board} tabindex=${index === board ? "0" : "-1"}
           @keydown=${(event) => moveTab(event, index)}
@@ -2927,7 +2998,7 @@ function currentStep(topology2, inventory, session2, channel, references, report
         <button class="primary" @click=${calibrate} ?disabled=${busy || !referenceReady || !stability2?.stable || (result?.iteration ?? 0) >= 3 || Boolean(result && !result.retry_allowed && result.iteration > 0)}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Calibrating current…` : result?.retry_allowed ? "Retry current calibration" : "Calibrate current"}</button></div>
       ${stability2 ? b`<div class=${stability2.stable ? "success-band" : "warning-band"} role="status">${stability2.stable ? "Stable and ready for calibration." : stability2.windows.length ? "Data is changing too much; keep the load steady." : "Waiting for live data…"}</div>` : ""}
       ${stabilityEvidence(stability2, selected.map((value) => `CT${value}`))}
-      ${result?.state === "applied_pending_restart_verification" ? b`<div class="success-band" role="status">Current calibration complete for CT${first}–CT${first + 2}.</div>` : ""}
+      ${result?.state === "applied_pending_restart_verification" ? b`<div class="success-band" role="status">Current calibration complete for ${result.changed_channels.map((value) => `CT${value}`).join(", ") || "no changed channels"}.</div>` : ""}
       ${calibrationEvidence(result)}
       ${result?.state.includes("indeterminate") ? b`<aside class="recovery-panel" role="status"><strong>Calibration outcome indeterminate</strong><p>No automatic retry will be made.</p><button class="secondary" @click=${reconnect}>Reconnect and inspect</button><button class="danger" @click=${cancel}>Cancel session</button></aside>` : ""}
       </div>
@@ -3008,6 +3079,7 @@ function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, set
   const primaryReference = draft.voltage_references[0];
   const fixedNominalVoltage = draft.electrical_system === "split_phase_120_240" ? 120 : draft.electrical_system === "single_phase_230" ? 230 : null;
   const valid = profileConfirmed && Boolean(draft.friendly_name.trim()) && draft.voltage_references.every((reference) => reference.label.trim() && reference.phase_label.trim() && Number.isFinite(reference.nominal_voltage_v) && reference.nominal_voltage_v >= 1 && reference.nominal_voltage_v <= 600 && Number.isInteger(reference.gain_voltage) && reference.gain_voltage >= 1 && reference.gain_voltage <= 65535 && reference.group_keys.length) && (!multiReference || acknowledged);
+  const blockedReason = !profileConfirmed ? "Confirm the electrical profile and frequency." : !draft.friendly_name.trim() ? "Enter a friendly name." : multiReference && !acknowledged ? "Confirm that you prepared the separate voltage references." : !valid ? "Complete each voltage reference: label, phase, voltage (1–600 V), gain (1–65535), and assigned group." : "";
   const patch = (change) => {
     setAcknowledged(false);
     update({ ...draft, ...change });
@@ -3076,7 +3148,11 @@ function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, set
       ${intervalImpact(draft.update_interval_s) ? b`<p class="info-band" role="status">${intervalImpact(draft.update_interval_s)}</p>` : A}
       <h3>Voltage references</h3>
       <p class="info-band">Match this voltage-reference setup to the meter's physical wiring. By default, the main-board reference applies to every board.</p>
-      <details class="advanced-voltage-options" data-section="advanced-voltage-options"><summary>Advanced voltage options</summary><div class="voltage-options-content"><div class="voltage-reference-cards">${draft.voltage_references.map((reference) => b`
+      <div class="required-voltage-fields">${draft.voltage_references.map((reference) => b`<div aria-label=${`${reference.label || reference.reference_id} required voltage settings`}>            ${["three_phase", "custom"].includes(draft.electrical_system) ? b`<label>Nominal voltage <input aria-label=${`${reference.reference_id} nominal voltage`} type="number" min="1" max="600" step="0.1" .value=${String(reference.nominal_voltage_v)}
+              @input=${(event) => setNominalVoltage(reference.reference_id, Number(event.target.value))} /></label>` : A}
+            ${reference.transformer_model_id !== "custom" ? b`<p>Starting gain: ${reference.gain_voltage}</p>` : b`<label>Custom voltage gain <input aria-label=${`${reference.reference_id} custom voltage gain`} type="number" min="1" max="65535" step="1" .value=${String(reference.gain_voltage)}
+              @input=${(event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, gain_voltage: Number(event.target.value) } : item) })} /></label>`}</div>`)}</div>
+      <details class="advanced-voltage-options" data-section="advanced-voltage-options" ?open=${draft.voltage_references.some((reference) => !reference.label.trim() || !reference.phase_label.trim() || !reference.group_keys.length)}><summary>Advanced voltage options</summary><div class="voltage-options-content"><div class="voltage-reference-cards">${draft.voltage_references.map((reference) => b`
         <section class="voltage-reference-card" aria-label=${`${reference.label} voltage reference`}>
           <div class="voltage-reference-column">
             <label>Label <input aria-label=${`${reference.reference_id} label`} maxlength="64" .value=${reference.label}
@@ -3086,10 +3162,7 @@ function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, set
               ${catalog.presets.map((preset) => b`<option value=${preset.model_id}>${preset.label}</option>`)}
               <option value="custom">Custom starting gain</option>
               ${reference.transformer_model_id !== "custom" && !catalog.presets.some((preset) => preset.model_id === reference.transformer_model_id) ? b`<option value=${reference.transformer_model_id}>${reference.transformer_model_id}</option>` : ""}</select></label>` : A}
-            ${["three_phase", "custom"].includes(draft.electrical_system) ? b`<label>Nominal voltage <input aria-label=${`${reference.reference_id} nominal voltage`} type="number" min="1" max="600" step="0.1" .value=${String(reference.nominal_voltage_v)}
-              @input=${(event) => setNominalVoltage(reference.reference_id, Number(event.target.value))} /></label>` : A}
-            ${reference.transformer_model_id !== "custom" ? b`<p>Starting gain: ${reference.gain_voltage}</p>` : b`<label>Custom voltage gain <input aria-label=${`${reference.reference_id} custom voltage gain`} type="number" min="1" max="65535" step="1" .value=${String(reference.gain_voltage)}
-              @input=${(event) => patch({ voltage_references: draft.voltage_references.map((item) => item.reference_id === reference.reference_id ? { ...item, gain_voltage: Number(event.target.value) } : item) })} /></label>`}
+
           </div>
           <div class="voltage-reference-column voltage-phase-column">
             <label>Phase label <input aria-label=${`${reference.reference_id} phase label`} aria-describedby=${`${reference.reference_id}-phase-help`} maxlength="64" .value=${reference.phase_label}
@@ -3103,16 +3176,17 @@ function meterSettingsStep(draft, catalog, acknowledged, update, setProfile, set
       <p id="voltage-assignment-help">Each group has three CT channels and one voltage reference. Changes update the draft. Moving the last group requires a confirmed swap. Review in Circuits &amp; CTs, then Apply. Compile and Install activate assignments on the meter.</p>
       <div class="meter-settings-grid">${draft.voltage_references.flatMap((reference) => reference.group_keys).sort().map((group) => b`<label>${group}<select aria-label=${`${group} voltage reference`} aria-describedby="voltage-assignment-help" .value=${draft.voltage_references.find((reference) => reference.group_keys.includes(group))?.reference_id ?? ""}
         @change=${(event) => moveGroup(group, event.target.value, event.target)}>${draft.voltage_references.map((reference) => b`<option value=${reference.reference_id}>${reference.label || reference.reference_id}</option>`)}</select></label>`)}</div>
-      ${multiReference ? b`<label class="check-row"><input type="checkbox" aria-label="Multi-reference preparation acknowledgement" .checked=${acknowledged}
-        @change=${(event) => setAcknowledged(event.target.checked)} />I prepared the separate voltage references.</label>` : ""}
       </div>
       </details>
+      ${multiReference ? b`<label class="check-row"><input type="checkbox" aria-label="Multi-reference preparation acknowledgement" .checked=${acknowledged}
+        @change=${(event) => setAcknowledged(event.target.checked)} />I prepared the separate voltage references.</label>` : ""}
       <details data-section="advanced-meter-settings"><summary>Advanced meter settings</summary>
       <div class="voltage-options-content">
       ${boardPackages ? packageOptions(boardPackages, setBoardPackages, packageCapabilities2) : ""}
       </div></details>
       <label class="check-row"><input type="checkbox" aria-label="Confirm electrical profile" .checked=${profileConfirmed}
         @change=${(event) => setProfileConfirmed(event.target.checked)} />I confirm the electrical profile and frequency.</label>
+      ${blockedReason ? b`<p data-meter-blocked-reason class="warning-band" role="status">${blockedReason}</p>` : A}
       <footer class="action-footer"><button class="secondary" @click=${back}>Back</button><button class="primary" data-action="continue-meter-settings" ?disabled=${!valid} @click=${continueToCircuits}>Continue to Circuits & CTs</button></footer>
     </section>
   `;
@@ -3393,7 +3467,7 @@ function existingConfigurationStep(configuration, metadata, onManage, onCalibrat
   const warnings = [.../* @__PURE__ */ new Set([...configuration.warnings, ...configuration.capabilities.reason_codes])];
   return b`<section class="existing-configuration" aria-label="Review Existing Setup">
     <p class="info-band"><strong>${warnings.includes("stored_semantics_stale") ? "Configuration changed externally" : "Ready for setup"}</strong></p>
-    <p>This meter already has an ESPHome configuration. Manage it here or leave it unchanged.</p>
+    <p>This meter already has an ESPHome configuration. Review and manage it to save approved settings with Helper, or calibrate only and preserve its existing ownership.</p><details><summary>Configuration and inspection details</summary>
     <dl class="status-list">
       <div><dt>ESPHome configuration</dt><dd>${metadata.configurationFilename}</dd></div>
       <div><dt>Project</dt><dd>${metadata.projectName} · ${metadata.projectVersion}</dd></div>
@@ -3408,12 +3482,13 @@ function existingConfigurationStep(configuration, metadata, onManage, onCalibrat
       <div><dt>What setup records</dt><dd>Reviewed meter profile, circuit settings, helper totals, and package options become helper-managed.</dd></div>
       <div><dt>What to confirm</dt><dd>Confirm settings the source cannot establish, such as CT identity and circuit purpose. Keep existing CT gains without choosing a replacement model.</dd></div>
     </dl>
+    </details>
     ${warnings.length ? b`<div class="warning-band" role="note"><strong>Review notes</strong><ul>${warnings.map((warning) => b`<li>${warningCopy[warning] ?? "Some settings could not be identified from the source and need review."}</li>`)}</ul><details><summary>Technical details</summary><code>${warnings.join(", ")}</code></details></div>` : A}
     <div class="action-footer"><button class="secondary" @click=${onBack}>Back</button><button class="secondary" @click=${onCalibrateOnly}>Keep ESPHome configuration and calibrate only</button><button class="primary" @click=${onManage}>Review and manage with helper</button></div>
   </section>`;
 }
 function existingMeterInspection(candidates, inspection, busyAction, find, inspect, adopt, searched = false) {
-  return b`<section class="existing-inspection" aria-labelledby="find-existing-heading">
+  return b`<details class="existing-inspection"><summary>Meter not listed?</summary>
     <h3 id="find-existing-heading">Find another ESPHome meter</h3>
     <p>Checks one selected ESPHome entry before adoption. It does not install firmware.</p>
     <button class="secondary" data-action="find-existing" ?disabled=${Boolean(busyAction)} @click=${find}>
@@ -3423,24 +3498,26 @@ function existingMeterInspection(candidates, inspection, busyAction, find, inspe
     ${candidates.length ? b`<div class="meter-list">
       ${candidates.map((candidate) => b`<div class="meter-row">
         <span><strong>${candidate.title}</strong><small>${candidate.project_name ?? "Project label unavailable"}${candidate.project_version ? ` · ${candidate.project_version}` : ""}</small></span>
-        <span>${candidate.compatibility.join(", ")}</span>
+        <details><summary>Technical details</summary><p>${candidate.compatibility.join(", ")}</p></details>
         <button class="primary" data-action="inspect-existing" ?disabled=${Boolean(busyAction)} @click=${() => inspect(candidate.entry_id)}>
           ${busyAction === `inspect:${candidate.entry_id}` ? "Inspecting…" : "Inspect"}
         </button>
       </div>`)}
     </div>` : ""}
     ${inspection ? b`<div class="info-band" role="status">
-      <strong>${inspection.device.title} passed inspection.</strong>
+      <strong>${inspection.device.title} passed inspection.</strong><p>Adopt this meter to calibrate it in Helper. Adoption does not install firmware or grant permission to replace its configuration.</p>
       <span>${inspection.topology.board_count} board${inspection.topology.board_count === 1 ? "" : "s"}; live meter-chip communication corroborated.</span>
       <button class="primary" data-action="adopt-inspected" ?disabled=${Boolean(busyAction)} @click=${() => adopt(inspection.device.entry_id)}>
         ${busyAction === `adopt:${inspection.device.entry_id}` ? "Adopting…" : "Adopt inspected meter"}
       </button>
     </div>` : ""}
-  </section>`;
+  </details>`;
 }
 const boardLabel = (index) => index === 0 ? "Main Board" : `Add-on ${index}`;
 const groupKeys = (board) => board === 0 ? ["main_1", "main_2"] : [`addon${board}_1`, `addon${board}_2`];
-function offsetStep(topology2, session2, board, stage, acknowledged, retryConfirmed, readiness, result, busy, selectBoard, selectStage, setAcknowledged, setRetryConfirmed, check, calibrate, reconnect, skip, back, continueOffset, stock = null) {
+function offsetStep(data, actions) {
+  const { topology: topology2, session: session2, board, stage, acknowledged, retryConfirmed, readiness, result, busy, stock = null } = data;
+  const { selectBoard, selectStage, setAcknowledged, setRetryConfirmed, check, calibrate, reconnect, skip, back, continueOffset } = actions;
   const capability = session2?.offset_capability;
   const boards = session2?.offset_boards ?? [];
   const finalized = session2?.offset_disposition === "completed" || session2?.offset_disposition === "skipped" || session2?.offset_disposition === "partial" && session2.state === "applied_pending_restart_verification";
@@ -3455,7 +3532,7 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
   const selectedInstances = groupKeys(board).map((id2) => id2.replace("main_", "meter_main"));
   const matching = preparation?.stage === stage && preparation.targets.length > 0 && preparation.targets.every((id2) => selectedInstances.includes(id2));
   const attempted = Boolean(matching && preparation?.attempted.length);
-  const nativeReview = nativePreparation || Boolean(preparation && (!preparation.installed || !preparation.action_ready || attempted));
+  const nativeReview = nativePreparation;
   const recovery = Boolean(result?.retry_allowed) || stageState === "partial" || stageState === "indeterminate" || attempted && stageState !== "completed";
   const actionReady = !stock || Boolean(matching && preparation?.action_ready && !attempted);
   const unavailable = capability?.status !== "available";
@@ -3476,16 +3553,16 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
       ` : b`
         <ol class="offset-stage-stepper" aria-label="Offset calibration stages">
           <li class=${stage === 1 ? "active" : stageTwoReady ? "complete" : "pending"}>
-            <button data-offset-stage="1" aria-current=${stage === 1 ? "step" : A} @click=${() => selectStage(1)}>1. Voltage/current zero offset</button>
+            <button ?disabled=${busy} data-offset-stage="1" aria-current=${stage === 1 ? "step" : A} @click=${() => selectStage(1)}>1. Voltage/current zero offset</button>
           </li>
           <li class=${stage === 2 ? "active" : finalized ? "complete" : "pending"}>
-            <button data-offset-stage="2" aria-current=${stage === 2 ? "step" : A} ?disabled=${!stageTwoReady}
+            <button data-offset-stage="2" aria-current=${stage === 2 ? "step" : A} ?disabled=${busy || !stageTwoReady}
               @click=${() => selectStage(2)}>2. Active/reactive power offset</button>
           </li>
         </ol>
         <div class="board-tabs" role="tablist" aria-label="Offset calibration boards">
           ${Array.from({ length: topology2?.board_count ?? boards.length }, (_2, index) => b`
-            <button role="tab" data-offset-board id=${`offset-board-tab-${index}`} aria-controls="offset-board-panel"
+            <button ?disabled=${busy} role="tab" data-offset-board id=${`offset-board-tab-${index}`} aria-controls="offset-board-panel"
               aria-selected=${index === board} tabindex=${index === board ? "0" : "-1"}
               @keydown=${(event) => moveTab(event, index)} @click=${() => selectBoard(index)}>
               ${boardLabel(index)}
@@ -3570,6 +3647,24 @@ function offsetStep(topology2, session2, board, stage, acknowledged, retryConfir
     </section>
   `;
 }
+function offsetPersistence(data, actions) {
+  const { offsetFinalization: receipt, restartResult, hasPendingGains, busy, restartBusy } = data;
+  const installed = Boolean(receipt?.installed && !receipt.cancelled && receipt.operation_id);
+  const blocked = busy || restartBusy;
+  return b`<section class="step-content" aria-labelledby="offset-final-heading">
+    <h2 id="offset-final-heading">Keep captured offset calibration</h2>
+    <p>Captured results stay in private backup. Both RMS and power tables are required for every affected chip before disabling native offset restore. Unknown evidence is not zero.</p>
+    ${installed ? b`<p>Final configuration installed. Confirm fresh configuration selection; this confirms configured mode, not register readback. Retained values are not lost.</p>` : b`<p>Review and install captured offsets before confirming their configuration selection. Retained values, including zeros, stay in backup.</p>`}
+    ${hasPendingGains ? b`<p class="info-band">Restart and verify pending gain calibration before continuing. This does not verify offsets.</p>` : A}
+    <details><summary>Retained results and authority</summary>
+      ${receipt?.results.length ? b`<table aria-label="Retained offset results"><thead><tr><th>Chip</th><th>Stage</th><th>ABC values</th><th>Actual prior register verification</th></tr></thead><tbody>${receipt.results.map(([id2, stage, table, verified]) => b`<tr><td>${id2}</td><td>${stage}</td><td>${table.map(([a2, b2]) => `${a2}/${b2}`).join(", ")}</td><td>${verified ? "Verified at capture" : "Not verified"}</td></tr>`)}</tbody></table>` : A}
+      <p>${restartResult ? `Gain authority: ${restartResult.source_authority.replaceAll("_", " ")}.` : "No restart-verified gain evidence is available."} Selecting offset configuration never clears gain flash.</p>
+    </details>
+    <footer class="action-footer"><button class="secondary" ?disabled=${blocked} @click=${actions.backToOffsets}>Back to offset stages</button>
+      ${hasPendingGains ? b`<button class="primary" ?disabled=${blocked} @click=${actions.restart}>${restartBusy ? "Restarting and verifying gains…" : "Restart and verify gains only"}</button>` : installed ? b`<button class="primary" ?disabled=${blocked} @click=${actions.reconcile}>Confirm installed offset configuration</button>` : b`<button class="primary" ?disabled=${blocked || !receipt?.results.length} @click=${actions.review}>Review captured offsets for installation</button>`}
+    </footer>
+  </section>`;
+}
 function restartStep(state, result, rollbackAvailable, busy, restart2, rollback, back) {
   const recovery = state.includes("failed") || state.includes("indeterminate");
   const hasOffsets = Boolean(result?.offset_groups?.length || result?.power_offset_groups?.length);
@@ -3578,7 +3673,7 @@ function restartStep(state, result, rollbackAvailable, busy, restart2, rollback,
     <section class="step-content" aria-labelledby="step-heading">
       <p>Restart verification checks meter identity, topology, references, gains, offsets, and entity bindings.</p>
       <div class="status-band" role="status">${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Restarting and verifying…` : state || "Ready for restart verification"}</div>
-      ${result ? b`<dl class="status-list"><div><dt>Verification</dt><dd>${result.verification_id}</dd></div><div><dt>Authority</dt><dd>${result.source_authority.replaceAll("_", " ")}</dd></div><div><dt>Connection generation</dt><dd>${result.connection_generation}</dd></div><div><dt>Source handoff</dt><dd>${handoffStatus}</dd></div></dl>` : ""}
+      ${result ? b`<details><summary>Verification details</summary><dl class="status-list"><div><dt>Verification</dt><dd>${result.verification_id}</dd></div><div><dt>Authority</dt><dd>${result.source_authority.replaceAll("_", " ")}</dd></div><div><dt>Connection generation</dt><dd>${result.connection_generation}</dd></div><div><dt>Source handoff</dt><dd>${handoffStatus}</dd></div></dl></details>` : ""}
       ${state === "cancelled" ? b`<div class="recovery-panel"><strong>Session cancelled</strong><p>Cleanup completed; restart verification was not claimed.</p></div>` : ""}
       ${recovery ? b`<div class="recovery-panel"><strong>Recovery required</strong><p>Reconnect and inspect live session evidence before retrying. Use rollback only when available.</p>${rollbackAvailable ? b`<button class="danger" data-action="rollback" @click=${rollback}>Review rollback</button>` : ""}</div>` : ""}
       <footer class="action-footer"><button class="secondary" @click=${back} ?disabled=${busy}>Back</button><button class="primary" @click=${restart2} ?disabled=${busy || state === "cancelled" || Boolean(result)}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Restarting and verifying…` : state.includes("failed") ? "Retry restart verification" : "Restart and verify"}</button></footer>
@@ -3622,7 +3717,9 @@ const CONNECTIONS = [
   ["ethernet_waveshare", "Waveshare Ethernet"]
 ];
 const ADDON_PINS = ["(0, 16)", "(27, 17)", "(2, 21)", "(13, 22)", "(14, 25)", "(15, 26)"];
-function setupDeviceStep(snapshot, addonCount, connection, setAddon, setConnection, rescan, configure, adopt, busyAction = "", discoverOnly = false, firmwareCatalog = b``, importFailedDeviceId = null, existingCandidates = [], inspection = null, findExisting = () => void 0, inspectExisting = () => void 0, adoptInspected = () => void 0, existingSearchComplete = false) {
+function setupDeviceStep(data, actions) {
+  const { snapshot, addonCount, connection, busyAction = "", discoverOnly = false, firmwareCatalog = b``, importFailedDeviceId = null, existingCandidates = [], inspection = null, existingSearchComplete = false } = data;
+  const { setAddon, setConnection, rescan, configure, adopt, findExisting = () => void 0, inspectExisting = () => void 0, adoptInspected = () => void 0 } = actions;
   return b`
     <section class="step-content setup-step" aria-labelledby="step-heading">
       ${snapshot?.devices.length ? b`<section aria-labelledby="existing-device-heading">
@@ -3645,8 +3742,7 @@ function setupDeviceStep(snapshot, addonCount, connection, setAddon, setConnecti
         </div>
       </section>` : b``}
       ${existingMeterInspection(existingCandidates, inspection, busyAction, findExisting, inspectExisting, adoptInspected, existingSearchComplete)}
-      ${discoverOnly ? "" : b`<hr />
-      <h2>Set up a new meter</h2>
+      ${discoverOnly ? "" : b`<details class="new-meter" ?open=${!snapshot?.devices.length}><summary>Set up a new meter</summary>
       <p class="info-band">Install and run ESPHome Device Builder in Home Assistant before setting up a new meter. <a href="https://esphome.io/install/" target="_blank" rel="noreferrer noopener">See how to install it in Home Assistant</a>.</p>
       <fieldset class="choice-field">
         <legend>Add-on boards</legend>
@@ -3686,14 +3782,14 @@ function setupDeviceStep(snapshot, addonCount, connection, setAddon, setConnecti
       <section class="next-steps" aria-labelledby="next-steps-heading">
         <h2 id="next-steps-heading">What happens next</h2>
         <ol>
-          <li>After firmware installs, click <strong>Next</strong>.</li>
-          <li>For Wi-Fi, enter your credentials.</li>
-          <li>Select <strong>Add to Home Assistant</strong>, then approve the ESPHome device in <strong>ESPHome Device Builder</strong>.</li>
-          <li>Return here to import the meter and customize its settings.</li>
+          <li>After firmware installs, click <strong>Next</strong> in ESP Web Tools.</li>
+          ${connection === "wifi" ? b`<li>In ESP Web Tools, enter your Wi-Fi credentials.</li>` : A}
+          <li>Select <strong>Add to Home Assistant</strong> in ESP Web Tools, then finish adding the ESPHome integration in <strong>Home Assistant</strong>.</li>
+          <li>Return to the Helper to discover the meter and import its configuration into ESPHome Device Builder. Use Rescan if it has not appeared.</li>
         </ol>
       </section>
       <p class="info-band">${connection === "wifi" ? "Use a USB data cable. ESP Web Tools sends Wi-Fi credentials directly to the meter; this helper does not store or send them to Home Assistant." : "Use a USB data cable, connect Ethernet and power, then wait for a DHCP address."}</p>
-      `}
+      </details>`}
       ${discoverOnly ? A : b`<button class="rescan" data-action="rescan" ?disabled=${Boolean(busyAction)} @click=${rescan}>${busyAction === "rescan" ? "Rescanning…" : "Rescan for device"}</button>`}
     </section>
   `;
@@ -3735,12 +3831,17 @@ function summaryOutcome(input) {
   if (offset) return { heading, configurationStatus: calibrationOnly ? "ESPHome configuration was left untouched." : "Configuration authority is unchanged.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Offsets remain in meter flash.", authorityMessage: "Offsets remain in meter flash.", warnings: [...warnings, "Offsets remain in meter flash."] };
   if (input.completedWithoutChanges) return { heading, configurationStatus: input.configurationInstalled ? "Configuration installed in ESPHome." : input.configurationMode === "runtime_only" ? "ESPHome source unchanged; no authoritative configuration was available." : calibrationOnly ? "ESPHome configuration was left untouched." : input.verifiedConfiguration ? "Helper-managed configuration was left unchanged." : "Configuration was left unchanged.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Existing calibration was kept unchanged.", authorityMessage: "No restart-verified calibration record required.", warnings };
   if (input.configurationMode === "runtime_only") return { heading: "Setup complete", configurationStatus: "ESPHome source unchanged; no authoritative configuration was available.", migrationStatus: null, calibrationStatus: "Calibration is in meter flash; later firmware installs may replace it.", authorityMessage: "No authoritative ESPHome source is available.", warnings: [...warnings, "Calibration is in meter flash; later firmware installs may replace it."] };
-  if (calibrationOnly && input.restart?.source_authority === "configuration") return { heading, configurationStatus: "ESPHome configuration was left untouched.", migrationStatus: null, calibrationStatus: "Calibration gains saved; legacy configuration was not migrated.", authorityMessage: "Calibration gains are installed in ESPHome.", warnings };
-  if (calibrationOnly) return { heading, configurationStatus: "ESPHome configuration was left untouched.", migrationStatus: null, calibrationStatus: "ESPHome configuration was left untouched.", authorityMessage: "Calibration is in meter flash.", warnings: [...warnings, "Calibration is in meter flash; later firmware installs may replace it."] };
+  if (calibrationOnly && input.restart?.source_authority === "configuration") return { heading, configurationStatus: "Calibration gains changed in ESPHome; other configuration and external ownership were preserved.", migrationStatus: null, calibrationStatus: "Calibration gains saved; legacy configuration was not migrated.", authorityMessage: "Calibration gains are installed in ESPHome.", warnings };
+  if (calibrationOnly) return { heading, configurationStatus: "ESPHome configuration was left untouched.", migrationStatus: null, calibrationStatus: "Calibration saved on the meter and checked after restart.", authorityMessage: "Calibration is in meter flash.", warnings: [...warnings, "Calibration is in meter flash; later firmware installs may replace it."] };
   if (input.restart?.source_authority === "configuration") return { heading, configurationStatus: "Configuration installed in ESPHome.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Configuration and calibration installed in ESPHome.", authorityMessage: "Calibration is stored in ESPHome.", warnings };
-  return { heading, configurationStatus: input.verifiedConfiguration ? "Configuration authority is available." : "Configuration authority is unavailable.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Calibration is in meter flash; later firmware installs may replace it.", authorityMessage: "Calibration is in meter flash.", warnings: [...warnings, "Calibration is in meter flash; later firmware installs may replace it."] };
+  return { heading, configurationStatus: input.configurationInstalled ? "Configuration is installed on the meter." : "Meter configuration is unchanged.", migrationStatus: migrated ? "Migration installed." : null, calibrationStatus: "Calibration is in meter flash; later firmware installs may replace it.", authorityMessage: "Calibration is in meter flash.", warnings: [...warnings, "Calibration is in meter flash; later firmware installs may replace it."] };
 }
-function summaryStep(topology2, session2, transaction2, stability2, calibration2, restart2, completedWithoutChanges, projectVersion, saveCalibration, back, meterConfiguration2 = null, impact = null, finish = () => void 0, keepCalibrationInFlash = () => void 0, configurationMode = "helper_managed", legacyChoice = null, configurationInstalled = false, handoffDeclined = false, sourceConfiguration = null, offsetFinalization2 = null, newCycleAcknowledged = false, setNewCycleAcknowledged = () => void 0, newCycle = () => void 0, busy = false) {
+function calibrationPersistence(data, actions) {
+  return b`<section aria-label="Keep calibration"><p>${data.installed ? "Calibration is installed in ESPHome. Finish clearing the saved meter values." : "Choose where to keep verified calibration. A future firmware installation may replace calibration kept only on the meter."}</p><div class="confirmation-actions">${!data.installed ? b`<button class="secondary" data-action="keep-calibration-flash" ?disabled=${data.busy} @click=${actions.keep}>Keep calibration on meter</button>` : ""}<button class="primary" data-action="save-calibration" ?disabled=${data.busy} @click=${actions.save}>${data.installed ? "Retry clearing saved flash values" : "Save to ESPHome and install"}</button></div></section>`;
+}
+function summaryStep(data, actions) {
+  const { topology: topology2, session: session2, transaction: transaction2, stability: stability2, calibration: calibration2, restart: restart2, completedWithoutChanges, projectVersion, meterConfiguration: meterConfiguration2 = null, impact = null, configurationMode = "helper_managed", legacyChoice = null, configurationInstalled = false, handoffDeclined = false, sourceConfiguration = null, offsetFinalization: offsetFinalization2 = null, newCycleAcknowledged = false, busy = false } = data;
+  const { saveCalibration, back, finish = () => void 0, keepCalibrationInFlash = () => void 0, setNewCycleAcknowledged = () => void 0, newCycle = () => void 0 } = actions;
   const hasOffsets = Boolean(restart2?.offset_groups?.length || restart2?.power_offset_groups?.length);
   const handoffAction = !offsetFinalization2?.backup_available && !handoffDeclined && restart2?.source_authority === "saved_flash" && restart2.config_filename && !hasOffsets && (restart2.source_handoff_available || restart2.source_handoff_firmware_installed);
   const offsetComplete = offsetFinalization2?.configuration_selected && offsetFinalization2.action_ready && session2?.has_pending_calibration === false;
@@ -3771,7 +3872,7 @@ function summaryStep(topology2, session2, transaction2, stability2, calibration2
     verifiedConfiguration: meterConfiguration2 !== null,
     ...unmanagedLegacyItems ? { unmanagedLegacyItems } : {}
   });
-  const boards = (values) => values.flatMap((enabled, board) => enabled ? [board === 0 ? "Main board" : `Add-on ${board}`] : []);
+  const boards = (values) => values.flatMap((enabled, board) => enabled ? [board === 0 ? "Main Board" : `Add-on ${board}`] : []);
   return b`<section class="step-content" aria-labelledby="step-heading">
     <div class=${offsetComplete || restart2 || completedWithoutChanges ? "success-band" : "recovery-panel"} role="status">${offsetFinalization2?.backup_available || restart2 || completedWithoutChanges ? outcome.calibrationStatus : b`<strong>Restart verification is not complete</strong><p>Summary stays unverified until authoritative restart evidence returns.</p>`}</div>
     ${offsetFinalization2?.backup_available ? b`<section aria-label="Retained offset calibration"><h2>Offset configuration and retained backup</h2>
@@ -3780,7 +3881,8 @@ function summaryStep(topology2, session2, transaction2, stability2, calibration2
       <label class="check-row"><input type="checkbox" .checked=${newCycleAcknowledged} @change=${(event) => setNewCycleAcknowledged(event.target.checked)}> I acknowledge a new offset cycle and backup retention.</label>
       <button class="secondary" ?disabled=${busy || !newCycleAcknowledged || !offsetComplete} @click=${newCycle}>Start new offset cycle</button>
     </section>` : ""}
-    <dl class="summary-list"><div><dt>Meter topology</dt><dd>${topology2?.ct_count ?? "—"} CTs in ${topology2?.group_count ?? "—"} groups</dd></div><div><dt>Project version</dt><dd>${projectVersion ?? "Unavailable"}</dd></div><div><dt>Configuration status</dt><dd>${outcome.configurationStatus}</dd></div>${outcome.migrationStatus ? b`<div><dt>Migration</dt><dd>${outcome.migrationStatus}</dd></div>` : ""}<div><dt>Calibration outcome</dt><dd>${outcome.calibrationStatus}</dd></div><div><dt>Calibration authority</dt><dd>${outcome.authorityMessage}</dd></div>${meterConfiguration2 ? b`<div><dt>Installed electrical profile</dt><dd>${meterConfiguration2.configuration.meter.electrical_system.replaceAll("_", " ")} · ${meterConfiguration2.configuration.meter.line_frequency_hz} Hz</dd></div><div><dt>Voltage references</dt><dd>${meterConfiguration2.configuration.meter.voltage_references.length}</dd></div><div><dt>Used channels</dt><dd>${meterConfiguration2.configuration.channels.filter((channel) => channel.enabled).length}</dd></div><div><dt>Installed package scope</dt><dd>PQ: ${boards(meterConfiguration2.configuration.power_quality).join(", ") || "none"} · reactive power, apparent power, and power factor for used CTs; status: ${boards(meterConfiguration2.configuration.status_fields).join(", ") || "none"} · native API diagnostics disabled by default in Home Assistant</dd></div><div><dt>Reporting and measurements</dt><dd>${meterConfiguration2.configuration.meter.update_interval_s} seconds${impact ? `; ${impact.numeric_entity_count + impact.text_entity_count} Helper-managed measurements, ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec` : ""}</dd></div>` : ""}</dl>
+    <p>${outcome.configurationStatus}</p>
+    <details><summary>Configuration and meter details</summary><dl class="summary-list"><div><dt>Meter topology</dt><dd>${topology2?.ct_count ?? "—"} CTs in ${topology2?.group_count ?? "—"} groups</dd></div><div><dt>Project version</dt><dd>${projectVersion ?? "Unavailable"}</dd></div><div><dt>Configuration status</dt><dd>${outcome.configurationStatus}</dd></div>${outcome.migrationStatus ? b`<div><dt>Migration</dt><dd>${outcome.migrationStatus}</dd></div>` : ""}<div><dt>Calibration outcome</dt><dd>${outcome.calibrationStatus}</dd></div><div><dt>Calibration authority</dt><dd>${outcome.authorityMessage}</dd></div>${meterConfiguration2 ? b`<div><dt>Installed electrical profile</dt><dd>${meterConfiguration2.configuration.meter.electrical_system.replaceAll("_", " ")} · ${meterConfiguration2.configuration.meter.line_frequency_hz} Hz</dd></div><div><dt>Voltage references</dt><dd>${meterConfiguration2.configuration.meter.voltage_references.length}</dd></div><div><dt>Used channels</dt><dd>${meterConfiguration2.configuration.channels.filter((channel) => channel.enabled).length}</dd></div><div><dt>Installed package scope</dt><dd>PQ: ${boards(meterConfiguration2.configuration.power_quality).join(", ") || "none"} · reactive power, apparent power, and power factor for used CTs; status: ${boards(meterConfiguration2.configuration.status_fields).join(", ") || "none"} · native API diagnostics disabled by default in Home Assistant</dd></div><div><dt>Reporting and measurements</dt><dd>${meterConfiguration2.configuration.meter.update_interval_s} seconds${impact ? `; ${impact.numeric_entity_count + impact.text_entity_count} Helper-managed measurements, ~${impact.approximate_publications_per_second.toFixed(1)} publications/sec` : ""}</dd></div>` : ""}</dl>
     ${totalsEvidence ? b`<section aria-labelledby="summary-totals-heading"><h2 id="summary-totals-heading">${!meterConfiguration2 || totalsEvidence.capabilities.reason_codes.includes("totals_adoption_required") ? "Legacy read-only totals" : "Helper-managed totals"}</h2>
       ${!meterConfiguration2 ? b`<p>Source snapshot: totals were not adopted or verified as installed by this workflow.</p>` : ""}
       ${totalsImpact ? b`<p>${totalsImpact.public_total_entity_count} public total entities; ${totalsImpact.internal_total_sensor_count} internal total sensors; ${totalsImpact.energy_entity_count} public energy entities.</p>` : b`<p>Current total counts are unavailable.</p>`}
@@ -3799,9 +3901,10 @@ function summaryStep(topology2, session2, transaction2, stability2, calibration2
       ${totalsEvidence.totals.migration.legacy_parent_links.length ? b`<ul>${totalsEvidence.totals.migration.legacy_parent_links.map((link) => b`<li>${totalName(link.child_id)} → ${totalName(link.proposed_parent_id)}: pending review</li>`)}</ul>` : b`<p>No pending legacy relationships.</p>`}
       ${totalsEvidence.totals.migration.native_visibility_confirmation_required ? b`<p>Native visibility confirmation is pending a verified save.</p>` : ""}
       ${legacyTotalsNotice(totalsEvidence.capabilities)}</section>` : ""}
-    ${outcome.warnings.map((warning) => b`<p class="warning-band" role="status">${warning}</p>`)}
+    </details>
+    ${outcome.warnings.filter((warning) => !(handoffAction && warning.includes("later firmware")) && warning !== outcome.calibrationStatus).map((warning) => b`<p class="warning-band" role="status">${warning}</p>`)}
     ${technicalDetails(topology2, session2, transaction2, stability2, calibration2, restart2, completedWithoutChanges)}
-    <footer class="action-footer"><button class="secondary" @click=${back}>Back</button>${handoffAction ? b`${!restart2?.source_handoff_firmware_installed ? b`<button class="secondary" data-action="keep-calibration-flash" @click=${keepCalibrationInFlash}>Keep calibration in meter flash</button>` : ""}<button class="primary" data-action="save-calibration" @click=${saveCalibration}>${restart2?.source_handoff_firmware_installed ? "Retry clearing saved flash values" : "Save calibration to YAML"}</button>` : b`<button class="primary" data-action="finish" @click=${finish}>Finish</button>`}</footer>
+    <footer class="action-footer"><button class="secondary" ?disabled=${busy} @click=${back}>Back</button>${handoffAction ? calibrationPersistence({ installed: restart2?.source_handoff_firmware_installed, busy }, { keep: keepCalibrationInFlash, save: saveCalibration }) : b`<button class="primary" data-action="finish" ?disabled=${busy} @click=${finish}>Finish</button>`}</footer>
   </section>`;
 }
 function topologyMismatch(topology2) {
@@ -3854,9 +3957,9 @@ function topologyStep(topology2, projectVersion, back, continueFlow, forceMismat
     </section>
   `;
 }
-function voltageStep(topology2, session2, board, references, referenceLabels = [], stability2, results, busy, selectBoard, setReference, check, calibrate, reconnect, cancel) {
+function voltageStep(topology2, session2, board, references, referenceLabels = [], stability2, results, busy, selectBoard, setReference, check, calibrate, reconnect, cancel, calibrationAvailable = true) {
   const count = references.length;
-  const referenceReady = references.slice(0, count).every((value) => Number.isFinite(value) && value > 0);
+  const referenceReady = references.some((value) => value > 0) && references.every((value) => value === 0 || Number.isFinite(value) && value >= 1 && value <= 600);
   const sourceIds = board === 0 ? ["meter_main1", "meter_main2"] : [`addon${board}_1`, `addon${board}_2`];
   const completedInstanceIds = new Set(results.flatMap((result) => result.state === "applied_pending_restart_verification" && result.gain_evidence?.flash_saved ? [result.gain_evidence.instance_id] : []));
   const complete = completedInstanceIds.size === sourceIds.length && sourceIds.every((instance) => completedInstanceIds.has(instance));
@@ -3867,7 +3970,7 @@ function voltageStep(topology2, session2, board, references, referenceLabels = [
     <section class="step-content calibration-step" aria-labelledby="step-heading">
       ${calibrationProgress(referenceReady, stability2, complete ? results[0] ?? null : null, session2?.calibration_plan ?? "full")}
       <div class="board-tabs" role="tablist" aria-label="Voltage calibration boards">
-        ${Array.from({ length: topology2?.board_count ?? 1 }, (_2, index) => b`<button role="tab" data-voltage-board
+        ${Array.from({ length: topology2?.board_count ?? 1 }, (_2, index) => b`<button ?disabled=${busy} role="tab" data-voltage-board
           id=${`voltage-board-tab-${index}`} aria-controls="voltage-board-panel"
           aria-selected=${index === board} tabindex=${index === board ? "0" : "-1"}
           @keydown=${(event) => moveTab(event, index)}
@@ -3875,14 +3978,15 @@ function voltageStep(topology2, session2, board, references, referenceLabels = [
       </div>
       <div id="voltage-board-panel" role="tabpanel" aria-labelledby=${`voltage-board-tab-${board}`}>
       <h2>Calibrate Voltage</h2>
+      <p>Enter a trusted reference for each voltage to calibrate. Leave other references blank to keep their existing gains.</p>
       ${calibrationSourceEvidence(session2, sourceIds, "Voltage", completedInstanceIds)}
       <div class="reference-block">
         ${Array.from({ length: count }, (_2, index) => b`<label>${referenceLabels[index] ?? (count === 1 ? "Trusted instrument" : `Voltage ${index + 1}`)} trusted reference
           <span>V</span><input aria-label=${`${referenceLabels[index] ?? "Voltage"} reference (V)`} type="number" min="0.01" step="0.01" .value=${references[index] ? String(references[index]) : ""}
             @input=${(event) => setReference(index, Number(event.target.value))} /></label>`)}
       </div>
-      <div class="calibration-actions"><button class="secondary" @click=${check} ?disabled=${busy}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Loading live voltage data…` : "Check stability"}</button>
-        <button class="primary" @click=${calibrate} ?disabled=${busy || !referenceReady || !stability2?.stable || terminal || complete && !retry}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Calibrating voltage…` : retry ? "Retry voltage calibration" : "Calibrate voltage"}</button></div>
+      <div class="calibration-actions"><button class="secondary" @click=${check} ?disabled=${busy || !referenceReady || !calibrationAvailable}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Loading live voltage data…` : "Check stability"}</button>
+        <button class="primary" @click=${calibrate} ?disabled=${busy || !referenceReady || !calibrationAvailable || !stability2?.stable || terminal || complete && !retry}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Calibrating voltage…` : retry ? "Retry voltage calibration" : "Calibrate voltage"}</button></div>
       ${stability2 ? b`<div class=${stability2.stable ? "success-band" : "warning-band"} role="status">${stability2.stable ? "Stable and ready for calibration." : stability2.windows.length ? "Data is changing too much; keep the load and reference steady." : "Waiting for live data…"}</div>` : ""}
       ${stabilityEvidence(stability2)}
       ${complete ? b`<div class="success-band" role="status">Voltage calibration complete for ${boardLabel2}.</div>` : ""}
@@ -3893,14 +3997,11 @@ function voltageStep(topology2, session2, board, references, referenceLabels = [
   `;
 }
 const LABELS = {
-  device: "Device",
-  "legacy-review": "Review Existing Setup",
-  meter: "Meter",
-  ct: "Circuits & CTs",
-  "install-configuration": "Install Configuration",
-  calibration: "Calibration",
-  "save-calibration": "Save Calibration",
-  complete: "Complete"
+  device: "Choose meter",
+  meter: "Configure meter",
+  "install-configuration": "Review and install",
+  calibration: "Calibrate — optional",
+  complete: "Done"
 };
 function workflowProgress(phases, mobileOpen, toggle, navigateToSetup, busy) {
   const current = phases.find((phase) => phase.status === "current");
@@ -3911,9 +4012,9 @@ function workflowProgress(phases, mobileOpen, toggle, navigateToSetup, busy) {
         <ol>${phases.map((phase) => b`
           <li class=${phase.status}>
             ${phase.id === "device" && phase.status === "completed" ? b`<button class="step-button" ?disabled=${busy} @click=${navigateToSetup}>
-                  <span class="number">${phase.index + 1}</span><span>${LABELS[phase.id]}</span>
+                  <span class="number">${phase.index + 1}</span><span>Choose another meter</span>
                 </button>` : b`<div class="step-button" aria-current=${phase.status === "current" ? "step" : A}>
-                  <span class="number">${phase.index + 1}</span><span>${LABELS[phase.id]}</span>
+                  <span class="number">${phase.index + 1}</span><span>${LABELS[phase.id]}${phase.status === "skipped" ? " · Not needed" : ""}</span>
                 </div>`}
           </li>
         `)}</ol>
@@ -4038,6 +4139,10 @@ const panelStyles = i$5`
   .ct-table { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow-x: auto; overflow-y: hidden; }
   .ct-header, .ct-row { display: grid; grid-template-columns: .45fr .45fr 1.35fr 1fr 1.45fr 1fr; align-items: start; gap: 10px; padding: 8px 10px; }
   .ct-header { font-weight: var(--ha-font-weight-bold, 700); background: var(--surface-alt); }
+  .ct-names-only .ct-header, .ct-name-row { grid-template-columns: .45fr 1fr; }
+  .ct-unused-row { grid-template-columns: .45fr .45fr 4.8fr; min-height: 0; }
+  .ct-model-field, .ct-model-field > label { display: grid; gap: 4px; min-width: 0; }
+  .required-voltage-fields { display: grid; gap: 12px; }
   .ct-row { min-height: 60px; border-top: 1px solid var(--border); }
   .ct-index { font-weight: var(--ha-font-weight-bold, 700); }
   .ct-row > label { display: grid; align-content: start; gap: 4px; }
@@ -4195,18 +4300,17 @@ function workflowRoutes(context) {
   const routes = ["setup"];
   const legacy = context.configurationMode === "legacy_editable";
   if (legacy) routes.push("legacy-review");
-  if (legacy && context.legacyChoice === null) return routes;
+  if (legacy && context.legacyChoice === null && !context.sessionState && !context.transactionPurpose && !context.offsetRecoveryPending && !context.restartVerification) return routes;
   const configurationEnabled = context.configurationMode !== "runtime_only" && (!legacy || context.legacyChoice === "manage_with_helper");
-  if (configurationEnabled) {
-    routes.push("meter", "ct");
-    if (context.normalTransactionRequired || context.normalTransactionActive || context.normalTransactionVerified) {
-      routes.push("install-configuration");
-    }
+  if (configurationEnabled) routes.push("meter", "ct");
+  if (context.transactionPurpose !== "offset_preparation" && (context.normalTransactionRequired || context.normalTransactionActive || context.normalTransactionVerified || context.transactionPurpose === "install_configuration")) {
+    routes.push("install-configuration");
   }
   routes.push("calibration-plan");
-  if (context.calibrationPlan === "standard" || context.calibrationPlan === "full") {
+  const calibrationActive = context.calibrationPlan === "standard" || context.calibrationPlan === "full" || context.sessionState !== null && context.sessionState !== "cancelled" || context.pendingCalibration || context.restartVerification || saveCalibrationRequired(context) || context.transactionPurpose === "offset_preparation";
+  if (calibrationActive) {
     routes.push("safety");
-    if (context.calibrationPlan === "full") routes.push("offset");
+    if (context.calibrationPlan === "full" || context.offsetRecoveryPending || context.transactionPurpose === "offset_preparation") routes.push("offset");
     if (context.transactionPurpose === "offset_preparation" && !routes.includes("install-configuration")) routes.push("install-configuration");
     routes.push("voltage", "current");
     if (restartRequired(context)) routes.push("restart");
@@ -4214,15 +4318,15 @@ function workflowRoutes(context) {
       routes.push("save-calibration");
     }
   }
-  if (context.calibrationPlan !== null) routes.push("summary");
+  if (context.calibrationPlan !== null || calibrationActive || context.completedWithoutCalibration) routes.push("summary");
   return routes;
 }
 function workflowPhases(context, activeRoute) {
   const routes = workflowRoutes(context);
   if (!routes.includes(activeRoute)) throw new Error(`invalid workflow route: ${activeRoute}`);
-  const ids = [...new Set(routes.map(phaseIdForRoute))];
-  const current = ids.indexOf(phaseIdForRoute(activeRoute));
-  return ids.map((id2, index) => ({ id: id2, index, status: statusFor(index, current) }));
+  const ids = [...new Set(routes.map((route) => phaseIdForRoute(route, context)))];
+  const current = ids.indexOf(phaseIdForRoute(activeRoute, context));
+  return ids.map((id2, index) => ({ id: id2, index, status: index < current && (id2 === "meter" && context.legacyChoice === "calibrate_only" || id2 === "calibration" && context.calibrationPlan === "keep_existing") ? "skipped" : statusFor(index, current) }));
 }
 function calibrationSubsteps(context, activeRoute) {
   const ids = ["calibration-plan"];
@@ -4233,7 +4337,7 @@ function calibrationSubsteps(context, activeRoute) {
     if (restartRequired(context)) ids.push("restart");
   }
   const current = ids.indexOf(activeRoute);
-  const completed = phaseIdForRoute(activeRoute) === "save-calibration" || activeRoute === "summary";
+  const completed = activeRoute === "save-calibration" || activeRoute === "summary";
   return ids.map((id2, index) => ({
     id: id2,
     status: completed ? "completed" : statusFor(index, current)
@@ -4256,13 +4360,9 @@ function resumeWorkflowRoute(context) {
   if (context.transactionPurpose === "save_calibration" && (context.handoffAvailable || context.handoffInstalled)) {
     return "save-calibration";
   }
-  if (context.normalTransactionActive) return "install-configuration";
   if (context.sessionState === "applied_pending_restart_verification") return "restart";
   if (context.sessionState === "verified" || context.restartVerification) {
     return context.handoffAvailable ? "save-calibration" : "summary";
-  }
-  if (context.sessionState === "safety_required" || context.sessionState === "preflight_failed") {
-    return "safety";
   }
   if (context.sessionState !== null) {
     if (context.calibrationPlan === "full" && !["completed", "skipped"].includes(context.offsetDisposition ?? "")) {
@@ -4283,18 +4383,18 @@ function statusFor(index, current) {
   if (current < 0 || index > current) return "upcoming";
   return index < current ? "completed" : "current";
 }
-function phaseIdForRoute(route) {
+function phaseIdForRoute(route, context) {
   switch (route) {
     case "setup":
       return "device";
     case "legacy-review":
-      return "legacy-review";
+      return "meter";
     case "meter":
       return "meter";
     case "ct":
-      return "ct";
+      return "meter";
     case "install-configuration":
-      return "install-configuration";
+      return context.transactionPurpose === "offset_preparation" ? "calibration" : "install-configuration";
     case "calibration-plan":
     case "safety":
     case "offset":
@@ -4303,7 +4403,7 @@ function phaseIdForRoute(route) {
     case "restart":
       return "calibration";
     case "save-calibration":
-      return "save-calibration";
+      return "calibration";
     case "summary":
       return "complete";
     default:
@@ -4314,12 +4414,12 @@ function assertNever(value) {
   throw new Error(`unhandled workflow value: ${String(value)}`);
 }
 const ROUTE_LABELS = {
-  setup: "Setup Device",
+  setup: "Choose meter",
   "legacy-review": "Review Existing Setup",
   meter: "Meter Settings",
   ct: "Circuits & CTs",
   "install-configuration": "Install Configuration",
-  "calibration-plan": "Calibration Plan",
+  "calibration-plan": "Calibration — optional",
   safety: "Safety",
   offset: "Offset",
   voltage: "Voltage",
@@ -4353,7 +4453,6 @@ const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mill
 const offsetBoardLabel = (board) => board === 0 ? "Main Board" : `Add-on ${board}`;
 const meterSettings = ({ authoritative: _authoritative, warnings: _warnings, ...meter }) => meter;
 const profileNominalVoltage = (system) => system === "split_phase_120_240" ? 120 : system === "single_phase_230" ? 230 : null;
-const ENTITY_COUNT_WARNING_THRESHOLD = 100;
 function isOfficialProjectName(value) {
   if (!value?.startsWith(CIRCUITSETUP_PROJECT_PREFIX)) return false;
   const suffix = value.slice(CIRCUITSETUP_PROJECT_PREFIX.length);
@@ -4544,7 +4643,10 @@ class CircuitSetupPanel extends i$2 {
         this.sourcePackageOptions = newInstallPackageOptions(intent.addon_count);
         this.refreshFirmwareOptions();
       }
-      if (this.setup.devices.length && !this.selectedDeviceId) this.selectDevice(this.firstDeviceId(this.setup.devices));
+      if (this.setup.devices.length && !this.selectedDeviceId) {
+        const bound = this.setup.devices.find((device2) => device2.entry_id === this.setup?.bound_device_id);
+        if (bound) await this.configureDevice(bound.entry_id);
+      }
       await this.subscribeSetup(generation, api);
       if (this.transaction) await this.subscribeTransaction(generation);
       if (this.session && this.session.state !== "cancelled") await this.subscribeSession(generation);
@@ -4579,10 +4681,15 @@ class CircuitSetupPanel extends i$2 {
       this.requestUpdate();
       return;
     }
-    if (this.step !== "setup" || this.topology || !eligible.length) return this.requestUpdate();
+    if (this.step !== "setup" || this.topology) return this.requestUpdate();
+    const bound = snapshot.devices.find((device2) => device2.entry_id === snapshot.bound_device_id);
+    if (bound && !this.selectedDeviceId) {
+      void this.configureDevice(bound.entry_id);
+      return;
+    }
+    if (!eligible.length) return this.requestUpdate();
     if (allowAutomaticImport && eligible.length === 1 && !this.pendingAction) {
       const deviceId = eligible[0].entry_id;
-      this.newInstallDeviceId = deviceId;
       this.selectDevice(deviceId);
       this.announcement = "Device added to Home Assistant. Importing into ESPHome Builder…";
       void this.adopt(deviceId);
@@ -4741,7 +4848,7 @@ class CircuitSetupPanel extends i$2 {
     this.sourceMeterConfiguration = null;
     this.packageOptionsTouched = false;
     this.multiReferencePreparationAcknowledged = false;
-    this.meterProfileConfirmed = this.configurationMode === "helper_managed";
+    this.meterProfileConfirmed = false;
     this.meterFrequencyTouched = false;
     this.meterNominalVoltageTouched = /* @__PURE__ */ new Set();
     this.canonicalConfigurationChanged = false;
@@ -4752,9 +4859,6 @@ class CircuitSetupPanel extends i$2 {
     this.acceptedAutomaticInputs = null;
     this.board = 0;
     this.resetCalibrationRun();
-  }
-  firstDeviceId(devices) {
-    return devices.map((device2) => device2.entry_id).sort((first, second) => first.localeCompare(second))[0] ?? null;
   }
   showTopology(topology2) {
     this.topology = topology2;
@@ -4861,11 +4965,9 @@ class CircuitSetupPanel extends i$2 {
     const purpose = this.transaction?.purpose ?? this.transactionPurpose;
     const normalTransaction = purpose === "install_configuration" ? this.transaction : null;
     return {
-      journeyOrigin: this.journeyOrigin,
       configurationMode: mode,
-      legacyChoice: this.existingConfigurationChoice ?? (this.configurationMode === null && mode === "legacy_editable" ? "manage_with_helper" : null),
-      calibrationPlan: this.session?.calibration_plan ?? this.calibrationPlan ?? "full",
-      canonicalConfigurationChanged: this.hasCanonicalChanges(),
+      legacyChoice: this.existingConfigurationChoice,
+      calibrationPlan: this.completedWithoutChanges ? "keep_existing" : this.session?.state !== "cancelled" ? this.session?.calibration_plan ?? this.calibrationPlan : this.calibrationPlan,
       normalTransactionRequired: this.hasCanonicalChanges() || normalTransaction !== null,
       normalTransactionActive: normalTransaction !== null && !["verified", "rolled_back"].includes(normalTransaction.state),
       normalTransactionVerified: normalTransaction?.state === "verified",
@@ -4879,19 +4981,6 @@ class CircuitSetupPanel extends i$2 {
       completedWithoutCalibration: this.completedWithoutChanges,
       offsetRecoveryPending: this.offsetRecoveryPending(),
       offsetConfigurationSelected: this.offsetFinalization?.configuration_selected === true
-    };
-  }
-  progressContext() {
-    const context = this.workflowContext();
-    if (workflowRoutes(context).includes(this.step)) return context;
-    return {
-      ...context,
-      legacyChoice: context.legacyChoice ?? "manage_with_helper",
-      calibrationPlan: context.calibrationPlan ?? "full",
-      normalTransactionRequired: context.normalTransactionRequired || this.step === "install-configuration",
-      transactionPurpose: this.step === "save-calibration" ? "save_calibration" : context.transactionPurpose,
-      pendingCalibration: context.pendingCalibration || this.step === "restart",
-      handoffAvailable: context.handoffAvailable || this.step === "save-calibration"
     };
   }
   showState(step) {
@@ -4909,14 +4998,19 @@ class CircuitSetupPanel extends i$2 {
     this.focusHeading = true;
     this.requestUpdate();
   }
+  navigationBusy() {
+    return Boolean(this.pendingAction) || this.sessionStarting || this.voltageBusy || this.offsetBusy || this.finishBusy || this.restartBusy;
+  }
   back() {
+    if (this.navigationBusy()) return;
     if (this.step === "calibration-plan" && this.skipCircuitChanges) {
       this.calibrationPlan = null;
       this.navigate("ct");
       return;
     }
     if ((this.step === "install-configuration" || this.step === "save-calibration") && !this.transaction) {
-      this.navigate(this.step === "save-calibration" ? "restart" : "ct", true);
+      const routes = workflowRoutes(this.workflowContext());
+      this.navigate(this.step === "save-calibration" && routes.includes("restart") ? "restart" : routes.includes("ct") ? "ct" : "calibration-plan");
       return;
     }
     const previous = previousWorkflowRoute(this.workflowContext(), this.step);
@@ -4927,7 +5021,13 @@ class CircuitSetupPanel extends i$2 {
     } else this.navigate(previous);
   }
   returnToSetup() {
-    if (this.pendingAction === "session") return;
+    if (this.navigationBusy() || !canLeaveTransaction(this.transaction) || this.restartResult?.source_handoff_firmware_installed && this.restartResult.source_authority !== "configuration") return;
+    if (this.transaction && this.transaction.state !== "verified") {
+      void this.backFromBuild().then(() => {
+        if (!this.error && !this.transaction) this.returnToSetup();
+      });
+      return;
+    }
     if (this.session && this.session.state !== "cancelled") void this.cancelSession("setup");
     else {
       this.selectDevice(null);
@@ -4937,7 +5037,7 @@ class CircuitSetupPanel extends i$2 {
   async configureDevice(deviceId) {
     if (this.pendingAction) return;
     const device2 = this.setup?.devices.find((item) => item.entry_id === deviceId);
-    if (device2 && !isOfficialProjectName(device2.project_name)) {
+    if (device2 && this.setup?.bound_device_id !== deviceId && !isOfficialProjectName(device2.project_name)) {
       await this.inspectExistingMeter(deviceId);
       return;
     }
@@ -5071,7 +5171,6 @@ class CircuitSetupPanel extends i$2 {
   async adopt(deviceId = this.selectedDeviceId) {
     if (!this.api || !deviceId || this.pendingAction) return;
     const inspected = this.existingInspection?.device.entry_id === deviceId;
-    const newInstallDeviceId = inspected ? null : this.setup?.devices.find((device2) => device2.entry_id === deviceId)?.configuration ? null : deviceId;
     const api = this.api;
     const token = {};
     this.adoptionToken = token;
@@ -5085,13 +5184,14 @@ class CircuitSetupPanel extends i$2 {
     this.requestUpdate();
     let fallback = "Adoption is unavailable for this meter.";
     try {
-      await api.adoptDevice(deviceId);
+      const adoption = await api.adoptDevice(deviceId);
       if (!ownsAdoption()) return;
       if (deviceId !== this.selectedDeviceId) {
         this.selectDevice(deviceId);
         this.adoptionToken = token;
       }
-      this.newInstallDeviceId = newInstallDeviceId;
+      this.newInstallDeviceId = !inspected && adoption.imported === true ? deviceId : null;
+      this.journeyOrigin = this.newInstallDeviceId === deviceId ? "new_install" : "existing_meter";
       generation = ++this.operationGeneration;
       this.clearSetupSubscription();
       const setup2 = await this.waitForBinding(api, deviceId, generation);
@@ -5175,6 +5275,7 @@ class CircuitSetupPanel extends i$2 {
     const active = await api.getActiveWork(deviceId, this.topology);
     if (!this.ownsOperation(generation, api, deviceId)) return;
     this.session = active.session?.state === "cancelled" ? null : active.session;
+    this.calibrationPlan = this.session?.calibration_plan ?? null;
     this.transaction = active.transaction;
     this.safetyAcknowledged = this.session?.safety_acknowledged ?? false;
     this.calibrationHandoff = this.transaction?.purpose === "save_calibration";
@@ -5182,7 +5283,16 @@ class CircuitSetupPanel extends i$2 {
     if (this.transactionPurpose === "install_configuration" && this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === null) this.existingConfigurationChoice = "manage_with_helper";
     this.restartResult = active.verified_calibration;
     if (this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === null && (this.session || this.calibrationHandoff || this.restartResult)) this.existingConfigurationChoice = "calibrate_only";
-    if (!this.transaction && !this.session && !this.restartResult) return;
+    if (!this.transaction && !this.session && !this.restartResult) {
+      if (!this.error && !topologyMismatch(this.topology)) {
+        if (this.configurationMode === "runtime_only") this.navigate("calibration-plan");
+        else if (this.meterConfiguration) {
+          this.initializeInventory(this.meterConfiguration);
+          this.navigate(this.configurationMode === "legacy_editable" ? "legacy-review" : "meter");
+        }
+      }
+      return;
+    }
     if (!this.transaction || ["previewed", "verified", "rolled_back", "failed"].includes(this.transaction.state)) {
       await this.refreshOffsetRecovery(api, generation, true);
       if (!this.ownsOperation(generation, api, deviceId)) return;
@@ -5219,6 +5329,7 @@ class CircuitSetupPanel extends i$2 {
     }
   }
   async backFromBuild() {
+    if (!canLeaveTransaction(this.transaction, true)) return;
     if (!this.api || !this.selectedDeviceId || this.pendingAction) return;
     const api = this.api;
     const deviceId = this.selectedDeviceId;
@@ -5821,11 +5932,11 @@ class CircuitSetupPanel extends i$2 {
   async continueFromCt() {
     this.skipCircuitChanges = false;
     if (!this.api || !this.inventory || !this.selectedDeviceId || this.pendingAction) return;
-    if (this.meterConfiguration && this.totalGraphState !== "ready") return;
+    if (!this.labelOnly && this.meterConfiguration && this.totalGraphState !== "ready") return;
     if (!this.labelOnly && this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.legacyCircuitSemanticsConfirmed) {
       return this.fail(new Error(), "Confirm that you reviewed used and unused channels and circuit roles before continuing.");
     }
-    if (this.meterConfiguration && this.hasCanonicalChanges()) return this.previewCanonicalConfiguration();
+    if (!this.labelOnly && this.meterConfiguration && this.hasCanonicalChanges()) return this.previewCanonicalConfiguration();
     const changes = changesFromDrafts(this.inventory, this.drafts);
     if (this.labelOnly && changes.length) {
       const labels = changes.map(({ channel, name }) => ({ channel, name }));
@@ -5847,7 +5958,8 @@ class CircuitSetupPanel extends i$2 {
       this.pendingAction = "";
       if (this.error) return;
     }
-    if (this.meterConfiguration && this.hasCanonicalChanges()) return this.previewCanonicalConfiguration();
+    if (!this.labelOnly && this.meterConfiguration && this.hasCanonicalChanges()) return this.previewCanonicalConfiguration();
+    this.skipCircuitChanges = this.labelOnly && this.hasCanonicalChanges();
     this.navigate("calibration-plan");
   }
   async previewCanonicalConfiguration() {
@@ -5923,7 +6035,10 @@ class CircuitSetupPanel extends i$2 {
     const api = this.api;
     const deviceId = this.selectedDeviceId;
     const sessionId = this.session.session_id;
+    if (this.navigationBusy()) return;
     const generation = ++this.operationGeneration;
+    this.pendingAction = "clear-calibration";
+    this.requestUpdate();
     await this.run(
       async () => {
         const result = await api.clearCalibrationFlash(
@@ -5940,6 +6055,8 @@ class CircuitSetupPanel extends i$2 {
       "Firmware is installed, but flash clearing could not be verified. Retry clearing saved flash values.",
       () => this.ownsOperation(generation, api, deviceId)
     );
+    if (this.pendingAction === "clear-calibration") this.pendingAction = "";
+    this.requestUpdate();
   }
   async transactionAction(action) {
     if (!this.api || !this.transaction || !this.selectedDeviceId || this.pendingAction) return;
@@ -5963,6 +6080,11 @@ class CircuitSetupPanel extends i$2 {
         if (!this.ownsOperation(generation, api, deviceId) || this.transaction?.transaction_id !== current.transaction_id || this.transaction.source_sha256 !== current.source_sha256) return;
         this.transaction = transaction2;
         this.announcement = `Configuration ${this.transaction.state}.`;
+        if (action === "install" && transaction2.state === "verified" && this.isCalibrationPreparationTransaction(transaction2)) {
+          const topology2 = await api.getTopology(deviceId);
+          if (!this.ownsOperation(generation, api, deviceId)) return;
+          this.showTopologyResult(topology2);
+        }
         const unchangedConfirmed = action === "apply" && transaction2.purpose === "install_configuration" && transaction2.state === "verified" && !transaction2.progress.includes("device_verified");
         if (action === "apply" && (transaction2.state === "validated" || unchangedConfirmed) && this.sourcePackageOptions) {
           this.sourcePackageOptions = {
@@ -6066,6 +6188,55 @@ class CircuitSetupPanel extends i$2 {
       this.error = this.configurationInstalled ? "Installed configuration is verified, but fresh totals inventory could not be loaded. Retry inventory refresh; do not reinstall." : "Helper settings were saved, but fresh totals inventory could not be loaded. Retry inventory refresh.";
     }
     this.requestUpdate();
+  }
+  async continueCalibrationPlan(plan = this.calibrationPlan) {
+    if (!plan || this.navigationBusy()) return;
+    if (plan !== "keep_existing") {
+      if (this.calibrationPreparation?.state === "available_to_prepare") await this.prepareCalibration();
+      else await this.startSession(plan, this.skipCircuitChanges);
+      return;
+    }
+    if (this.session?.has_pending_calibration || this.offsetRecoveryPending()) {
+      this.completedWithoutChanges = false;
+      this.navigate(this.offsetRecoveryPending() ? resumeWorkflowRoute(this.workflowContext()) : "restart");
+      this.announcement = "Finish verifying or saving the retained calibration before completing.";
+      return;
+    }
+    if (this.restartResult) {
+      if (this.restartResult.source_authority === "saved_flash") this.keepCalibrationInFlash();
+      else this.navigate("summary");
+      return;
+    }
+    if (!this.skipCircuitChanges && this.hasCanonicalChanges()) {
+      await this.previewCanonicalConfiguration();
+      return;
+    }
+    if (this.session?.state === "cancelled") this.session = null;
+    if (this.session && ["safety_required", "preflight_failed"].includes(this.session.state)) {
+      await this.cancelSession(null);
+      if (this.error) return;
+      this.session = null;
+    }
+    if (this.session && this.session.state !== "verified") {
+      if (!this.api) return;
+      const api = this.api, deviceId = this.selectedDeviceId, sessionId = this.session.session_id;
+      const generation = ++this.operationGeneration;
+      this.pendingAction = "finish";
+      this.requestUpdate();
+      await this.run(async () => {
+        const session2 = await api.completeCalibrationWithoutChanges(sessionId);
+        if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+        if (session2.state !== "verified" || session2.has_pending_calibration !== false) throw new Error("Completion not verified");
+        this.session = session2;
+        this.completedWithoutChanges = true;
+        this.navigate("summary");
+      }, "Existing calibration could not be confirmed. Retained work remains available.", () => this.ownsOperation(generation, api, deviceId));
+      if (this.pendingAction === "finish") this.pendingAction = "";
+      this.requestUpdate();
+      return;
+    }
+    this.completedWithoutChanges = true;
+    this.navigate("summary");
   }
   async startSession(plan, skipCircuitChanges = false) {
     if (!this.api || !this.selectedDeviceId || this.sessionStarting || this.pendingAction) return;
@@ -6363,14 +6534,18 @@ class CircuitSetupPanel extends i$2 {
     this.requestUpdate();
     await this.run(
       async () => {
-        await api.reconcileOffsetFinalization(sessionId, operationId);
+        try {
+          await api.reconcileOffsetFinalization(sessionId, operationId);
+        } finally {
+          if (this.ownsOperation(generation, api, deviceId) && this.session?.session_id === sessionId) await this.refreshOffsetRecovery(api, generation);
+        }
         if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
         await this.refreshOffsetRecovery(api, generation);
         if (!this.ownsOperation(generation, api, deviceId)) return;
         if (this.offsetRecoveryPending()) throw new Error("Pending groups remain");
         this.navigate("summary");
       },
-      "Offset selection could not be confirmed or calibration groups remain pending. Retained values are not lost. A new backend owner requires a fresh reviewed final installation.",
+      "Offset selection could not be confirmed or calibration groups remain pending. Retained values are not lost. Review the refreshed installation status before retrying.",
       () => this.ownsOperation(generation, api, deviceId)
     );
     this.pendingAction = "";
@@ -6451,22 +6626,9 @@ class CircuitSetupPanel extends i$2 {
           const result = this.stockOffsetMode() ? await api.resumeOffsetCalibration(sessionId, prepared.operation_id, board, stage, true) : await api.calibrateOffset(sessionId, board, stage, true, retryRequired);
           if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
           this.offsetResultByTarget = new Map(this.offsetResultByTarget).set(key, result);
-          const boards = (this.session.offset_boards ?? []).map((item) => item.board_index !== board ? item : {
-            ...item,
-            stages: item.stages.map((entry) => entry.stage !== stage ? entry : {
-              ...entry,
-              state: result.state === "applied_pending_restart_verification" || result.state === "captured_pending_configuration" ? "completed" : result.state
-            })
-          });
-          const states = boards.flatMap((item) => item.stages.map((entry) => entry.state));
-          const completed = boards.every((item) => item.stages.every((entry) => entry.state === "completed"));
-          const disposition = completed ? "completed" : states.some((state) => state === "partial" || state === "indeterminate") ? "partial" : "in_progress";
-          this.session = {
-            ...this.session,
-            offset_boards: boards,
-            offset_disposition: disposition,
-            has_pending_calibration: this.session.has_pending_calibration || result.expected_tables.length > 0
-          };
+          const session2 = await api.getSession(sessionId);
+          if (!this.ownsOperation(generation, api, deviceId) || session2.session_id !== sessionId || session2.device_id !== deviceId) return;
+          this.session = session2;
           this.offsetAcknowledged = this.offsetAcknowledged.map((value, index) => index === stage - 1 ? false : value);
           this.offsetReadinessByTarget = new Map(this.offsetReadinessByTarget);
           this.offsetReadinessByTarget.delete(key);
@@ -6574,7 +6736,7 @@ class CircuitSetupPanel extends i$2 {
     const deviceId = this.selectedDeviceId;
     const sessionId = this.session.session_id;
     const generation = ++this.operationGeneration;
-    const targetIds = target === "voltage" ? this.voltageReferenceIds() : this.currentReferenceEntries().map((item) => String(item.channel));
+    const targetIds = target === "voltage" ? this.selectedVoltageReferences().map((item) => item.referenceId) : this.currentReferenceEntries().map((item) => String(item.channel));
     if (!targetIds.length) return;
     this.pendingAction = "session";
     if (target === "voltage") this.voltageBusy = true;
@@ -6629,8 +6791,8 @@ class CircuitSetupPanel extends i$2 {
           if (target === "voltage") {
             if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
             const updated2 = new Map(this.calibrationByTarget);
-            const references = this.voltageReferenceIds().map((referenceId, index) => ({ referenceId, value: this.voltageReferences instanceof Map ? this.voltageReferences.get(referenceId) ?? 0 : this.voltageReferences[index] ?? 0 })).filter(({ referenceId }) => !this.voltageReferenceComplete(referenceId));
-            if (references.some(({ value }) => !Number.isFinite(value) || value < 1 || value > 600) || references.some(({ referenceId }) => !this.stabilityByTarget.get(`voltage:${referenceId}`)?.stable)) {
+            const references = this.selectedVoltageReferences();
+            if (!references.length || references.some(({ value }) => !Number.isFinite(value) || value < 1 || value > 600) || references.some(({ referenceId }) => !this.stabilityByTarget.get(`voltage:${referenceId}`)?.stable)) {
               throw new Error("Voltage references must be valid and stable before calibration.");
             }
             for (const { referenceId, value } of references) {
@@ -6641,7 +6803,9 @@ class CircuitSetupPanel extends i$2 {
               this.requestUpdate();
             }
             this.calibrationByTarget = updated2;
-            this.session = { ...this.session, has_pending_calibration: true };
+            const session22 = await api.getSession(sessionId);
+            if (!this.ownsOperation(generation, api, deviceId) || session22.session_id !== sessionId || session22.device_id !== deviceId) return;
+            this.session = session22;
             this.announcement = "Calibrated the selected voltage reference.";
             return;
           }
@@ -6658,7 +6822,9 @@ class CircuitSetupPanel extends i$2 {
           const updated = new Map(this.calibrationByTarget);
           currentReferences.forEach((item) => updated.set(`current:${item.channel}`, result));
           this.calibrationByTarget = updated;
-          this.session = { ...this.session, has_pending_calibration: true };
+          const session2 = await api.getSession(sessionId);
+          if (!this.ownsOperation(generation, api, deviceId) || session2.session_id !== sessionId || session2.device_id !== deviceId) return;
+          this.session = session2;
           this.announcement = `Current calibration iteration ${result.iteration} finished. Review the result before continuing.`;
         },
         "Calibration did not complete. Reconnect and inspect before another attempt.",
@@ -6696,6 +6862,12 @@ class CircuitSetupPanel extends i$2 {
     const references = (this.calibrationMeterSettings ?? this.meterSettingsDraft)?.voltage_references.filter((reference) => reference.group_keys.some((key) => groups.includes(key))) ?? [];
     if (references.length) return references.map((reference) => reference.reference_id);
     return this.topology?.voltage_layout === "two_voltages" ? ["main", "secondary"] : ["main"];
+  }
+  selectedVoltageReferences() {
+    return this.voltageReferenceIds().map((referenceId, index) => ({
+      referenceId,
+      value: this.voltageReferences instanceof Map ? this.voltageReferences.get(referenceId) ?? 0 : this.voltageReferences[index] ?? 0
+    })).filter(({ referenceId, value }) => value !== 0 && !this.voltageReferenceComplete(referenceId));
   }
   voltageReferenceLabel(referenceId) {
     return (this.calibrationMeterSettings ?? this.meterSettingsDraft)?.voltage_references.find((reference) => reference.reference_id === referenceId)?.label ?? `${referenceId === "secondary" ? "Secondary" : "Main"} voltage (all boards)`;
@@ -6771,15 +6943,22 @@ class CircuitSetupPanel extends i$2 {
     const deviceId = this.selectedDeviceId;
     const sessionId = this.session.session_id;
     const generation = ++this.operationGeneration;
+    const action = this.pendingAction;
+    if (!action) this.pendingAction = "cancel-session";
+    this.requestUpdate();
     await this.run(async () => {
       const cancelled = await api.cancelSession(sessionId);
       if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+      const installed = this.configurationInstalled;
       this.clearSubscription("session");
       this.session = cancelled;
       this.restartResult = null;
+      if (destination === "setup") this.selectDevice(null);
       if (destination) this.navigate(destination);
-      this.announcement = destination === "setup" ? "No changes were made. Select another device to configure." : destination === "ct" ? "Calibration session closed. Review CT names and types before continuing." : "Calibration session cancelled; cleanup completed without restart verification.";
+      this.announcement = destination === "setup" ? installed ? "Calibration closed. Installed configuration is unchanged. Choose another meter." : "Calibration closed. Choose another meter." : destination === "ct" ? "Calibration session closed. Review CT names and types before continuing." : "Calibration session cancelled; cleanup completed without restart verification.";
     }, "The session cleanup could not be confirmed.", () => this.ownsOperation(generation, api, deviceId));
+    if (!action && this.pendingAction === "cancel-session") this.pendingAction = "";
+    this.requestUpdate();
   }
   async finishWithoutCalibration() {
     if (this.pendingAction) return;
@@ -6846,13 +7025,31 @@ class CircuitSetupPanel extends i$2 {
   calibratedInstances(target) {
     return new Set([...this.calibrationByTarget.entries()].flatMap(([key, result]) => key.startsWith(`${target}:`) && result.state === "applied_pending_restart_verification" && result.gain_evidence?.flash_saved ? [result.gain_evidence.instance_id] : []));
   }
+  calibrationContinuationBlocked(target) {
+    return this.navigationBusy() || ["calibration_outcome_indeterminate", "restart_failed", "preflight_failed"].includes(this.session?.state ?? "") || [...this.calibrationByTarget].some(([key, result]) => key.startsWith(target + ":") && result.state !== "applied_pending_restart_verification");
+  }
+  unrunReferences(target) {
+    if (target === "current") return [...this.currentReferences].filter(([channel, value]) => value > 0 && this.calibrationByTarget.get("current:" + channel)?.state !== "applied_pending_restart_verification").map(([channel]) => "CT" + channel);
+    return [...this.voltageReferences].filter(([id2, value]) => value > 0 && !this.voltageReferenceComplete(id2)).map(([id2]) => this.voltageReferenceLabel(id2));
+  }
+  calibrationContinueLabel(target) {
+    if (this.unrunReferences(target).length) return "Keep entered references unchanged and continue";
+    if (this.hasCompletedCalibration(target)) return target === "voltage" ? "Continue to Current" : "Continue";
+    const any = [...this.calibrationByTarget].some(([key, result]) => key.startsWith(target + ":") && result.state === "applied_pending_restart_verification");
+    return any ? "Keep remaining gains and continue" : "Keep existing " + target + " calibration";
+  }
+  calibrationContinuation(target) {
+    const unrun = this.unrunReferences(target);
+    return b`${this.calibrationContinuationBlocked(target) && !this.navigationBusy() ? b`<p class="warning-band" role="status">Resolve the unsuccessful calibration using the recovery actions before continuing.</p>` : A}
+      ${unrun.length ? b`<p class="warning-band" role="status">References entered for ${unrun.join(", ")} have not been applied. Calibrate them, or explicitly keep their existing gains below.</p>` : A}`;
+  }
   hasCompletedCalibration(target) {
     if (target === "voltage") return this.voltageGroupKeys().every((targetId) => this.calibrationByTarget.get(`voltage:${targetId}`)?.state === "applied_pending_restart_verification");
     const channels = this.meterConfiguration?.configuration.channels.filter((channel) => channel.enabled).map((channel) => channel.channel) ?? this.inventory?.channels.map((channel) => channel.channel) ?? Array.from({ length: this.topology?.ct_count ?? 0 }, (_2, index) => index + 1);
     return channels.length > 0 && channels.every((channel) => this.calibrationByTarget.get(`current:${channel}`)?.state === "applied_pending_restart_verification");
   }
   stabilityFor(target) {
-    const targetIds = target === "voltage" ? this.voltageReferenceIds() : this.currentReferenceEntries().map((item) => String(item.channel));
+    const targetIds = target === "voltage" ? this.selectedVoltageReferences().map((item) => item.referenceId) : this.currentReferenceEntries().map((item) => String(item.channel));
     const results = targetIds.flatMap((targetId) => {
       const result = this.stabilityByTarget.get(`${target}:${targetId}`);
       return result ? [result] : [];
@@ -6894,29 +7091,30 @@ class CircuitSetupPanel extends i$2 {
     this.requestUpdate();
   }
   stepBody() {
-    if (this.step === "setup") return b`${setupDeviceStep(
-      this.setup,
-      this.addonCount,
-      this.connection,
-      (value) => this.setAddonCount(value),
-      (value) => {
+    if (this.step === "setup") return b`${setupDeviceStep({
+      snapshot: this.setup,
+      addonCount: this.addonCount,
+      connection: this.connection,
+      busyAction: this.pendingAction,
+      discoverOnly: Boolean(this.topology),
+      firmwareCatalog: this.firmwareCatalog(),
+      importFailedDeviceId: this.importFailedDeviceId,
+      existingCandidates: this.existingCandidates,
+      inspection: this.existingInspection,
+      existingSearchComplete: this.existingSearchComplete
+    }, {
+      setAddon: (value) => this.setAddonCount(value),
+      setConnection: (value) => {
         this.connection = value;
         this.refreshFirmwareOptions();
       },
-      () => void this.rescan(),
-      (id2) => void this.configureDevice(id2),
-      (id2) => void this.adopt(id2),
-      this.pendingAction,
-      Boolean(this.topology),
-      this.firmwareCatalog(),
-      this.importFailedDeviceId,
-      this.existingCandidates,
-      this.existingInspection,
-      () => void this.findExistingMeters(),
-      (id2) => void this.inspectExistingMeter(id2),
-      (id2) => void this.adopt(id2),
-      this.existingSearchComplete
-    )}
+      rescan: () => void this.rescan(),
+      configure: (id2) => void this.configureDevice(id2),
+      adopt: (id2) => void this.adopt(id2),
+      findExisting: () => void this.findExistingMeters(),
+      inspectExisting: (id2) => void this.inspectExistingMeter(id2),
+      adoptInspected: (id2) => void this.adopt(id2)
+    })}
       ${this.topology ? topologyStep(
       this.topology,
       this.selectedProjectVersion(),
@@ -6971,95 +7169,93 @@ class CircuitSetupPanel extends i$2 {
       this.configurationMode ?? "helper_managed",
       this.packageCapabilities
     );
-    if (this.step === "ct" && this.inventory) {
-      const impact = this.totalGraphState === "ready" ? this.meterConfiguration?.configuration_impact ?? null : null;
-      const total = impact ? impact.numeric_entity_count + impact.text_entity_count : 0;
-      return b`${impact ? b`<div class=${`${total >= ENTITY_COUNT_WARNING_THRESHOLD ? "warning-band" : "info-band"} graph-status`} role="status">${total >= ENTITY_COUNT_WARNING_THRESHOLD ? b`<strong>Warning: high entity count. </strong>` : A}${impact.enabled_channel_count} enabled channels; ${total} ${this.meterConfiguration?.totals.migration.native_visibility_resolved ? "Helper-managed measurements" : "confirmed Helper-managed measurements (incomplete: native visibility unresolved)"} (${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text), ${impact.energy_entity_count} energy; ${impact.public_total_entity_count} public total entities; ${impact.internal_total_sensor_count} internal total sensors; approximately ${impact.approximate_publications_per_second.toFixed(1)} publications/sec.</div>` : this.meterConfiguration ? b`<div class="info-band graph-status" role="status">${this.totalGraphState === "pending" ? "Updating total graph and counts…" : "Total graph unavailable: correct the draft before reviewing counts."}</div>` : A}<fieldset class="name-mode"><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!this.labelOnly} @change=${() => {
-        this.labelOnly = false;
-        this.requestUpdate();
-      }}>ESPHome / firmware names</label><label><input type="radio" name="name-mode" .checked=${this.labelOnly} @change=${() => {
-        this.labelOnly = true;
-        this.requestUpdate();
-      }}>Home Assistant labels only</label></fieldset>${ctInventoryStep(
-        this.inventory,
-        this.board,
-        this.drafts,
-        (board) => {
-          this.board = board;
-          this.requestUpdate();
-        },
-        (channel, patch) => this.updateDraft(channel, patch),
-        () => this.back(),
-        () => void this.continueFromCt(),
-        this.labelOnly,
-        this.pendingAction === "session",
-        this.labelOnly ? null : this.meterConfiguration?.configuration ?? null,
-        (configuration) => this.updateCircuitConfiguration(configuration),
-        (channel) => this.disableCircuit(channel),
-        this.configurationMode !== "runtime_only" && this.meterConfiguration?.capabilities.configuration_authoritative === true && totalsEditable(this.meterConfiguration, "managed_advanced_totals"),
-        this.meterConfiguration?.capabilities.reason_codes.join(", ") ?? "",
-        this.configurationMode === "legacy_editable",
-        (!this.meterConfiguration || this.totalGraphState === "ready") && (this.configurationMode !== "legacy_editable" || this.existingConfigurationChoice !== "manage_with_helper" || this.labelOnly || this.legacyCircuitSemanticsConfirmed),
-        this.meterConfiguration?.totals ?? null,
-        this.meterConfiguration?.capabilities.native_totals_readable === true,
-        Boolean(this.meterConfiguration && totalsEditable(this.meterConfiguration, "native_totals_writable")),
-        this.totalGraphState === "ready" ? this.totalGraphPreview : null,
-        this.totalGraphState === "ready",
-        this.totalGraphState,
-        this.configurationMode !== "runtime_only" && this.meterConfiguration?.capabilities.configuration_authoritative === true && totalsEditable(this.meterConfiguration, "managed_automatic_totals"),
-        this.meterConfiguration,
-        this.automaticSourcesFresh(),
-        this.journeyOrigin === "existing_meter" && this.sourceMeterConfiguration?.deviceId === this.selectedDeviceId && this.sourceMeterConfiguration?.meter.source_sha256 === this.meterConfiguration?.source_sha256 ? this.sourceMeterConfiguration?.meter.configuration ?? null : null,
-        () => {
-          this.skipCircuitChanges = true;
-          this.navigate("calibration-plan");
-        },
-        this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? b`
+    if (this.step === "ct" && this.inventory) return ctInventoryStep({
+      inventory: this.inventory,
+      impact: this.totalGraphState === "ready" ? this.meterConfiguration?.configuration_impact ?? null : null,
+      board: this.board,
+      drafts: this.drafts,
+      actionLabel: this.labelOnly && changesFromDrafts(this.inventory, this.drafts).length ? "Save Home Assistant names" : !this.labelOnly && this.hasCanonicalChanges() ? "Review configuration changes" : "Continue to calibration",
+      busyLabel: this.labelOnly ? "Saving Home Assistant names…" : this.hasCanonicalChanges() ? "Preparing configuration review…" : "Continuing to calibration…",
+      blockedReason: this.totalGraphState !== "ready" ? "Wait for valid totals before continuing." : !this.legacyCircuitSemanticsConfirmed && this.configurationMode === "legacy_editable" ? "Confirm used/unused channels and circuit roles above." : "",
+      labelOnly: this.labelOnly,
+      busy: this.pendingAction === "session",
+      configuration: this.labelOnly ? null : this.meterConfiguration?.configuration ?? null,
+      managedTotals: this.configurationMode !== "runtime_only" && this.meterConfiguration?.capabilities.configuration_authoritative === true && totalsEditable(this.meterConfiguration, "managed_advanced_totals"),
+      managedTotalsReason: this.meterConfiguration?.capabilities.reason_codes.join(", ") ?? "",
+      allowPreserveExistingGain: this.configurationMode === "legacy_editable",
+      continueAllowed: this.labelOnly || (!this.meterConfiguration || this.totalGraphState === "ready") && (this.configurationMode !== "legacy_editable" || this.existingConfigurationChoice !== "manage_with_helper" || this.labelOnly || this.legacyCircuitSemanticsConfirmed),
+      totals: this.meterConfiguration?.totals ?? null,
+      nativeTotalsReadable: this.meterConfiguration?.capabilities.native_totals_readable === true,
+      nativeTotalsWritable: Boolean(this.meterConfiguration && totalsEditable(this.meterConfiguration, "native_totals_writable")),
+      nativePreview: this.totalGraphState === "ready" ? this.totalGraphPreview : null,
+      freshTotals: this.totalGraphState === "ready",
+      nativeGraphState: this.totalGraphState,
+      automaticTotalsWritable: this.configurationMode !== "runtime_only" && this.meterConfiguration?.capabilities.configuration_authoritative === true && totalsEditable(this.meterConfiguration, "managed_automatic_totals"),
+      meterInventory: this.meterConfiguration,
+      automaticSourcesFresh: this.automaticSourcesFresh(),
+      existingConfiguration: this.journeyOrigin === "existing_meter" && this.sourceMeterConfiguration?.deviceId === this.selectedDeviceId && this.sourceMeterConfiguration?.meter.source_sha256 === this.meterConfiguration?.source_sha256 ? this.sourceMeterConfiguration?.meter.configuration ?? null : null,
+      reviewRequirements: this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.labelOnly ? b`
         ${!this.legacyCircuitSemanticsConfirmed ? b`<p class="info-band" role="status">Review and confirm used/unused channels and circuit roles to enable Continue.</p>` : A}
         <label class="check-row legacy-semantics"><input type="checkbox" aria-label="I reviewed used/unused channels and circuit roles" .checked=${this.legacyCircuitSemanticsConfirmed} @change=${(event) => {
-          this.legacyCircuitSemanticsConfirmed = event.target.checked;
-          if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration);
-          else this.requestUpdate();
-        }} />I reviewed used/unused channels and circuit roles.</label>
+        this.legacyCircuitSemanticsConfirmed = event.target.checked;
+        if (this.legacyCircuitSemanticsConfirmed && this.meterConfiguration) this.updateCircuitConfiguration(this.meterConfiguration.configuration);
+        else this.requestUpdate();
+      }} />I reviewed used/unused channels and circuit roles.</label>
         ${this.meterConfiguration?.warnings.includes("legacy_generic_totals_unmanaged") ? b`<p class="warning-band" role="status">Existing generic totals are unmanaged and stay unchanged unless reviewed migration replaces them.</p>` : A}` : A
-      )}`;
-    }
-    if (this.step === "save-calibration" && !this.transaction && this.offsetRecoveryPending()) return b`<section class="step-content" aria-labelledby="offset-final-heading">
-      <h2 id="offset-final-heading">Review captured offset configuration</h2>
-      <p>Captured results stay in private backup. Know both RMS and power tables for every affected chip before disabling native offset restore. Unknown evidence is not zero.</p>
-      ${this.offsetFinalization?.installed ? b`<p>${this.offsetFinalization.action_ready ? "Final configuration installed. Confirm fresh configuration selection; install is not register readback." : "Final configuration installed, but receipt is unconfirmed in this backend owner. Retained values are not lost. Review and install it again, even unchanged, before confirming selection."}</p>` : A}
-      ${this.offsetFinalization?.results.length ? b`<table aria-label="Retained offset results"><thead><tr><th>Chip</th><th>Stage</th><th>ABC values</th><th>Actual prior register verification</th></tr></thead><tbody>
-        ${this.offsetFinalization.results.map(([id2, stage, table, verified]) => b`<tr><td>${id2}</td><td>${stage}</td><td>${table.map(([a2, b2]) => `${a2}/${b2}`).join(", ")}</td><td>${verified ? "Verified at capture" : "Not verified"}</td></tr>`)}
-      </tbody></table>` : A}
-      <p>${this.restartResult ? `Gain authority: ${this.restartResult.source_authority.replaceAll("_", " ")}. Selecting offset configuration never clears gain flash.` : "If gains were calibrated, restart and verify gains before the combined review. This does not verify stock offsets."}</p>
-      <footer class="action-footer"><button class="secondary" ?disabled=${Boolean(this.pendingAction) || this.restartBusy} @click=${() => this.navigate("offset", true)}>Back to offset stages</button>
-      ${!this.restartResult ? b`<button class="secondary" ?disabled=${Boolean(this.pendingAction) || this.restartBusy} @click=${() => void this.restart()}>${this.restartBusy ? b`<span class="loading-spinner" aria-hidden="true"></span>Restarting and verifying gains…` : "Restart and verify gains only"}</button>` : A}
-      <button class="primary" ?disabled=${Boolean(this.pendingAction) || this.restartBusy || !this.offsetFinalization?.results.length} @click=${() => void this.reviewOffsetFinalization()}>Review captured offsets for installation</button>
-      ${this.offsetFinalization?.action_ready ? b`<button class="primary" ?disabled=${Boolean(this.pendingAction)} @click=${() => void this.reconcileOffsetFinalization()}>Confirm installed offset selection</button>` : A}</footer>
-    </section>`;
-    if (this.step === "save-calibration" && !this.transaction && this.restartResult?.source_handoff_available) return b`<section class="step-content" aria-labelledby="save-calibration-choice-heading">
-      <h2 id="save-calibration-choice-heading">Save calibration or keep it in flash</h2>
-      <p>Verified gains are in meter flash. Later firmware installs may replace them.</p>
-      <footer class="action-footer"><button class="secondary" data-action="keep-calibration-flash" ?disabled=${this.pendingAction === "calibration-handoff"} @click=${() => this.keepCalibrationInFlash()}>Keep calibration in meter flash</button><button class="primary" data-action="review-calibration-handoff" ?disabled=${this.pendingAction === "calibration-handoff"} @click=${() => void this.reviewCalibrationHandoff()}>${this.pendingAction === "calibration-handoff" ? b`<span class="loading-spinner" aria-hidden="true"></span>Preparing YAML review…` : "Review and save calibration to YAML"}</button></footer>
-    </section>`;
-    if (this.step === "install-configuration" || this.step === "save-calibration") return buildInstallStep(
-      this.transaction?.purpose ?? (this.step === "save-calibration" ? "save_calibration" : "install_configuration"),
-      this.transaction,
-      () => void this.transactionAction("apply"),
-      () => void this.transactionAction("compile"),
-      () => void (this.calibrationHandoff && this.transaction?.state === "verified" && this.restartResult?.source_handoff_firmware_installed ? this.clearCalibrationHandoff() : this.transactionAction("install")),
-      () => void this.transactionAction("rollback"),
-      () => this.back(),
-      () => this.navigate(this.step === "save-calibration" ? "summary" : "calibration-plan"),
-      this.meterConfiguration?.configuration ?? null,
-      this.totalGraphState === "ready" ? this.meterConfiguration?.configuration_impact ?? null : null,
-      this.pendingAction === "review-back",
-      this.reviewCorrection !== null,
-      this.pendingAction,
-      this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper",
-      this.meterConfiguration,
-      this.totalGraphState === "ready" ? this.totalGraphPreview : null
-    );
+    }, {
+      setBoard: (board) => {
+        this.board = board;
+        this.requestUpdate();
+      },
+      update: (channel, patch) => this.updateDraft(channel, patch),
+      back: () => this.back(),
+      review: () => void this.continueFromCt(),
+      updateConfiguration: (configuration) => this.updateCircuitConfiguration(configuration),
+      disableChannel: (channel) => this.disableCircuit(channel),
+      setLabelOnly: (value) => {
+        this.labelOnly = value;
+        this.requestUpdate();
+      },
+      ...this.hasCanonicalChanges() ? { skip: () => {
+        this.skipCircuitChanges = true;
+        this.navigate("calibration-plan");
+      } } : {}
+    });
+    if (this.step === "save-calibration" && !this.transaction && this.offsetRecoveryPending()) return offsetPersistence({
+      offsetFinalization: this.offsetFinalization,
+      restartResult: this.restartResult,
+      hasPendingGains: this.session?.has_pending_gain_calibration === true,
+      busy: this.navigationBusy(),
+      restartBusy: this.restartBusy
+    }, {
+      backToOffsets: () => this.navigate("offset"),
+      restart: () => void this.restart(),
+      review: () => void this.reviewOffsetFinalization(),
+      reconcile: () => void this.reconcileOffsetFinalization()
+    });
+    if (this.step === "save-calibration" && !this.transaction && this.restartResult?.source_handoff_available) return calibrationPersistence({ busy: this.navigationBusy(), installed: this.restartResult.source_handoff_firmware_installed }, {
+      keep: () => this.keepCalibrationInFlash(),
+      save: () => void (this.restartResult?.source_handoff_firmware_installed ? this.clearCalibrationHandoff() : this.reviewCalibrationHandoff())
+    });
+    if (this.step === "install-configuration" || this.step === "save-calibration") return buildInstallStep({
+      purpose: this.transaction?.purpose ?? (this.step === "save-calibration" ? "save_calibration" : "install_configuration"),
+      status: this.transaction,
+      configuration: this.meterConfiguration?.configuration ?? null,
+      impact: this.totalGraphState === "ready" ? this.meterConfiguration?.configuration_impact ?? null : null,
+      reviewBackBusy: this.pendingAction === "review-back",
+      correctionPending: this.reviewCorrection !== null,
+      pendingAction: this.pendingAction,
+      legacyMigration: this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper",
+      meterInventory: this.meterConfiguration,
+      totalPreview: this.totalGraphState === "ready" ? this.totalGraphPreview : null
+    }, {
+      apply: () => void this.transactionAction("apply"),
+      compile: () => void this.transactionAction("compile"),
+      install: () => void (this.calibrationHandoff && this.transaction?.state === "verified" && this.restartResult?.source_handoff_firmware_installed ? this.clearCalibrationHandoff() : this.transactionAction("install")),
+      rollback: () => void this.transactionAction("rollback"),
+      back: () => this.back(),
+      continueFlow: () => this.navigate(this.step === "save-calibration" ? "summary" : "calibration-plan")
+    });
     if (this.step === "safety") return safetyStep(
       this.session,
       this.safetyAcknowledged,
@@ -7072,56 +7268,28 @@ class CircuitSetupPanel extends i$2 {
       () => this.back(),
       this.pendingAction === "safety"
     );
-    if (this.step === "calibration-plan") return calibrationPlanStep(this.calibrationPlan, (plan) => {
-      this.calibrationPlan = plan;
-      if (plan === "keep_existing") {
-        if (this.hasCanonicalChanges()) {
-          void this.previewCanonicalConfiguration();
-          return;
-        }
-        this.completedWithoutChanges = true;
-        this.navigate("summary");
-      } else void this.startSession(plan, this.skipCircuitChanges);
-      this.requestUpdate();
-    }, () => this.back(), this.workflowContext().configurationMode === "runtime_only", this.pendingAction === "session");
-    if (this.step === "offset") return offsetStep(
-      this.topology,
-      this.session,
-      this.board,
-      this.offsetStage,
-      this.offsetAcknowledged[this.offsetStage - 1] ?? false,
-      this.offsetRetryConfirmed,
-      this.offsetReadinessByTarget.get(this.offsetKey()) ?? null,
-      this.offsetResultByTarget.get(this.offsetKey()) ?? null,
-      this.offsetBusy,
-      (value) => {
-        this.board = value;
-        this.offsetRetryConfirmed = false;
+    if (this.step === "calibration-plan") return calibrationPlanStep(
+      this.calibrationPlan,
+      (plan) => {
+        this.calibrationPlan = plan;
         this.requestUpdate();
       },
-      (value) => {
-        if (value === 1 || this.session?.offset_boards?.every((item) => item.stages[0]?.state === "completed")) {
-          this.offsetStage = value;
-          this.board = 0;
-          this.offsetRetryConfirmed = false;
-          this.requestUpdate();
-        }
-      },
-      (value) => {
-        this.offsetAcknowledged = this.offsetAcknowledged.map((current, index) => index === this.offsetStage - 1 ? value : current);
-        this.requestUpdate();
-      },
-      (value) => {
-        this.offsetRetryConfirmed = value;
-        this.requestUpdate();
-      },
-      () => void this.checkOffsetReadiness(),
-      () => void this.calibrateOffset(),
-      () => void this.reconnectSession(),
-      () => void this.skipOffset(),
       () => this.back(),
-      () => this.continueOffset(),
-      this.stockOffsetMode() ? {
+      this.workflowContext().configurationMode === "runtime_only",
+      this.navigationBusy(),
+      () => void this.continueCalibrationPlan()
+    );
+    if (this.step === "offset") return offsetStep({
+      topology: this.topology,
+      session: this.session,
+      board: this.board,
+      stage: this.offsetStage,
+      acknowledged: this.offsetAcknowledged[this.offsetStage - 1] ?? false,
+      retryConfirmed: this.offsetRetryConfirmed,
+      readiness: this.offsetReadinessByTarget.get(this.offsetKey()) ?? null,
+      result: this.offsetResultByTarget.get(this.offsetKey()) ?? null,
+      busy: this.offsetBusy,
+      stock: this.stockOffsetMode() ? {
         preparation: this.offsetPreparation,
         backupAcknowledged: this.offsetBackupAcknowledged,
         setBackup: (value) => {
@@ -7130,7 +7298,35 @@ class CircuitSetupPanel extends i$2 {
         },
         prepare: () => void this.reviewOffsetPreparation()
       } : null
-    );
+    }, {
+      selectBoard: (value) => {
+        this.board = value;
+        this.offsetRetryConfirmed = false;
+        this.requestUpdate();
+      },
+      selectStage: (value) => {
+        if (value === 1 || this.session?.offset_boards?.every((item) => item.stages[0]?.state === "completed")) {
+          this.offsetStage = value;
+          this.board = 0;
+          this.offsetRetryConfirmed = false;
+          this.requestUpdate();
+        }
+      },
+      setAcknowledged: (value) => {
+        this.offsetAcknowledged = this.offsetAcknowledged.map((current, index) => index === this.offsetStage - 1 ? value : current);
+        this.requestUpdate();
+      },
+      setRetryConfirmed: (value) => {
+        this.offsetRetryConfirmed = value;
+        this.requestUpdate();
+      },
+      check: () => void this.checkOffsetReadiness(),
+      calibrate: () => void this.calibrateOffset(),
+      reconnect: () => void this.reconnectSession(),
+      skip: () => void this.skipOffset(),
+      back: () => this.back(),
+      continueOffset: () => this.continueOffset()
+    });
     if (this.step === "voltage") return b`${(this.calibrationMeterSettings ?? this.meterSettingsDraft)?.warnings.includes("slow_interval_extends_calibration") ? b`<div class="warning-band" role="status">This meter uses a ${(this.calibrationMeterSettings ?? this.meterSettingsDraft).update_interval_s}-second update interval. Calibration takes longer; keep the reference stable until each check finishes.</div>` : A}${voltageStep(
       this.topology,
       this.session,
@@ -7139,7 +7335,7 @@ class CircuitSetupPanel extends i$2 {
       this.voltageReferenceIds().map((id2) => this.voltageReferenceLabel(id2)),
       this.stabilityFor("voltage"),
       this.voltageResultsForBoard(),
-      this.voltageBusy,
+      this.navigationBusy(),
       (value) => {
         this.board = value;
         this.requestUpdate();
@@ -7152,15 +7348,15 @@ class CircuitSetupPanel extends i$2 {
       () => void this.checkStability("voltage"),
       () => void this.calibrate("voltage"),
       () => void this.reconnectSession(),
-      () => void this.cancelSession()
+      () => void this.cancelSession(),
+      this.selectedVoltageReferences().length > 0
     )}
-      <footer class="action-footer offset-footer"><button class="secondary" @click=${() => this.back()}>Back</button>
-        <button class="secondary" ?disabled=${this.voltageBusy || this.voltageSkipped} @click=${() => {
-      this.voltageSkipped = true;
-      this.announcement = "Remaining voltage calibration was skipped; completed gains were preserved.";
-      this.requestUpdate();
-    }}>Skip voltage calibration</button>
-        <button class="primary" ?disabled=${this.voltageBusy || !this.voltageSkipped && !this.hasCompletedCalibration("voltage")} @click=${() => this.navigate("current")}>Continue to Current</button></footer>`;
+      ${this.calibrationContinuation("voltage")}
+      <footer class="action-footer offset-footer"><button class="secondary" ?disabled=${this.navigationBusy()} @click=${() => this.back()}>Back</button>
+        <button class="primary" ?disabled=${this.calibrationContinuationBlocked("voltage")} @click=${() => {
+      this.voltageSkipped = !this.hasCompletedCalibration("voltage");
+      this.navigate("current");
+    }}>${this.calibrationContinueLabel("voltage")}</button></footer>`;
     if (this.step === "current") return b`${currentStep(
       this.topology,
       this.inventory,
@@ -7190,15 +7386,14 @@ class CircuitSetupPanel extends i$2 {
       () => void this.calibrate("current"),
       () => void this.reconnectSession(),
       () => void this.cancelSession(),
-      this.finishBusy || this.pendingAction === "session"
+      this.navigationBusy()
     )}
-      <footer class="action-footer offset-footer"><button class="secondary" @click=${() => this.back()}>Back</button>
-        <button class="secondary" ?disabled=${this.finishBusy || this.currentSkipped} @click=${() => {
-      this.currentSkipped = true;
-      this.announcement = "Remaining current calibration was skipped; completed gains were preserved.";
-      this.requestUpdate();
-    }}>Skip current calibration</button>
-        <button class="primary" ?disabled=${this.finishBusy || !this.currentSkipped && !this.hasCompletedCalibration("current")} @click=${() => void this.finishCurrent()}>${this.finishBusy ? b`<span class="loading-spinner" aria-hidden="true"></span>Finishing…` : "Continue"}</button></footer>`;
+      ${this.calibrationContinuation("current")}
+      <footer class="action-footer offset-footer"><button class="secondary" ?disabled=${this.navigationBusy()} @click=${() => this.back()}>Back</button>
+        <button class="primary" ?disabled=${this.calibrationContinuationBlocked("current")} @click=${() => {
+      this.currentSkipped = !this.hasCompletedCalibration("current");
+      void this.finishCurrent();
+    }}>${this.finishBusy ? "Finishing…" : this.calibrationContinueLabel("current")}</button></footer>`;
     if (this.step === "restart") return restartStep(
       this.session?.state ?? this.error,
       this.restartResult,
@@ -7208,35 +7403,36 @@ class CircuitSetupPanel extends i$2 {
       () => void this.transactionAction("rollback"),
       () => this.back()
     );
-    if (this.step === "summary") return summaryStep(
-      this.topology,
-      this.session,
-      this.transaction,
-      this.stabilityByTarget,
-      this.calibrationByTarget,
-      this.restartResult,
-      this.completedWithoutChanges,
-      this.selectedProjectVersion(),
-      () => void (this.restartResult?.source_handoff_firmware_installed ? this.clearCalibrationHandoff() : this.reviewCalibrationHandoff()),
-      () => this.back(),
-      this.verifiedMeterConfiguration,
-      this.verifiedMeterConfiguration?.configuration_impact ?? null,
-      () => this.finishFlow("Meter configuration and calibration are complete."),
-      () => this.keepCalibrationInFlash(),
-      this.workflowContext().configurationMode,
-      this.existingConfigurationChoice,
-      this.configurationInstalled,
-      this.handoffDeclined,
-      this.configurationMode === "legacy_editable" && this.sourceMeterConfiguration?.deviceId === this.selectedDeviceId && this.sourceMeterConfiguration?.meter.source_sha256 === this.meterConfiguration?.source_sha256 ? this.sourceMeterConfiguration?.meter ?? null : null,
-      this.offsetFinalization,
-      this.offsetBackupAcknowledged,
-      (value) => {
+    if (this.step === "summary") return summaryStep({
+      topology: this.topology,
+      session: this.session,
+      transaction: this.transaction,
+      stability: this.stabilityByTarget,
+      calibration: this.calibrationByTarget,
+      restart: this.restartResult,
+      completedWithoutChanges: this.completedWithoutChanges,
+      projectVersion: this.selectedProjectVersion(),
+      meterConfiguration: this.verifiedMeterConfiguration,
+      impact: this.verifiedMeterConfiguration?.configuration_impact ?? null,
+      configurationMode: this.workflowContext().configurationMode,
+      legacyChoice: this.existingConfigurationChoice,
+      configurationInstalled: this.configurationInstalled,
+      handoffDeclined: this.handoffDeclined,
+      sourceConfiguration: this.configurationMode === "legacy_editable" && this.sourceMeterConfiguration?.deviceId === this.selectedDeviceId && this.sourceMeterConfiguration?.meter.source_sha256 === this.meterConfiguration?.source_sha256 ? this.sourceMeterConfiguration?.meter ?? null : null,
+      offsetFinalization: this.offsetFinalization,
+      newCycleAcknowledged: this.offsetBackupAcknowledged,
+      busy: Boolean(this.pendingAction)
+    }, {
+      saveCalibration: () => void (this.restartResult?.source_handoff_firmware_installed ? this.clearCalibrationHandoff() : this.reviewCalibrationHandoff()),
+      back: () => this.back(),
+      finish: () => this.finishFlow("Meter configuration and calibration are complete."),
+      keepCalibrationInFlash: () => this.keepCalibrationInFlash(),
+      setNewCycleAcknowledged: (value) => {
         this.offsetBackupAcknowledged = value;
         this.requestUpdate();
       },
-      () => void this.beginOffsetCycle(),
-      Boolean(this.pendingAction)
-    );
+      newCycle: () => void this.beginOffsetCycle()
+    });
     return b`<section class="step-content"><div class="info-band" role="status"><strong>${this.step === "ct" ? "Circuits & CTs are not loaded" : "Live step data is not loaded"}</strong><p>Go back and reload the live device data.</p></div>
       <footer class="action-footer"><button class="secondary" @click=${() => this.back()}>Back</button></footer></section>`;
   }
@@ -7266,7 +7462,7 @@ class CircuitSetupPanel extends i$2 {
     </section>`;
   }
   render() {
-    const context = this.progressContext();
+    const context = this.workflowContext();
     const phases = workflowPhases(context, this.step);
     const activePhase = phases.find((phase) => phase.status === "current");
     const substeps = activePhase?.id === "calibration" ? calibrationSubsteps(context, this.step) : [];
@@ -7280,7 +7476,7 @@ class CircuitSetupPanel extends i$2 {
         this.requestUpdate();
       },
       () => this.returnToSetup(),
-      this.pendingAction === "session"
+      this.navigationBusy() || !canLeaveTransaction(this.transaction) || Boolean(this.restartResult?.source_handoff_firmware_installed && this.restartResult.source_authority !== "configuration")
     )}
         <main>
           <div class="product-title">CircuitSetup Energy Meter Helper</div>
@@ -7303,6 +7499,7 @@ class CircuitSetupPanel extends i$2 {
               ?disabled=${Boolean(this.pendingAction)} @click=${() => this.discardUnsupportedCalibrationChanges()}>Discard local configuration choices and continue calibration</button>` : A}
           ${this.transaction?.state === "verified" && (this.configurationInstalled && this.transaction.full_meter_configuration_verified || this.transaction.redacted_diff === "" && this.transaction.progress.includes("metadata_persisted")) && !this.verifiedMeterConfiguration && this.configurationMode !== "runtime_only" ? b`<button class="secondary"
               ?disabled=${this.totalGraphState === "pending"} @click=${() => void this.refreshInstalledConfiguration()}>Retry totals inventory refresh</button>` : A}
+          ${this.topology && this.step !== "setup" ? b`<p class="info-band selected-meter" role="status"><strong>${this.setup?.devices.find((device2) => device2.entry_id === this.selectedDeviceId)?.title ?? "Selected meter"}</strong> · ${this.topology.ct_count} CTs · Hardware checked</p>` : A}
           ${this.stepBody()}
           ${!["setup", "legacy-review", "meter", "voltage", "current", "summary"].includes(this.step) ? technicalDetails(this.topology, this.session, this.transaction, this.stabilityByTarget, this.calibrationByTarget, this.restartResult, this.completedWithoutChanges) : A}
           <div class="sr-status" role="status" aria-live="polite">${this.announcement}</div>

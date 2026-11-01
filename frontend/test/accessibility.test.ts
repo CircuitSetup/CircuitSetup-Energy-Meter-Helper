@@ -124,7 +124,8 @@ it("supports keyboard-focused hierarchical source controls and named source grou
   const update = vi.fn();
   const root = mount(advancedTotalsEditor(response.configuration, new Map(), update, true, "", response.totals));
   const summary = root.querySelector<HTMLElement>(".advanced-totals > summary")!;
-  summary.focus(); summary.click();
+  summary.focus();
+  if (!root.querySelector<HTMLDetailsElement>(".advanced-totals")?.open) summary.click();
   expect(document.activeElement).toBe(summary);
   expect(root.querySelector<HTMLDetailsElement>(".advanced-totals")?.open).toBe(true);
   const source = root.querySelector<HTMLInputElement>('[aria-label="Home: Overall meter total"]')!;
@@ -138,7 +139,7 @@ it("supports keyboard-focused hierarchical source controls and named source grou
 it("keeps Setup Device free of legacy installer and IO0 controls", () => {
   container = document.createElement("div");
   document.body.append(container);
-  render(setupDeviceStep(null, 0, "wifi", noop, noop, noop, noop, noop), container);
+  render(setupDeviceStep({ snapshot: null, addonCount: 0, connection: "wifi" }, { setAddon: noop, setConnection: noop, rescan: noop, configure: noop, adopt: noop }), container);
 
   expect(container.querySelector('[data-action="rescan"]')?.textContent).toContain("Rescan for device");
   expect(container.querySelector("button.installer")).toBeNull();
@@ -153,7 +154,7 @@ it("keeps Setup Device free of legacy installer and IO0 controls", () => {
 it("hides device discovery rescan after setup is open", () => {
   container = document.createElement("div");
   document.body.append(container);
-  render(setupDeviceStep(null, 0, "wifi", noop, noop, noop, noop, noop, "", true), container);
+  render(setupDeviceStep({ snapshot: null, addonCount: 0, connection: "wifi", busyAction: "", discoverOnly: true }, { setAddon: noop, setConnection: noop, rescan: noop, configure: noop, adopt: noop }), container);
 
   expect(container.querySelector('[data-action="rescan"]')).toBeNull();
   expect(container.querySelector('[data-action="find-existing"]')).not.toBeNull();
@@ -340,7 +341,7 @@ it("gives the CT inventory table explicit header and data-cell semantics", () =>
   const drafts = new Map<number, CtDraft>();
   container = document.createElement("div");
   document.body.append(container);
-  render(ctInventoryStep(inventory, 0, drafts, noop, noop, noop, noop), container);
+  render(ctInventoryStep({ inventory, board: 0, drafts }, { setBoard: noop, update: noop, back: noop, review: noop }), container);
 
   expect(container.querySelectorAll('[role="columnheader"]')).toHaveLength(6);
   expect(container.querySelector('[data-ct-row]')?.querySelectorAll(':scope > [role="cell"]')).toHaveLength(6);
@@ -385,8 +386,8 @@ describe("guided calibration copy", () => {
 
     expect(standard.querySelectorAll(".progress-steps li")).toHaveLength(4);
     expect(standard.textContent).not.toContain("Zero reference");
-    expect(full.querySelectorAll(".progress-steps li")).toHaveLength(5);
-    expect(full.textContent).toContain("Zero reference");
+    expect(full.querySelectorAll(".progress-steps li")).toHaveLength(4);
+    expect(full.textContent).not.toContain("Zero reference");
     expect(waiting.textContent).toContain("Waiting for live data");
     expect(changing.textContent).toContain("Data is changing too much");
     expect(stable.textContent).toContain("Stable and ready for calibration");
@@ -407,7 +408,7 @@ describe("guided calibration copy", () => {
     const inventory = { plan_id: "plan", source_sha256: "a".repeat(64), channels: [],
       catalog: { presets: [], source_repository: "repo", source_ref: "ref", schema_version: 1 } } as CtInventory;
     container = document.createElement("div"); document.body.append(container);
-    render(ctInventoryStep(inventory, 0, new Map(), noop, noop, noop, noop), container);
+    render(ctInventoryStep({ inventory, board: 0, drafts: new Map() }, { setBoard: noop, update: noop, back: noop, review: noop }), container);
 
     expect(container.textContent).toContain("Physical work required");
   });

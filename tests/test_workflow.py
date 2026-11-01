@@ -2055,8 +2055,8 @@ def test_adopt_imports_current_compatible_discovery_once() -> None:
         }
         second = await workflow.async_adopt_device("new-meter")
 
-        assert first == {"device_id": "new-meter", "configuration": "new-meter.yaml"}
-        assert second == first
+        assert first == {"device_id": "new-meter", "configuration": "new-meter.yaml", "imported": True}
+        assert second == {**first, "imported": False}
         assert builder.imports == [{
             "name": "new-meter",
             "friendly_name": "New meter",
@@ -2083,6 +2083,7 @@ def test_adopt_uses_builder_import_record_when_runtime_metadata_is_incomplete() 
         assert await workflow.async_adopt_device("new-meter") == {
             "device_id": "new-meter",
             "configuration": "new-meter.yaml",
+            "imported": True,
         }
         assert builder.imports == [import_data]
 
@@ -2098,6 +2099,7 @@ def test_adopt_falls_back_when_builder_import_record_is_incomplete() -> None:
         assert await workflow.async_adopt_device("new-meter") == {
             "device_id": "new-meter",
             "configuration": "new-meter.yaml",
+            "imported": True,
         }
         assert builder.imports == [{
             "name": "new-meter",
@@ -2115,11 +2117,14 @@ def test_adopt_reuses_existing_builder_configuration() -> None:
             "importable": [],
         })
 
+        assert workflow._provisioning.snapshot.devices[0].configuration is None
         assert await workflow.async_adopt_device("new-meter") == {
             "device_id": "new-meter",
             "configuration": "existing.yaml",
+            "imported": False,
         }
         assert builder.imports == []
+        assert workflow._esphome_entry_id == "old-meter"
 
     asyncio.run(run())
 
@@ -2135,6 +2140,7 @@ def test_adopt_reuses_configured_meter_after_discovery_snapshot_changes() -> Non
         assert await workflow.async_adopt_device("new-meter") == {
             "device_id": "new-meter",
             "configuration": "existing.yaml",
+            "imported": False,
         }
         assert builder.imports == []
 
@@ -2221,6 +2227,7 @@ def test_adopt_allows_rebinding_after_previous_session_is_finalized(state: str) 
         assert await workflow.async_adopt_device("new-meter") == {
             "device_id": "new-meter",
             "configuration": "new-meter.yaml",
+            "imported": True,
         }
         assert len(builder.imports) == 1
 

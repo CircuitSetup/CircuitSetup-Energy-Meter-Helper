@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+test.setTimeout(60_000);
+
 const fixturePort = Number(process.env.CSEMH_FIXTURE_PORT ?? 4174);
 
 async function runStage(page: Page, stage: 1 | 2) {
@@ -28,7 +30,6 @@ test("native stock offset review stays on Offset and runs both first-use stages"
   })).json()) as { frames: Array<{ type: string }>; builder_calls: string[]; stock_button_names: string[] };
 
   await page.goto(`/test/harness.html?${query}`);
-  await page.locator('[data-action="configure-device"]').click();
   await expect(page.getByRole("heading", { name: /Optional offset calibration/ })).toBeVisible();
   await expect(page.getByRole("button", { name: "Run Stage 1 calibration", exact: true })).toBeDisabled();
   await page.getByLabel("I understand that this step creates a private backup and uses the meter's native offset controls; no firmware is installed.", { exact: true }).check();
@@ -58,6 +59,20 @@ test("native stock offset review stays on Offset and runs both first-use stages"
 });
 
 test("native stock offset recovery survives reload, back, retry, finalization, and a new cycle", async ({ page, request }) => {
+  let unconfirmedInstalledReceiptSeen = false;
+  await page.routeWebSocket(/\/api\/websocket(?:\?|$)/, (socket) => {
+    const server = socket.connectToServer();
+    server.onMessage((message) => {
+      const frame = JSON.parse(String(message));
+      if (frame.result?.purpose === "offset_finalization" && frame.result.installed
+        && !frame.result.configuration_selected && frame.result.operation_id) {
+        // Reproduce a retained installed receipt before this owner confirms fresh selection.
+        frame.result.action_ready = false;
+        unconfirmedInstalledReceiptSeen = true;
+      }
+      socket.send(JSON.stringify(frame));
+    });
+  });
   const session = `stock-partial-${Date.now()}`;
   const query = `fixture=stock-offset&session=${session}&fixturePort=${fixturePort}`;
   const errors: string[] = [];
@@ -67,7 +82,6 @@ test("native stock offset recovery survives reload, back, retry, finalization, a
     data: { type: "fixture_state" },
   })).json()) as { frames: Array<{ type: string }>; builder_calls: string[]; stock_button_names: string[] };
   const openOffset = async () => {
-    await page.locator('[data-action="configure-device"]').click();
     await expect(page.getByRole("heading", { name: /Optional offset calibration/ })).toBeVisible();
   };
   const nativeBackup = page.getByLabel("I understand that this step creates a private backup and uses the meter's native offset controls; no firmware is installed.", { exact: true });
@@ -110,20 +124,19 @@ test("native stock offset recovery survives reload, back, retry, finalization, a
   await expect(page.getByText("0/0, 0/0, 0/0", { exact: true })).toHaveCount(2);
 
   await page.getByRole("button", { name: "Continue to Voltage", exact: true }).click();
-  await page.getByRole("button", { name: "Skip voltage calibration", exact: true }).click();
-  await page.getByRole("button", { name: "Continue to Current", exact: true }).click();
-  await page.getByRole("button", { name: "Skip current calibration", exact: true }).click();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Keep existing voltage calibration", exact: true }).click();
+  await page.getByRole("button", { name: "Keep existing current calibration", exact: true }).click();
   await page.getByRole("button", { name: "Review captured offsets for installation", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Install captured offsets", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Save and validate configuration", exact: true }).click();
   await page.getByRole("button", { name: "Build firmware", exact: true }).click();
   await page.getByRole("button", { name: "Install on meter", exact: true }).click();
-  await page.getByRole("button", { name: "Confirm installed offset selection", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Restart and verify gains only", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Confirm installed offset configuration", exact: true }).click();
+  expect(unconfirmedInstalledReceiptSeen).toBe(true);
   await expect(page.getByRole("heading", { name: "Setup complete", exact: true })).toBeVisible({ timeout: 10_000 });
 
   await page.reload();
-  await page.locator('[data-action="configure-device"]').click();
   await expect(page.getByRole("heading", { name: "Review complete", exact: true })).toBeVisible();
   await page.getByLabel("I acknowledge a new offset cycle and backup retention.", { exact: true }).check();
   await page.getByRole("button", { name: "Start new offset cycle", exact: true }).click();

@@ -1020,13 +1020,14 @@ def test_setup_subscription_preserves_the_runtime_bound_device_id() -> None:
     asyncio.run(run())
 
 
-def test_adoption_rebinds_after_sending_the_success_result() -> None:
+@pytest.mark.parametrize("imported", (True, False))
+def test_adoption_rebinds_after_sending_the_success_result(imported: bool) -> None:
     """A successful adoption persists and reloads only after its browser response."""
 
     class Workflow:
-        async def async_adopt_device(self, device_id: str) -> dict[str, str]:
+        async def async_adopt_device(self, device_id: str) -> dict[str, str | bool]:
             assert device_id == "new-meter"
-            return {"device_id": "new-meter", "configuration": "new-meter.yaml"}
+            return {"device_id": "new-meter", "configuration": "new-meter.yaml", "imported": imported}
 
     async def run() -> None:
         events: list[tuple[str, Any]] = []
@@ -1041,7 +1042,7 @@ def test_adoption_rebinds_after_sending_the_success_result() -> None:
         await _invoke(hass, connection, message)
 
         assert events == [
-            ("result", {"device_id": "new-meter", "configuration": "new-meter.yaml"}),
+            ("result", {"device_id": "new-meter", "configuration": "new-meter.yaml", "imported": imported}),
             ("update", "new-meter"),
             ("reload", "helper"),
         ]

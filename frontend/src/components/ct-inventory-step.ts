@@ -30,36 +30,73 @@ const resultingGain = (preset: CtPreset | undefined, multiplier: number, customG
     ? null
     : Math.round((preset?.default_gain_ct ?? customGain!) / multiplier);
 
-export function ctInventoryStep(
-  inventory: CtInventory,
-  board: number,
-  drafts: Map<number, CtDraft>,
-  setBoard: (board: number) => void,
-  update: (channel: number, patch: Partial<CtDraft>) => void,
-  back: () => void,
-  review: () => void,
-  labelOnly = false,
-  busy = false,
-  configuration: MeterConfigurationRequest | null = null,
-  updateConfiguration: (configuration: MeterConfigurationRequest) => void = () => undefined,
-  disableChannel: (channel: number) => void = () => undefined,
-  managedTotals = true,
-  managedTotalsReason = "",
-  allowPreserveExistingGain = false,
-  continueAllowed = true,
-  totals: TotalsInventory | null = null,
-  nativeTotalsReadable = false,
-  nativeTotalsWritable = false,
-  nativePreview: import("../types").TotalGraphPreview | null = null,
-  freshTotals = true,
-  nativeGraphState: "ready" | "pending" | "invalid" = "ready",
-  automaticTotalsWritable = false,
-  meterInventory: MeterConfiguration | null = null,
-  automaticSourcesFresh = freshTotals,
-  existingConfiguration: MeterConfigurationRequest | null = null,
-  skip: () => void = () => undefined,
-  reviewRequirements: TemplateResult | typeof nothing = nothing,
-): TemplateResult {
+export interface CtInventoryData {
+  inventory: CtInventory;
+  board: number;
+  drafts: Map<number, CtDraft>;
+  labelOnly?: boolean;
+  busy?: boolean;
+  configuration?: MeterConfigurationRequest | null;
+  managedTotals?: boolean;
+  managedTotalsReason?: string;
+  allowPreserveExistingGain?: boolean;
+  continueAllowed?: boolean;
+  totals?: TotalsInventory | null;
+  nativeTotalsReadable?: boolean;
+  nativeTotalsWritable?: boolean;
+  nativePreview?: import("../types").TotalGraphPreview | null;
+  freshTotals?: boolean;
+  nativeGraphState?: "ready" | "pending" | "invalid";
+  automaticTotalsWritable?: boolean;
+  meterInventory?: MeterConfiguration | null;
+  automaticSourcesFresh?: boolean;
+  existingConfiguration?: MeterConfigurationRequest | null;
+  reviewRequirements?: TemplateResult | typeof nothing;
+  actionLabel?: string;
+  busyLabel?: string;
+  blockedReason?: string;
+  impact?: import("../types").ConfigurationImpact | null;
+}
+export interface CtInventoryActions {
+  setBoard: (board: number) => void;
+  update: (channel: number, patch: Partial<CtDraft>) => void;
+  back: () => void;
+  review: () => void;
+  setLabelOnly?: (value: boolean) => void;
+  skip?: () => void;
+  updateConfiguration?: (configuration: MeterConfigurationRequest) => void;
+  disableChannel?: (channel: number) => void;
+}
+
+export function ctInventoryStep(data: CtInventoryData, actions: CtInventoryActions): TemplateResult {
+  const {
+    inventory,
+    board,
+    drafts,
+    labelOnly = false,
+    busy = false,
+    configuration = null,
+    managedTotals = true,
+    managedTotalsReason = "",
+    allowPreserveExistingGain = false,
+    continueAllowed = true,
+    totals = null,
+    nativeTotalsReadable = false,
+    nativeTotalsWritable = false,
+    nativePreview = null,
+    freshTotals = true,
+    nativeGraphState = "ready",
+    automaticTotalsWritable = false,
+    meterInventory = null,
+    automaticSourcesFresh = freshTotals,
+    existingConfiguration = null,
+    reviewRequirements = nothing,
+    actionLabel = "Review configuration changes",
+    busyLabel = "Preparing configuration review...",
+    impact = null,
+    blockedReason = ""
+  } = data;
+  const { setBoard, update, back, review, updateConfiguration = () => undefined, disableChannel = () => undefined, setLabelOnly, skip } = actions;
   const boardCount = Math.ceil(inventory.channels.length / 6);
   const rows = inventory.channels.filter((channel) => channel.address.board_index === board).slice(0, 8);
   const referenceByGroup = new Map(configuration?.meter.voltage_references.flatMap((reference) =>
@@ -69,21 +106,24 @@ export function ctInventoryStep(
     channels: configuration.channels.map((item) => item.channel === channel ? { ...item, ...patch } : item) });
   return html`
     <section class="step-content ct-step" aria-labelledby="step-heading">
-      <p class="info-band">CT numbering starts at the top-left connector on each board and continues counterclockwise, then continues upward through the board stack. A circuit's voltage reference is determined by the physical voltage setup and cannot be changed in software.</p>
-      <p class="warning-band" role="note"><strong>Physical work required:</strong> CT wiring and panel changes must be performed safely; the helper cannot verify them.</p>
+      ${meterInventory && !labelOnly ? html`<div class="graph-status"><details><summary>Measurement details</summary>${impact ? html`<p>${impact.enabled_channel_count} enabled channels; ${impact.numeric_entity_count + impact.text_entity_count} ${meterInventory.totals.migration.native_visibility_resolved ? "Helper-managed measurements" : "confirmed Helper-managed measurements (incomplete: native visibility unresolved)"} (${impact.numeric_entity_count} numeric, ${impact.text_entity_count} text), ${impact.energy_entity_count} energy; ${impact.public_total_entity_count} public total entities; ${impact.internal_total_sensor_count} internal total sensors; approximately ${impact.approximate_publications_per_second.toFixed(1)} publications/sec.</p>` : html`<p role="status">${nativeGraphState === "pending" ? "Updating total graph and counts…" : "Total graph unavailable: correct the draft before reviewing counts."}</p>`}</details></div>` : nothing}
+      ${impact && impact.numeric_entity_count + impact.text_entity_count >= 100 && !labelOnly ? html`<p class="warning-band" role="status">Warning: high entity count. Review enabled measurements if Home Assistant becomes slow.</p>` : nothing}
+      ${setLabelOnly ? html`<fieldset class="name-mode" ?disabled=${busy}><legend>Edit target</legend><label><input type="radio" name="name-mode" .checked=${!labelOnly} @change=${() => setLabelOnly(false)}>Meter configuration</label><label><input type="radio" name="name-mode" .checked=${labelOnly} @change=${() => setLabelOnly(true)}>Home Assistant names only</label></fieldset>` : nothing}
+      ${labelOnly ? nothing : html`<p class="info-band">CT numbering starts at the top-left connector on each board and continues counterclockwise, then continues upward through the board stack. A circuit's voltage reference is determined by the physical voltage setup and cannot be changed in software.</p>
+      <p class="warning-band" role="note"><strong>Physical work required:</strong> CT wiring and panel changes must be performed safely; the helper cannot verify them.</p>`}
       <div class="board-tabs" role="tablist" aria-label="Meter boards" aria-orientation="horizontal">
         ${Array.from({ length: boardCount }, (_, index) => html`
-          <button role="tab" id=${`board-tab-${index}`} data-board-tab=${index} aria-selected=${index === board}
+          <button ?disabled=${busy} role="tab" id=${`board-tab-${index}`} data-board-tab=${index} aria-selected=${index === board}
             aria-controls="board-panel" tabindex=${index === board ? "0" : "-1"}
             @keydown=${(event: KeyboardEvent) => moveTab(event, index)}
             @click=${() => setBoard(index)}>${index === 0 ? "Main Board" : `Add-on ${index}`}</button>
         `)}
       </div>
-      <p>Choose a CT model for each circuit. Reporting range is set automatically.</p>
+      <p>${labelOnly ? "Edit the names shown in Home Assistant." : "Choose a CT model for each used circuit. Reporting range is set automatically."}</p>
       <div id="board-panel" role="tabpanel" aria-labelledby=${`board-tab-${board}`}>
-      <div class="ct-table" role="table" aria-rowcount=${inventory.channels.length + 1}>
+      <div class=${`ct-table${labelOnly ? " ct-names-only" : ""}`} role="table" aria-rowcount=${inventory.channels.length + 1}>
         <div class="ct-header" role="row" aria-rowindex="1">
-          <span role="columnheader">CT</span><span role="columnheader">Used</span><span role="columnheader">Circuit name</span><span role="columnheader">Circuit type</span><span role="columnheader">CT model / rating</span><span role="columnheader">Range status</span>
+          <span role="columnheader">CT</span>${labelOnly ? html`<span role="columnheader">Home Assistant name</span>` : html`<span role="columnheader">Used</span><span role="columnheader">Circuit name</span><span role="columnheader">Circuit type</span><span role="columnheader">CT model / rating</span><span role="columnheader">Range status</span>`}
         </div>
         <div class="ct-window" aria-label="Current transformers">
           ${rows.map((channel) => {
@@ -102,6 +142,11 @@ export function ctInventoryStep(
             const effectiveRange = draft.multiplier * 65.535;
             const circuit = configuration?.channels.find((item) => item.channel === channel.channel);
             const reference = referenceByGroup.get(`${channel.address.board_index === 0 ? "main" : `addon${channel.address.board_index}`}_${channel.address.group_index + 1}`);
+            if (labelOnly) return html`<div class="ct-row ct-name-row" data-ct-row role="row" aria-rowindex=${channel.channel + 1} aria-label=${`CT${channel.channel}`}>
+              <strong role="cell">CT${channel.channel}</strong><label role="cell"><span class="mobile-label">Home Assistant name</span><input aria-label=${`CT${channel.channel} name`} .value=${live(draft.name)} @input=${(event: Event) => update(channel.channel, { name: (event.target as HTMLInputElement).value })} /></label></div>`;
+            if (circuit && !circuit.enabled) return html`<div class="ct-row ct-unused-row" data-ct-row role="row" aria-rowindex=${channel.channel + 1} aria-label=${`CT${channel.channel}`}>
+              <strong role="cell">CT${channel.channel}</strong><label role="cell" class="check-row"><input type="checkbox" aria-label=${`CT${channel.channel} used`} .checked=${false} @change=${() => patchChannel(channel.channel, { enabled: true, role: circuit.role === "unused" ? "branch" : circuit.role })} />Used</label>
+              <span role="cell" aria-colspan="4">${draft.name}  -  unused; saved CT settings kept.</span></div>`;
             return html`
               <div class="ct-row" data-ct-row data-ct-group=${channel.address.group_index} role="row" aria-rowindex=${channel.channel + 1} aria-label=${`CT${channel.channel}`}>
                 <strong class="ct-index" role="cell">CT${channel.channel}</strong>
@@ -114,7 +159,7 @@ export function ctInventoryStep(
                 ${circuit ? html`<label role="cell"><span class="mobile-label">Circuit type</span><select aria-label=${`CT${channel.channel} role`} .value=${circuit.role} ?disabled=${!circuit.enabled}
                   @change=${(event: Event) => patchChannel(channel.channel, { role: (event.target as HTMLSelectElement).value as ChannelSettings["role"] })}>
                   ${ROLES.filter((role) => role !== "unused").map((role) => html`<option value=${role} ?selected=${role === circuit.role}>${roleLabel(role)}</option>`)}</select></label>` : html`<span role="cell"><span class="mobile-label">Role</span>—</span>`}
-                <label role="cell"><span class="mobile-label">CT model / rating</span><select aria-label=${`CT${channel.channel} model`} .value=${draft.modelId} ?disabled=${labelOnly || draft.preserveExistingGain}
+                <div role="cell" class="ct-model-field"><label><span class="mobile-label">CT model / rating</span><select aria-label=${`CT${channel.channel} model`} .value=${draft.modelId} ?disabled=${labelOnly || draft.preserveExistingGain}
                   @change=${(event: Event) => {
                     const modelId = (event.target as HTMLSelectElement).value;
                     const selectedPreset = inventory.catalog.presets.find((item) => item.model_id === modelId);
@@ -126,33 +171,33 @@ export function ctInventoryStep(
                       burdenAcknowledged: (existing ? existing.burden_output_acknowledged : channel.selection_verified_against_config)
                         && modelId === channel.selected_model_id
                         && (modelId === "custom" || selectedPreset?.requires_burden_jumper_cut === true),
-                      expanded: true,
+                      expanded: false,
                     });
                   }}>
                   <option value="" ?selected=${draft.modelId === ""}>Choose model</option>
                   ${inventory.catalog.presets.map((item) => html`<option value=${item.model_id} ?selected=${draft.modelId === item.model_id}>${item.label}</option>`)}
                   <option value="custom" ?selected=${draft.modelId === "custom"}>Custom Gain</option>
-                </select>${preset ? html`<small>${preset.rated_current_a} A</small>` : nothing}<span class="sr-status" data-voltage-reference>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span></label>
-                <span role="cell"><span class="mobile-label">Range status</span>${draft.preserveExistingGain ? "Existing gain kept" : recommendation === null && preset ? "Rating exceeds ×8 range" : effectiveRange < (preset?.rated_current_a ?? 0) ? `Too small: ${effectiveRange} A` : `Up to ${effectiveRange} A`}</span>
-              </div>
-              ${allowPreserveExistingGain && !channel.selection_verified_against_config && channel.raw_gain_ct > 0 ? html`<label class="check-row preserve-gain"><input type="checkbox" aria-label=${`CT${channel.channel} keep existing gain`} ?disabled=${labelOnly} .checked=${draft.preserveExistingGain === true}
-                @change=${(event: Event) => update(channel.channel, { preserveExistingGain: (event.target as HTMLInputElement).checked, expanded: true })} />Keep existing gain; CT model not recorded.</label>` : nothing}
-              ${!draft.preserveExistingGain && preset && (recommendation === null || effectiveRange < preset.rated_current_a) ? html`<div class="warning-band" role="status">CT${channel.channel}: this selection needs a range of at least ${preset.rated_current_a} A. Continue is blocked.</div>` : nothing}
-              <details class="technical-details" ?open=${draft.expanded} @toggle=${(event: Event) => update(channel.channel, { expanded: (event.currentTarget as HTMLDetailsElement).open })}><summary>Technical details</summary>
-                ${draft.modelId === "custom" && draft.expanded ? html`<div class="ct-detail custom-fields">
+                </select>${preset ? html`<small>${preset.rated_current_a} A</small>` : nothing}<span class="sr-status" data-voltage-reference>${reference?.label || reference?.reference_id || circuit?.voltage_reference_id || "—"}</span></label>                ${!draft.preserveExistingGain && draft.modelId === "custom" ? html`<div class="ct-detail custom-fields">
                   <label>Custom Gain <input type="number" min="1" max="65535" step="1" aria-label=${`CT${channel.channel} custom gain`}
                     ?disabled=${labelOnly}
                     .value=${draft.customGainCt === undefined ? "" : String(draft.customGainCt)}
                     @input=${(event: Event) => update(channel.channel, { customGainCt: Number((event.target as HTMLInputElement).value) })} /></label>
                 </div>` : nothing}
-                ${draft.expanded && retained && !draft.burdenAcknowledged && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? html`<p class="info-band">Existing CT settings retained. Changing CT settings requires any applicable burden-output confirmation.</p>` : nothing}
-                ${draft.expanded && !retained && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? html`<div class="warning-band">
+                ${retained && !draft.burdenAcknowledged && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? html`<p class="info-band">Existing CT settings retained. Changing CT settings requires any applicable burden-output confirmation.</p>` : nothing}
+                ${!draft.preserveExistingGain && !retained && (draft.modelId === "custom" || preset?.requires_burden_jumper_cut) ? html`<div class="warning-band">
                   <label class="check-row"><input type="checkbox" aria-label=${`CT${channel.channel} burden output acknowledgement`}
                     ?disabled=${labelOnly}
                     .checked=${draft.burdenAcknowledged}
                     @change=${(event: Event) => update(channel.channel, { burdenAcknowledged: (event.target as HTMLInputElement).checked })} />
                     I checked the burden-output requirement for CT${channel.channel}</label>
                 </div>` : nothing}
+</div>
+                <span role="cell"><span class="mobile-label">Range status</span>${draft.preserveExistingGain ? "Existing gain kept" : recommendation === null && preset ? "Rating exceeds ×8 range" : effectiveRange < (preset?.rated_current_a ?? 0) ? `Too small: ${effectiveRange} A` : `Up to ${effectiveRange} A`}</span>
+              </div>
+              ${allowPreserveExistingGain && !channel.selection_verified_against_config && channel.raw_gain_ct > 0 ? html`<label class="check-row preserve-gain"><input type="checkbox" aria-label=${`CT${channel.channel} keep existing gain`} ?disabled=${labelOnly} .checked=${draft.preserveExistingGain === true}
+                @change=${(event: Event) => update(channel.channel, { preserveExistingGain: (event.target as HTMLInputElement).checked, expanded: true })} />Keep existing gain; CT model not recorded.</label>` : nothing}
+              ${!draft.preserveExistingGain && preset && (recommendation === null || effectiveRange < preset.rated_current_a) ? html`<div class="warning-band" role="status">CT${channel.channel}: this selection needs a range of at least ${preset.rated_current_a} A. Continue is blocked.</div>` : nothing}
+              <details class="technical-details" ?open=${draft.expanded} @toggle=${(event: Event) => update(channel.channel, { expanded: (event.currentTarget as HTMLDetailsElement).open })}><summary>Technical details</summary>
                 <dl class="ct-detail">
                   <div><dt>Raw gain</dt><dd>${channel.raw_gain_ct}</dd></div>
                   <div><dt>Divided gain</dt><dd>${gain ?? "—"}</dd></div>
@@ -173,18 +218,36 @@ export function ctInventoryStep(
       </div>
       </div>
       <p class="row-count">Showing ${rows[0]?.channel ?? 0}–${rows.at(-1)?.channel ?? 0} of ${inventory.channels.length} CTs</p>
-      ${configuration && meterInventory ? totalsMigrationReview(meterInventory, updateConfiguration, nativePreview, freshTotals) : nothing}
-      ${configuration && totals ? defaultTotalsSection(configuration, totals, nativeTotalsReadable, nativeTotalsWritable, updateConfiguration, nativeGraphState, meterInventory?.capabilities.reason_codes, existingConfiguration) : nothing}
-      ${configuration && totals ? automaticTotalsSection(configuration, freshTotals || preserveNamedAutomaticDraft ? totals : null, automaticTotalsWritable, updateConfiguration, existingConfiguration) : nothing}
-      ${configuration ? advancedTotalsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason, totals, nativePreview, freshTotals, automaticSourcesFresh, existingConfiguration) : nothing}
+      ${!labelOnly && configuration && meterInventory ? totalsMigrationReview(meterInventory, updateConfiguration, nativePreview, freshTotals) : nothing}
+      ${!labelOnly && configuration && totals ? defaultTotalsSection(configuration, totals, nativeTotalsReadable, nativeTotalsWritable, updateConfiguration, nativeGraphState, meterInventory?.capabilities.reason_codes, existingConfiguration) : nothing}
+      ${!labelOnly && configuration && totals ? automaticTotalsSection(configuration, freshTotals || preserveNamedAutomaticDraft ? totals : null, automaticTotalsWritable, updateConfiguration, existingConfiguration) : nothing}
+      ${!labelOnly && configuration ? advancedTotalsEditor(configuration, drafts, updateConfiguration, managedTotals, managedTotalsReason, totals, nativePreview, freshTotals, automaticSourcesFresh, existingConfiguration) : nothing}
       ${reviewRequirements}
+      ${!continueAllowed || !draftsAreValid(inventory, drafts, labelOnly, existingConfiguration) ? html`<p class="warning-band" role="status" data-ct-blocked-reason>${blockedReason || ctDraftBlockedReason(inventory, drafts, labelOnly, existingConfiguration) || "Resolve the configuration requirements above before continuing."}</p>` : nothing}
+      ${skip && existingConfiguration && !labelOnly ? html`<p>Continue with saved meter settings to leave draft configuration changes unapplied.</p>` : nothing}
       <footer class="action-footer offset-footer">
-        <button class="secondary" @click=${back}>Back</button>
-        <button class="secondary" data-action="skip-ct" ?disabled=${busy} @click=${skip}>Skip to Calibration</button>
-        <button class="primary" data-action="continue" ?disabled=${busy || !continueAllowed || !draftsAreValid(inventory, drafts, labelOnly, existingConfiguration)} @click=${review}>${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Starting calibration…` : "Continue"}</button>
+        <button class="secondary" ?disabled=${busy} @click=${back}>Back</button>
+        ${skip && existingConfiguration && !labelOnly ? html`<button class="secondary" data-action="skip-circuit-changes" ?disabled=${busy} @click=${skip}>Continue to calibration with saved settings</button>` : nothing}
+
+        <button class="primary" data-action="continue" ?disabled=${busy || !continueAllowed || !draftsAreValid(inventory, drafts, labelOnly, existingConfiguration)} @click=${review}>${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>${busyLabel}` : actionLabel}</button>
       </footer>
     </section>
   `;
+}
+
+function ctDraftBlockedReason(inventory: CtInventory, drafts: Map<number, CtDraft>, labelOnly: boolean, existingConfiguration: MeterConfigurationRequest | null): string {
+  for (const channel of inventory.channels) {
+    const draft = drafts.get(channel.channel);
+    const name = `CT${channel.channel}`;
+    if (!draft || !draft.name.trim()) return `${name}: enter a name.`;
+    if (labelOnly || validDraft(inventory, draft, existingConfiguration?.channels.find((item) => item.channel === channel.channel))) continue;
+    if (!draft.modelId) return `${name}: choose a CT model.`;
+    if (draft.modelId === "custom" && (!Number.isInteger(draft.customGainCt) || draft.customGainCt! < 1 || draft.customGainCt! > 65535)) return `${name}: enter a custom gain from 1 to 65535.`;
+    const preset = inventory.catalog.presets.find((item) => item.model_id === draft.modelId);
+    if ((draft.modelId === "custom" || preset?.requires_burden_jumper_cut) && !draft.burdenAcknowledged && !keepsExistingCtSettings(draft, existingConfiguration?.channels.find((item) => item.channel === channel.channel))) return `${name}: confirm the burden-output requirement beside the CT model.`;
+    return `${name}: choose a valid model and reporting range.`;
+  }
+  return "";
 }
 
 const ROLES = ["grid", "solar", "generator", "subpanel", "branch", "two_pole", "custom", "unused"] as const;

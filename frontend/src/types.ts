@@ -496,6 +496,7 @@ export interface SessionStatus {
   offset_disposition?: "not_started" | "in_progress" | "completed" | "skipped" | "partial";
   offset_boards?: OffsetBoardStatus[];
   has_pending_calibration?: boolean;
+  has_pending_gain_calibration?: boolean;
   calibration_plan?: "standard" | "full";
   configured_offset_targets?: Array<[number, 1 | 2]>;
 }

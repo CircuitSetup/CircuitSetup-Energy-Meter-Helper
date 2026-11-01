@@ -12,11 +12,9 @@ import {
 } from "../src/workflow-model";
 
 const base: WorkflowContext = {
-  journeyOrigin: "new_install",
   configurationMode: "helper_managed",
   legacyChoice: null,
   calibrationPlan: "standard",
-  canonicalConfigurationChanged: true,
   normalTransactionRequired: true,
   normalTransactionActive: false,
   normalTransactionVerified: false,
@@ -57,22 +55,22 @@ describe("workflowRoutes", () => {
     },
     {
       name: "existing helper-managed meter",
-      changes: { journeyOrigin: "existing_meter", normalTransactionRequired: false },
+      changes: { normalTransactionRequired: false },
       expected: ["setup", "meter", "ct", "calibration-plan", "safety", "voltage", "current", "summary"],
     },
     {
       name: "legacy meter awaiting a choice",
-      changes: { journeyOrigin: "existing_meter", configurationMode: "legacy_editable" },
+      changes: { configurationMode: "legacy_editable" },
       expected: ["setup", "legacy-review"],
     },
     {
       name: "legacy meter managed by the helper",
-      changes: { journeyOrigin: "existing_meter", configurationMode: "legacy_editable", legacyChoice: "manage_with_helper" },
+      changes: { configurationMode: "legacy_editable", legacyChoice: "manage_with_helper" },
       expected: ["setup", "legacy-review", "meter", "ct", "install-configuration", "calibration-plan", "safety", "voltage", "current", "summary"],
     },
     {
       name: "legacy meter calibrated without migration",
-      changes: { journeyOrigin: "existing_meter", configurationMode: "legacy_editable", legacyChoice: "calibrate_only", normalTransactionRequired: false },
+      changes: { configurationMode: "legacy_editable", legacyChoice: "calibrate_only", normalTransactionRequired: false },
       expected: ["setup", "legacy-review", "calibration-plan", "safety", "voltage", "current", "summary"],
     },
     {
@@ -183,7 +181,6 @@ describe("workflow navigation", () => {
   it("derives Back from the selected branch", () => {
     expect(previousWorkflowRoute(context(), "ct")).toBe("meter");
     expect(previousWorkflowRoute(context({
-      journeyOrigin: "existing_meter",
       configurationMode: "legacy_editable",
       legacyChoice: "calibrate_only",
       normalTransactionRequired: false,
