@@ -353,6 +353,7 @@ def _official_addon_info() -> dict[str, Any]:
         "homeassistant": None,
         "icon": True,
         "logo": True,
+        "log_format": "plain",
         "name": "ESPHome Device Builder",
         "repository": "5c53de3b",
         "slug": "5c53de3b_esphome",
