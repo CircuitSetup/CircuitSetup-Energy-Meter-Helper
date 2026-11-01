@@ -54,7 +54,7 @@ jobs:
           # Firmware checks consume every integration render dependency, its
           # catalogs, and the workflow/pin inputs that select the firmware toolchain.
           if printf '%s\n' "$changed_files" | grep -Eq \
-            '^(custom_components/circuitsetup_energy_meter_helper/(data/.*\.json|.*\.py)|(custom_components/|tests/fixtures/).*\.ya?ml|tests/test_firmware_.*\.py|scripts/(generate_esphome_validation_configs|verify_firmware_contract)\.py|\.github/workflows/.*\.yml|pyproject\.toml)$'; then
+            '^(custom_components/circuitsetup_energy_meter_helper/(data/.*\.json|.*\.py)|(custom_components/|tests/fixtures/).*\.ya?ml|tests/firmware/.*\.(cpp|h)|tests/test_firmware_.*\.py|scripts/(generate_esphome_validation_configs|verify_firmware_contract)\.py|\.github/workflows/.*\.yml|pyproject\.toml)$'; then
             echo "firmware=true" >> "$GITHUB_OUTPUT"
           else
             echo "firmware=false" >> "$GITHUB_OUTPUT"
@@ -199,3 +199,62 @@ jobs:
         run: uvx --python 3.12 --from esphome==2026.8.0 esphome compile generated-esphome/used-unity-pq.yaml
       - name: Compile the two-voltage add-on mutation with ESPHome 2026.8.0
         run: uvx --python 3.12 --from esphome==2026.8.0 esphome compile generated-esphome/two-voltages-used-m8.yaml
+  esphome-dev-calibration-contract:
+    name: ESPHome dev calibration contract
+    needs: changes
+    if: needs.changes.outputs.firmware == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          python-version: "3.14"
+      - run: uv sync --all-groups
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: esphome/esphome
+          ref: dev
+          path: esphome-dev
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: CircuitSetup/Expandable-6-Channel-ESP32-Energy-Meter
+          ref: 29e2c5deef983bd9e9ee104f49e321e6f6634ed9
+          path: firmware
+      - name: Install and identify the checked-out ESPHome dev revision
+        run: |
+          git -C esphome-dev log -1 --format='ESPHome dev %H %s'
+          uv venv --python 3.12 .superpowers/esphome-dev-runtime
+          uv pip install --python .superpowers/esphome-dev-runtime/bin/python -e ./esphome-dev
+      - name: Run actual ATM90E32 host tests with ASan and UBSan
+        env:
+          UBSAN_OPTIONS: halt_on_error=1
+          ATM90E32_CONTRACT_LOG_DIR: ${{ github.workspace }}/atm90e32-contract-logs
+        run: |
+          test -f esphome-dev/tests/components/atm90e32/calibration_register_verification_test.cpp
+          cat tests/firmware/atm90e32_helper_contract.cpp >> esphome-dev/tests/components/atm90e32/calibration_register_verification_test.cpp
+          cd esphome-dev
+          "$GITHUB_WORKSPACE/.superpowers/esphome-dev-runtime/bin/python" script/cpp_unit_test.py atm90e32
+      - name: Replay real firmware calibration logs through the Helper
+        env:
+          ATM90E32_CONTRACT_LOG_DIR: ${{ github.workspace }}/atm90e32-contract-logs
+        run: uv run --no-sync pytest -q tests/test_firmware_gain_contract.py
+      - name: Generate and validate the real package configurations on ESPHome dev
+        run: |
+          uv run --no-sync python scripts/generate_esphome_validation_configs.py firmware generated-esphome-dev
+          for config in generated-esphome-dev/*.yaml; do
+            .superpowers/esphome-dev-runtime/bin/python -m esphome config "$config"
+          done
+      - name: Compile main, two-voltage add-on, and 42-channel configurations using upstream ATM90E32
+        run: |
+          contract="$GITHUB_WORKSPACE/generated-esphome-dev/atm90e32.sha256"
+          (cd esphome-dev/esphome/components/atm90e32 && sha256sum *.h *.cpp) > "$contract"
+          for name in used-unity-pq two-voltages-used-m8 max-topology-unused-m8; do
+            config="generated-esphome-dev/$name.yaml"
+            .superpowers/esphome-dev-runtime/bin/python -m esphome compile --only-generate "$config"
+            mapfile -d '' sources < <(find generated-esphome-dev/.esphome/build -path '*/src/esphome/components/atm90e32/atm90e32.cpp' -print0)
+            test "${#sources[@]}" -gt 0
+            for source in "${sources[@]}"; do
+              (cd "$(dirname "$source")" && sha256sum --check "$contract")
+            done
+            .superpowers/esphome-dev-runtime/bin/python -m esphome compile "$config"
+          done

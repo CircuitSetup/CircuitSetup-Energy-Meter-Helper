@@ -26,6 +26,9 @@ from custom_components.circuitsetup_energy_meter_helper.entity_catalog import (
 from custom_components.circuitsetup_energy_meter_helper.esphome_api import (
     ESPHomeSessionDisconnectedError,
 )
+from custom_components.circuitsetup_energy_meter_helper.log_parser import (
+    LogEvidenceError,
+)
 from custom_components.circuitsetup_energy_meter_helper.models import (
     StoredInterruptedSession,
 )
@@ -175,14 +178,25 @@ def test_current_calibrates_multiple_references_on_one_chip_in_one_gain_run() ->
     asyncio.run(run())
 
 
-def test_current_rejects_non_target_or_voltage_gain_change() -> None:
+@pytest.mark.parametrize(
+    ("voltage_changes", "current_changes"),
+    (
+        ((False, False, False), (True, True, False)),
+        ((True, False, False), (True, False, False)),
+    ),
+    ids=("non-target-current-only", "voltage-only"),
+)
+def test_current_rejects_non_target_or_voltage_gain_change(
+    voltage_changes: tuple[bool, bool, bool],
+    current_changes: tuple[bool, bool, bool],
+) -> None:
     async def run() -> None:
         meter = binding(0)
         session = FakeCalibrationSession(
             gain_evidence(
                 "meter_main1",
-                voltage_changes=(True, False, False),
-                current_changes=(True, True, False),
+                voltage_changes=voltage_changes,
+                current_changes=current_changes,
                 reference_currents=(10.0, 0.0, 0.0),
             )
         )
@@ -394,8 +408,20 @@ def test_interrupted_recovery_refuses_to_zero_without_fresh_metadata() -> None:
 
 
 @pytest.mark.parametrize("mismatch_delay", (0.25, 0.6))
+@pytest.mark.parametrize(
+    ("failure_line", "error_type"),
+    (
+        ("Mismatch detected for Phase A!", CalibrationInvariantError),
+        (
+            "Gain calibration failed; rollback readback verification failed.",
+            LogEvidenceError,
+        ),
+    ),
+)
 def test_streaming_gain_waits_for_delayed_register_mismatch(
     mismatch_delay: float,
+    failure_line: str,
+    error_type: type[Exception],
 ) -> None:
     async def run() -> None:
         meter = native_meter()
@@ -421,8 +447,7 @@ def test_streaming_gain_waits_for_delayed_register_mismatch(
                     self.log_lines.extend(lines)
                     await asyncio.sleep(mismatch_delay)
                     self.log_lines.append(
-                        "[E][atm90e32:1211] [CALIBRATION][meter_main1] "
-                        "Mismatch detected for Phase A!"
+                        "[E][atm90e32:1211] [CALIBRATION][meter_main1] " + failure_line
                     )
 
                 asyncio.create_task(stream())
@@ -435,7 +460,7 @@ def test_streaming_gain_waits_for_delayed_register_mismatch(
             evidence_timeout=0.8,
         )
 
-        with pytest.raises(CalibrationInvariantError, match="verification"):
+        with pytest.raises(error_type, match="verification|rollback readback"):
             await engine.async_calibrate_current(
                 "aabbccddeeff", session, meter, 2, 12.43, 1.0, 1.0
             )
