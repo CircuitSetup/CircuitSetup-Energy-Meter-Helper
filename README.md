@@ -54,9 +54,10 @@ The configuration footer follows the work being reviewed: **Review configuration
 changes**, **Save Home Assistant names**, or **Continue to calibration**. Review,
 write, validation, and installation remain explicit stages.
 
-Choose **Standard calibration** to calibrate voltage and current while retaining
-current offsets, or **Full calibration** for offsets, voltage, then current.
-Selections do not start calibration: review the choice and select **Start**.
+Choose **Calibrate voltage and current** to retain current offsets, or open
+**Advanced calibration** and choose **Include offset calibration** to calibrate
+offsets, voltage, then current. Review the choice and select **Continue to
+calibration**; selecting an option alone does not start calibration.
 Skipping or partially completing offsets keeps the remaining gain calibration
 available.
 
