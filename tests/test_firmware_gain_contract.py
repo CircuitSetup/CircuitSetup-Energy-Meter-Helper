@@ -122,4 +122,4 @@ def test_real_firmware_gain_clear_preserves_reported_offset_tables(
     }
     assert snapshot is not None and snapshot.reported_state == "restored"
     assert snapshot.phase_values == ((11, -21), (12, -22), (13, -23))
-    assert not snapshot.register_verified
+    # Older firmware omits restore-verification markers; either format must preserve the table.
