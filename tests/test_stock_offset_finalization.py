@@ -307,9 +307,9 @@ def test_gain_only_restart_retains_strict_offsets_under_original_claim(failure):
         CalibrationEngine,
         EntityCatalog,
         RestartSession,
+        _category_restore,
         _ignore_marker,
         _prime_origin,
-        _restore,
         bind_meter,
         substitutions,
         topology,
@@ -317,7 +317,14 @@ def test_gain_only_restart_retains_strict_offsets_under_original_claim(failure):
 
     async def run():
         gains = ((7301, 28001), (7301, 28002), (7301, 28003))
-        api = RestartSession({"meter_main1": _restore("meter_main1", gains)}, addons=0)
+        api = RestartSession(
+            {
+                "meter_main1": _category_restore(
+                    "meter_main1", gains=gains, offsets=OLD, power_offsets=OLD
+                )
+            },
+            addons=0,
+        )
         binding = bind_meter(
             EntityCatalog(api.entities, 1), topology(0), substitutions(0)
         )

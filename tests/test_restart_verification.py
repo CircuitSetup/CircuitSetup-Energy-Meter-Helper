@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from hashlib import sha256
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -943,6 +944,69 @@ def test_real_log_fallback_accepts_complete_known_unchanged_restore_block() -> N
             "aabbccddeeff", session, binding, substitutions=substitutions(0)
         )
         assert len(saved) == 1
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("gains_only", (False, True))
+@pytest.mark.parametrize("failure", (None, "gain", "offset_marker"))
+def test_gain_only_restart_accepts_saved_offsets_without_verifying_them(
+    gains_only: bool, failure: str | None
+) -> None:
+    async def run() -> None:
+        # Captured from ESPHome be2c423f15 with both offset categories restored.
+        log = (
+            Path(__file__).parent / "fixtures/logs/gain_restore_with_offsets.log"
+        ).read_text(encoding="utf-8")
+        if failure == "offset_marker":
+            log = log.replace("Offset calibration restore verified.", "")
+        expected = {"meter_main1": ((1440, 800), (1444, 802), (1449, 804))}
+        if failure == "gain":
+            expected["meter_main1"] = ((1441, 800), (1444, 802), (1449, 804))
+        session = LogFallbackRestartSession(tuple(log.splitlines()))
+        binding = bind_meter(
+            EntityCatalog(session.entities, 1), topology(0), substitutions(0)
+        )
+        sessions = SessionManager()
+        await _prime_origin(sessions, session, binding, expected)
+        saved: list[VerifiedCalibrationRecord] = []
+
+        async def persist(record: VerifiedCalibrationRecord) -> None:
+            saved.append(record)
+
+        engine = CalibrationEngine(
+            sessions,
+            _ignore_marker,
+            persist_verified=persist,
+            restart_restore_timeout=0.02,
+        )
+        verify = (
+            engine.async_verify_gains_after_restart
+            if gains_only
+            else engine.async_verify_after_restart
+        )
+        if failure or not gains_only:
+            match = (
+                "exactly"
+                if failure == "gain"
+                else "restore verification is missing"
+                if failure == "offset_marker"
+                else "unexpected offset"
+            )
+            with pytest.raises(RestartVerificationError, match=match):
+                await verify(
+                    "aabbccddeeff", session, binding, substitutions=substitutions(0)
+                )
+            assert saved == []
+            assert sessions.pending_calibration("aabbccddeeff") is not None
+        else:
+            result = await verify(
+                "aabbccddeeff", session, binding, substitutions=substitutions(0)
+            )
+            assert saved == [result.record]
+            assert result.record.groups[0].phase_gains == expected["meter_main1"]
+            assert not result.record.has_offset_calibration
+            assert sessions.pending_calibration("aabbccddeeff") is None
 
     asyncio.run(run())
 

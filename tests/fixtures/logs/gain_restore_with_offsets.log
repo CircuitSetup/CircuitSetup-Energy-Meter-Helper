@@ -1,0 +1,32 @@
+[18:07:08][C][:389]: ATM90E32:
+[18:07:08][C][atm90e32:365]:   Update Interval: never
+[18:07:08][I][atm90e32:338]: [CALIBRATION][meter_main1]
+[18:07:08][I][atm90e32:339]: [CALIBRATION][meter_main1] ============== Restored offset calibration from memory ==============
+[18:07:08][I][atm90e32:340]: [CALIBRATION][meter_main1] --------------------------------------------------------------
+[18:07:08][I][atm90e32:341]: [CALIBRATION][meter_main1] | Phase | offset_voltage | offset_current |
+[18:07:08][I][atm90e32:342]: [CALIBRATION][meter_main1] --------------------------------------------------------------
+[18:07:08][I][atm90e32:344]: [CALIBRATION][meter_main1] |   A   |         11      |        -21      |
+[18:07:08][I][atm90e32:344]: [CALIBRATION][meter_main1] |   B   |         12      |        -22      |
+[18:07:08][I][atm90e32:344]: [CALIBRATION][meter_main1] |   C   |         13      |        -23      |
+[18:07:08][I][atm90e32:347]: [CALIBRATION][meter_main1] ==============================================================\n
+[18:07:08][I][atm90e32:351]: [CALIBRATION][meter_main1]
+[18:07:08][I][atm90e32:352]: [CALIBRATION][meter_main1] ============ Restored power offset calibration from memory ============
+[18:07:08][I][atm90e32:353]: [CALIBRATION][meter_main1] ---------------------------------------------------------------------
+[18:07:08][I][atm90e32:354]: [CALIBRATION][meter_main1] | Phase | offset_active_power | offset_reactive_power |
+[18:07:08][I][atm90e32:355]: [CALIBRATION][meter_main1] ---------------------------------------------------------------------
+[18:07:08][I][atm90e32:357]: [CALIBRATION][meter_main1] |   A   |           11        |           -21        |
+[18:07:08][I][atm90e32:357]: [CALIBRATION][meter_main1] |   B   |           12        |           -22        |
+[18:07:08][I][atm90e32:357]: [CALIBRATION][meter_main1] |   C   |           13        |           -23        |
+[18:07:08][I][atm90e32:360]: [CALIBRATION][meter_main1] =====================================================================
+[18:07:08][I][atm90e32:364]: [CALIBRATION][meter_main1] Offset calibration restore verified.
+[18:07:08][I][atm90e32:367]: [CALIBRATION][meter_main1] Power offset calibration restore verified.
+[18:07:08][I][atm90e32:373]: [CALIBRATION][meter_main1]
+[18:07:08][I][atm90e32:374]: [CALIBRATION][meter_main1] ============ Restoring saved gain calibrations to registers ============
+[18:07:08][I][atm90e32:375]: [CALIBRATION][meter_main1] ---------------------------------------------------------------------
+[18:07:08][I][atm90e32:376]: [CALIBRATION][meter_main1] | Phase | voltage_gain | current_gain |
+[18:07:08][I][atm90e32:377]: [CALIBRATION][meter_main1] ---------------------------------------------------------------------
+[18:07:08][I][atm90e32:379]: [CALIBRATION][meter_main1] |   A   |      1440    |       800    |
+[18:07:08][I][atm90e32:379]: [CALIBRATION][meter_main1] |   B   |      1444    |       802    |
+[18:07:08][I][atm90e32:379]: [CALIBRATION][meter_main1] |   C   |      1449    |       804    |
+[18:07:08][I][atm90e32:382]: [CALIBRATION][meter_main1] =====================================================================\n
+[18:07:08][I][atm90e32:383]: [CALIBRATION][meter_main1] Gain calibration loaded and verified successfully.

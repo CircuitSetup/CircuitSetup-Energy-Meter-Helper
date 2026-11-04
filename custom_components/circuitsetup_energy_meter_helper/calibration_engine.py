@@ -423,6 +423,7 @@ class CalibrationEngine:
                 expected_offsets,
                 expected_power_offsets,
                 generation=generation,
+                gains_only=gains_only,
             )
             _require_connected_generation(session, generation)
             rebound = self._rebind_after_reconnect(session, binding, substitutions)
@@ -2297,6 +2298,7 @@ def _validate_restart_evidence(
     expected_power_offsets: Mapping[str, PhasePowerOffsetTable],
     *,
     generation: int,
+    gains_only: bool = False,
 ) -> None:
     expected_instance_ids = (
         set(expected_gains) | set(expected_offsets) | set(expected_power_offsets)
@@ -2347,6 +2349,8 @@ def _validate_restart_evidence(
             raise RestartVerificationError(
                 f"{instance_id}: restored gains do not exactly match expected gains"
             )
+        if gains_only:
+            continue
         offset_expected = expected_offsets.get(instance_id)
         if offset_expected is None and (
             restored.phase_offsets is not None or restored.offset_register_verified
