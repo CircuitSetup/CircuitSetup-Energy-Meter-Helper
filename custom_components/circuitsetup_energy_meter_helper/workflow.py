@@ -22,15 +22,19 @@ from aiohasupervisor.models import AddonState as SupervisorAddonState
 from aiohasupervisor.models.addons import InstalledAddonComplete
 from aiohasupervisor.models.ingress import CreateSessionOptions
 from aiohttp import hdrs
-from homeassistant.components.hassio import HassIO, get_supervisor_client
+from homeassistant.components.hassio import get_supervisor_client
+from homeassistant.components.hassio import handler as hassio_handler
 from homeassistant.components.hassio.const import (
-    DATA_COMPONENT,
+    DOMAIN as HASSIO_DOMAIN,
+)
+from homeassistant.components.hassio.const import (
     X_HASS_SOURCE,
     X_INGRESS_PATH,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.hassio import is_hassio
 
 try:
     from homeassistant.components.http.const import DATA_SUPERVISOR_USER  # type: ignore[attr-defined]
@@ -3890,8 +3894,7 @@ async def async_installed_device_builders(
     hass: HomeAssistant,
 ) -> dict[str, InstalledAddonComplete]:
     """Discover installed official channels, including stopped add-ons."""
-    hassio = hass.data.get(DATA_COMPONENT)
-    if not isinstance(hassio, HassIO):
+    if not is_hassio(hass):
         return {}
     supervisor = get_supervisor_client(hass)
     installed = {}
@@ -3927,7 +3930,6 @@ async def create_device_builder(
     )
     if addon is None:
         return None
-    hassio = hass.data[DATA_COMPONENT]
     supervisor = get_supervisor_client(hass)
     if addon.available is not True:
         raise SupervisorResponseError(
@@ -3965,13 +3967,20 @@ async def create_device_builder(
     ingress_token = ingress_entry.removeprefix(_INGRESS_ENTRY_PREFIX)
     _validate_supervisor_token(ingress_token, "Device Builder ingress")
     await _async_validated_ingress_session(hass, supervisor)
-    url = str(hassio.base_url.with_path(f"/ingress/{ingress_token}"))
+    if get_connection := getattr(hassio_handler, "get_supervisor_connection", None):
+        connection = get_connection(hass)
+        base_url, websession = connection.base_url, connection.session
+    else:
+        # Older HA releases keep the shared TCP transport on the HassIO client.
+        hassio = hass.data[HASSIO_DOMAIN]
+        base_url, websession = hassio.base_url, hassio.websession
+    url = str(base_url.with_path(f"/ingress/{ingress_token}"))
 
     async def connect(websocket_url: str) -> Any:
         session = await _async_validated_ingress_session(hass, supervisor)
         cookie = SimpleCookie()
         cookie[_INGRESS_SESSION_COOKIE] = session
-        return await hassio.websession.ws_connect(
+        return await websession.ws_connect(
             websocket_url,
             headers={
                 hdrs.COOKIE: cookie.output(header="", sep="").strip(),

@@ -73,6 +73,7 @@ class FakeHass:
     def __init__(self) -> None:
         self.config_entries = FakeConfigEntries()
         self.config = SimpleNamespace(
+            components=set(),
             config_dir=".", path=lambda *parts: str(Path(".").joinpath(*parts)),
         )
         self.data: dict[str, object] = {}

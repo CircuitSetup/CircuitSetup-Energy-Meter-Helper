@@ -21,11 +21,12 @@ from aioesphomeapi import ButtonInfo as ApiButtonInfo
 from aioesphomeapi import NumberInfo as ApiNumberInfo
 from aioesphomeapi import SensorInfo as ApiSensorInfo
 from aiohttp import ClientConnectionError, WSMessage, WSMsgType, WSServerHandshakeError
-from homeassistant.components.hassio import HassIO
-from homeassistant.components.hassio.const import DATA_COMPONENT
+from homeassistant.components.hassio import handler as hassio_handler
+from homeassistant.components.hassio.const import DOMAIN as HASSIO_DOMAIN
 from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.exceptions import ConfigEntryNotReady, Unauthorized
 import voluptuous as vol
+from yarl import URL
 # isort: on
 
 try:
@@ -320,7 +321,7 @@ class FakeHass:
         }
         self.config_entries = FakeConfigEntries(entries, events)
         self.loop = asyncio.get_event_loop()
-        self.config = SimpleNamespace(config_dir=".", path=lambda *parts: str(Path(".").joinpath(*parts)))
+        self.config = SimpleNamespace(config_dir=".", components=set(), path=lambda *parts: str(Path(".").joinpath(*parts)))
         self.tasks: list[asyncio.Task[None]] = []
         self.executor_jobs: list[tuple[Any, tuple[Any, ...]]] = []
 
@@ -553,6 +554,24 @@ class SupervisorTransport:
     async def ws_connect(self, url: str, **kwargs: Any) -> BuilderTransportWebSocket:
         self.websocket_requests.append((url, kwargs))
         return self.websocket
+
+
+def _install_supervisor_transport(
+    hass: FakeHass, transport: SupervisorTransport, *, unix_socket: Path | None = None
+) -> None:
+    """Keep HA's real client factory, replacing only its external transport."""
+    hass.config.components.add(HASSIO_DOMAIN)
+    if connection_type := getattr(hassio_handler, "SupervisorConnection", None):
+        hass.data[hassio_handler.KEY_SUPERVISOR_CONNECTION] = connection_type(
+            session=transport,
+            base_url=URL("http://localhost" if unix_socket else "http://supervisor"),
+            unix_socket=unix_socket,
+        )
+    else:
+        assert unix_socket is None
+        hass.data[HASSIO_DOMAIN] = hassio_handler.HassIO(
+            asyncio.get_running_loop(), transport, "supervisor"
+        )
 
 
 class FakeConnection:
@@ -1485,14 +1504,30 @@ def test_setup_primes_ct_catalog_outside_event_loop(
     asyncio.run(run())
 
 
-def test_production_builder_ingress_uses_supervisor_user_on_setup_and_reconnect() -> None:
+@pytest.mark.parametrize(
+    "unix_socket",
+    [
+        None,
+        pytest.param(
+            Path("/run/supervisor/supervisor.sock"),
+            marks=pytest.mark.skipif(
+                not hasattr(hassio_handler, "SupervisorConnection"),
+                reason="Home Assistant predates Supervisor socket transport",
+            ),
+        ),
+    ],
+    ids=["tcp", "unix-socket"],
+)
+def test_production_builder_ingress_uses_supervisor_user_on_setup_and_reconnect(
+    unix_socket: Path | None,
+) -> None:
     """Supervisor requires its designated user's ID for every ingress session."""
 
     async def run() -> None:
         websocket = BuilderTransportWebSocket("")
         transport = SupervisorTransport(websocket)
         hass = FakeHass()
-        hass.data[DATA_COMPONENT] = HassIO(asyncio.get_running_loop(), transport, "supervisor")
+        _install_supervisor_transport(hass, transport, unix_socket=unix_socket)
         entry = FakeEntry(data={})
 
         assert await async_setup_entry(hass, entry)
@@ -1520,6 +1555,19 @@ def test_production_builder_ingress_uses_supervisor_user_on_setup_and_reconnect(
                 {"user_id": "supervisor-user"},
                 {"user_id": "replacement-supervisor"},
             ]
+            base_url = "http://localhost" if unix_socket else "http://supervisor"
+            assert transport.websocket_requests == [
+                (
+                    f"{base_url}/ingress/official-entry/ws",
+                    {
+                        "headers": {
+                            "Cookie": "ingress_session=issued-session",
+                            "X-Hass-Source": "core.ingress",
+                            "X-Ingress-Path": "/api/hassio_ingress/official-entry",
+                        },
+                    },
+                )
+            ] * 2
         finally:
             await async_unload_entry(hass, entry)
 
@@ -1547,7 +1595,7 @@ def test_unavailable_supervisor_user_retries_without_requesting_ingress(user: An
             hass.data.pop(DATA_SUPERVISOR_USER)
         else:
             hass.data[DATA_SUPERVISOR_USER] = user
-        hass.data[DATA_COMPONENT] = HassIO(asyncio.get_running_loop(), transport, "supervisor")
+        _install_supervisor_transport(hass, transport)
         entry = FakeEntry(data={})
 
         with pytest.raises(ConfigEntryNotReady, match="temporarily unavailable"):
@@ -1603,11 +1651,7 @@ packages:
             runtime_data=SimpleNamespace(device_info=device_info),
         )
         hass = FakeHass((esphome_entry,))
-        hass.data[DATA_COMPONENT] = HassIO(
-            asyncio.get_running_loop(),
-            transport,  # type: ignore[arg-type]
-            "supervisor",
-        )
+        _install_supervisor_transport(hass, transport)
         entry = FakeEntry(data={"esphome_entry_id": "meter"})
 
         assert await async_setup_entry(hass, entry)
@@ -1710,13 +1754,7 @@ packages:
 
         await async_unload_entry(hass, entry)
         entry.data = {CONF_ESPHOME_ENTRY_ID: "new-meter"}
-        websocket = BuilderTransportWebSocket(content)
-        transport = SupervisorTransport(websocket)
-        hass.data[DATA_COMPONENT] = HassIO(
-            asyncio.get_running_loop(),
-            transport,  # type: ignore[arg-type]
-            "supervisor",
-        )
+        transport.websocket = BuilderTransportWebSocket(content)
         assert await async_setup_entry(hass, entry)
         reloaded = hass.data[DOMAIN][entry.entry_id]
         assert reloaded["websocket_controller"].esphome_entry_id == "new-meter"
@@ -1746,7 +1784,7 @@ def test_setup_uses_installed_or_selected_builder(installed, selected, overrides
         websocket = BuilderTransportWebSocket("")
         transport = SupervisorTransport(websocket, installed_builders=installed, addon_overrides=overrides)
         hass = FakeHass()
-        hass.data[DATA_COMPONENT] = HassIO(asyncio.get_running_loop(), transport, "supervisor")
+        _install_supervisor_transport(hass, transport)
         entry = FakeEntry(data={}, options={"device_builder_slug": selected} if selected else {})
         assert await async_setup_entry(hass, entry)
         builder = hass.data[DOMAIN][entry.entry_id]["device_builder"]
@@ -1769,7 +1807,7 @@ def test_setup_requires_choice_when_multiple_builders_installed():
             "5c53de3b_esphome-dev": "ESPHome Device Builder (dev)",
         })
         hass = FakeHass()
-        hass.data[DATA_COMPONENT] = HassIO(asyncio.get_running_loop(), transport, "supervisor")
+        _install_supervisor_transport(hass, transport)
         with pytest.raises(ConfigEntryNotReady, match="Choose.*Device Builder"):
             await async_setup_entry(hass, FakeEntry(data={}))
         assert not transport.websocket_requests
@@ -1812,7 +1850,7 @@ def test_device_builder_connection_failure_retries_after_owner_cleanup(
 
         monkeypatch.setattr(transport, "ws_connect", unavailable)
         hass = FakeHass()
-        hass.data[DATA_COMPONENT] = HassIO(asyncio.get_running_loop(), transport, "supervisor")
+        _install_supervisor_transport(hass, transport)
         entry = FakeEntry(data={})
 
         with pytest.raises(ConfigEntryNotReady, match="temporarily unavailable") as retry:
@@ -1851,12 +1889,9 @@ def test_supervisor_operational_failure_retries_after_setup_owner_unwind(
         monkeypatch.setattr(ProvisioningCoordinator, "async_stop", tracked_stop)
         websocket = BuilderTransportWebSocket("")
         hass = FakeHass()
-        hass.data[DATA_COMPONENT] = HassIO(
-            asyncio.get_running_loop(),
-            SupervisorTransport(
-                websocket, request_error=ClientConnectionError("offline")
-            ),  # type: ignore[arg-type]
-            "supervisor",
+        _install_supervisor_transport(
+            hass,
+            SupervisorTransport(websocket, request_error=ClientConnectionError("offline")),
         )
         entry = FakeEntry(data={})
         with pytest.raises(ConfigEntryNotReady, match="temporarily unavailable"):
@@ -1865,10 +1900,8 @@ def test_supervisor_operational_failure_retries_after_setup_owner_unwind(
         assert entry.entry_id not in hass.data[DOMAIN]
 
         absent_hass = FakeHass()
-        absent_hass.data[DATA_COMPONENT] = HassIO(
-            asyncio.get_running_loop(),
-            SupervisorTransport(websocket, addon_status=404),  # type: ignore[arg-type]
-            "supervisor",
+        _install_supervisor_transport(
+            absent_hass, SupervisorTransport(websocket, addon_status=404)
         )
         assert await async_setup_entry(absent_hass, entry)
         assert absent_hass.data[DOMAIN][entry.entry_id]["device_builder"] is None
@@ -1928,11 +1961,7 @@ def test_malformed_successful_supervisor_metadata_is_retryable_setup_failure(
             session_value=session_value,
         )
         hass = FakeHass()
-        hass.data[DATA_COMPONENT] = HassIO(
-            asyncio.get_running_loop(),
-            transport,
-            "supervisor",  # type: ignore[arg-type]
-        )
+        _install_supervisor_transport(hass, transport)
         entry = FakeEntry(data={})
 
         with pytest.raises(ConfigEntryNotReady, match="temporarily unavailable"):
@@ -1966,11 +1995,7 @@ def test_verified_official_addon_unavailable_state_is_optional_capability(
         websocket = BuilderTransportWebSocket("")
         transport = SupervisorTransport(websocket, addon_overrides=addon_overrides)
         hass = FakeHass()
-        hass.data[DATA_COMPONENT] = HassIO(
-            asyncio.get_running_loop(),
-            transport,
-            "supervisor",  # type: ignore[arg-type]
-        )
+        _install_supervisor_transport(hass, transport)
         entry = FakeEntry(data={})
 
         assert await async_setup_entry(hass, entry)

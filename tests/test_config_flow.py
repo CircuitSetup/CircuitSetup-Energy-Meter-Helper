@@ -46,6 +46,7 @@ class FakeHass:
 
     def __init__(self, entry: FakeEntry) -> None:
         self.config_entries = FakeConfigEntries(entry)
+        self.config = SimpleNamespace(components=set())
         self.data = {}
 
 
