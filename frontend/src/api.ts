@@ -546,6 +546,7 @@ function session(value: unknown, label: string): SessionStatus {
     if (targets.some(([board, stage]) => board < 0 || board > 6 || stage !== 1 && stage !== 2)
       || new Set(targets.map(([board, stage]) => `${board}:${stage}`)).size !== targets.length) throw new Error(`${label} response is invalid`);
   }
+  if (item.has_pending_gain_calibration !== undefined) boolean(item.has_pending_gain_calibration, label);
   const offsetFields = [item.offset_capability, item.offset_disposition, item.offset_boards, item.has_pending_calibration];
   if (offsetFields.every((field) => field === undefined)) return value as SessionStatus;
   if (offsetFields.some((field) => field === undefined)) throw new Error(`${label} response is invalid`);
@@ -1077,7 +1078,7 @@ export class HelperApi {
   });
   public rescan = () => this.call("rescan", (value) => setup(value, "rescan"));
   public adoptDevice = (deviceId: string) =>
-    this.call("adopt_device", (value) => { const item = record(value, "adopt_device"); string(item.device_id, "adopt_device"); string(item.configuration, "adopt_device"); return value as { device_id: string; configuration: string }; }, { device_id: deviceId });
+    this.call("adopt_device", (value) => { const item = record(value, "adopt_device"); string(item.device_id, "adopt_device"); string(item.configuration, "adopt_device"); if (item.imported !== undefined) boolean(item.imported, "adopt_device"); return value as { device_id: string; configuration: string; imported?: boolean }; }, { device_id: deviceId });
   public previewCtConfig = (
     deviceId: string,
     planId: string,

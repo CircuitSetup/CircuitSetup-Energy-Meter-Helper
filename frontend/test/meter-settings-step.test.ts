@@ -32,6 +32,16 @@ describe("meterSettingsStep", () => {
     expect(root.querySelector(".package-options")?.textContent).toContain("reactive power, apparent power, and power factor");
   });
 
+  it("keeps required voltage confirmation and custom inputs visible", () => {
+    const root = document.createElement("div");
+    const custom = { ...draft, electrical_system: "custom" as const, voltage_references: draft.voltage_references.map((reference) => ({ ...reference, transformer_model_id: "custom" })) };
+    render(meterSettingsStep(custom, catalog, false, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined, () => undefined), root);
+    for (const label of ["Multi-reference preparation acknowledgement", "main nominal voltage", "main custom voltage gain"]) {
+      expect(root.querySelector(`[aria-label="${label}"]`)?.closest("details:not([open])")).toBeNull();
+    }
+    expect(root.querySelector("[data-meter-blocked-reason]")?.textContent).toContain("separate voltage references");
+  });
+
   it("moves a voltage group atomically and requires multi-reference acknowledgement", () => {
     vi.stubGlobal("confirm", vi.fn(() => true));
     const root = document.createElement("div");
@@ -73,7 +83,7 @@ describe("meterSettingsStep", () => {
     const card = root.querySelector<HTMLElement>(".voltage-reference-card")!;
     expect(card.querySelectorAll(".voltage-reference-column")).toHaveLength(2);
     expect([...card.querySelectorAll(".voltage-reference-column:first-child label")].map((label) => label.textContent?.trim().split(" ")[0]))
-      .toEqual(["Label", "Nominal", "Custom"]);
+      .toEqual(["Label"]);
     expect(card.querySelector(".voltage-phase-column")?.querySelector("label")?.textContent).toContain("Phase label");
   });
 
@@ -162,7 +172,7 @@ describe("meterSettingsStep", () => {
     expect(root.querySelector(".package-options")?.closest("details")?.dataset.section).toBe("advanced-meter-settings");
     expect(root.querySelector('[aria-label="main phase label"]')?.closest("details")?.dataset.section).toBe("advanced-voltage-options");
     expect(root.querySelector('[aria-label="main_1 voltage reference"]')?.closest("details")?.dataset.section).toBe("advanced-voltage-options");
-    expect(root.querySelector('[aria-label="main nominal voltage"]')?.closest("details")?.dataset.section).toBe("advanced-voltage-options");
+    expect(root.querySelector('[aria-label="main nominal voltage"]')?.closest("details")).toBeNull();
   });
 
   it("adds and removes references by explicitly transferring physical groups", () => {

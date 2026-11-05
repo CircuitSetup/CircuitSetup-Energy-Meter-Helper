@@ -40,15 +40,12 @@ export type WorkflowRoute =
 
 export type WorkflowPhaseId =
   | "device"
-  | "legacy-review"
   | "meter"
-  | "ct"
   | "install-configuration"
   | "calibration"
-  | "save-calibration"
   | "complete";
 
-export type WorkflowStatus = "completed" | "current" | "upcoming";
+export type WorkflowStatus = "completed" | "current" | "upcoming" | "skipped";
 
 export interface WorkflowPhase {
   id: WorkflowPhaseId;
@@ -70,11 +67,9 @@ export interface WorkflowSubstep {
 }
 
 export interface WorkflowContext {
-  journeyOrigin: JourneyOrigin;
   configurationMode: ConfigurationMode;
   legacyChoice: ExistingConfigurationChoice;
   calibrationPlan: CalibrationPlan;
-  canonicalConfigurationChanged: boolean;
   normalTransactionRequired: boolean;
   normalTransactionActive: boolean;
   normalTransactionVerified: boolean;
@@ -106,23 +101,27 @@ export function workflowRoutes(context: WorkflowContext): WorkflowRoute[] {
   const routes: WorkflowRoute[] = ["setup"];
   const legacy = context.configurationMode === "legacy_editable";
   if (legacy) routes.push("legacy-review");
-  if (legacy && context.legacyChoice === null) return routes;
+  if (legacy && context.legacyChoice === null && !context.sessionState && !context.transactionPurpose
+    && !context.offsetRecoveryPending && !context.restartVerification) return routes;
 
   const configurationEnabled = context.configurationMode !== "runtime_only"
     && (!legacy || context.legacyChoice === "manage_with_helper");
-  if (configurationEnabled) {
-    routes.push("meter", "ct");
-    if (context.normalTransactionRequired
-      || context.normalTransactionActive
-      || context.normalTransactionVerified) {
-      routes.push("install-configuration");
-    }
+  if (configurationEnabled) routes.push("meter", "ct");
+  if (context.transactionPurpose !== "offset_preparation" && (context.normalTransactionRequired
+    || context.normalTransactionActive || context.normalTransactionVerified
+    || context.transactionPurpose === "install_configuration")) {
+    routes.push("install-configuration");
   }
 
   routes.push("calibration-plan");
-  if (context.calibrationPlan === "standard" || context.calibrationPlan === "full") {
+  const calibrationActive = context.calibrationPlan === "standard" || context.calibrationPlan === "full"
+    || context.sessionState !== null && context.sessionState !== "cancelled"
+    || context.pendingCalibration || context.restartVerification || saveCalibrationRequired(context)
+    || context.transactionPurpose === "offset_preparation";
+  if (calibrationActive) {
     routes.push("safety");
-    if (context.calibrationPlan === "full") routes.push("offset");
+    if (context.calibrationPlan === "full" || context.offsetRecoveryPending
+      || context.transactionPurpose === "offset_preparation") routes.push("offset");
     if (context.transactionPurpose === "offset_preparation" && !routes.includes("install-configuration")) routes.push("install-configuration");
     routes.push("voltage", "current");
     if (restartRequired(context)) routes.push("restart");
@@ -130,7 +129,7 @@ export function workflowRoutes(context: WorkflowContext): WorkflowRoute[] {
       routes.push("save-calibration");
     }
   }
-  if (context.calibrationPlan !== null) routes.push("summary");
+  if (context.calibrationPlan !== null || calibrationActive || context.completedWithoutCalibration) routes.push("summary");
   return routes;
 }
 
@@ -140,9 +139,10 @@ export function workflowPhases(
 ): WorkflowPhase[] {
   const routes = workflowRoutes(context);
   if (!routes.includes(activeRoute)) throw new Error(`invalid workflow route: ${activeRoute}`);
-  const ids = [...new Set(routes.map(phaseIdForRoute))];
-  const current = ids.indexOf(phaseIdForRoute(activeRoute));
-  return ids.map((id, index) => ({ id, index, status: statusFor(index, current) }));
+  const ids = [...new Set(routes.map(route => phaseIdForRoute(route, context)))];
+  const current = ids.indexOf(phaseIdForRoute(activeRoute, context));
+  return ids.map((id, index) => ({ id, index, status: index < current && (id === "meter" && context.legacyChoice === "calibrate_only" || id === "calibration" && context.calibrationPlan === "keep_existing")
+    ? "skipped" : statusFor(index, current) }));
 }
 
 export function calibrationSubsteps(
@@ -157,7 +157,7 @@ export function calibrationSubsteps(
     if (restartRequired(context)) ids.push("restart");
   }
   const current = ids.indexOf(activeRoute as WorkflowSubstepId);
-  const completed = phaseIdForRoute(activeRoute) === "save-calibration"
+  const completed = activeRoute === "save-calibration"
     || activeRoute === "summary";
   return ids.map((id, index) => ({
     id,
@@ -188,13 +188,9 @@ export function resumeWorkflowRoute(context: WorkflowContext): WorkflowRoute {
     && (context.handoffAvailable || context.handoffInstalled)) {
     return "save-calibration";
   }
-  if (context.normalTransactionActive) return "install-configuration";
   if (context.sessionState === "applied_pending_restart_verification") return "restart";
   if (context.sessionState === "verified" || context.restartVerification) {
     return context.handoffAvailable ? "save-calibration" : "summary";
-  }
-  if (context.sessionState === "safety_required" || context.sessionState === "preflight_failed") {
-    return "safety";
   }
   if (context.sessionState !== null) {
     if (context.calibrationPlan === "full"
@@ -225,13 +221,13 @@ function statusFor(index: number, current: number): WorkflowStatus {
   return index < current ? "completed" : "current";
 }
 
-function phaseIdForRoute(route: WorkflowRoute): WorkflowPhaseId {
+function phaseIdForRoute(route: WorkflowRoute, context: WorkflowContext): WorkflowPhaseId {
   switch (route) {
     case "setup": return "device";
-    case "legacy-review": return "legacy-review";
+    case "legacy-review": return "meter";
     case "meter": return "meter";
-    case "ct": return "ct";
-    case "install-configuration": return "install-configuration";
+    case "ct": return "meter";
+    case "install-configuration": return context.transactionPurpose === "offset_preparation" ? "calibration" : "install-configuration";
     case "calibration-plan":
     case "safety":
     case "offset":
@@ -239,7 +235,7 @@ function phaseIdForRoute(route: WorkflowRoute): WorkflowPhaseId {
     case "current":
     case "restart":
       return "calibration";
-    case "save-calibration": return "save-calibration";
+    case "save-calibration": return "calibration";
     case "summary": return "complete";
     default: return assertNever(route);
   }

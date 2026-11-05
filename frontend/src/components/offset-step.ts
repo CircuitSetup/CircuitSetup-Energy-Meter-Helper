@@ -1,33 +1,39 @@
 import { html, nothing, type TemplateResult } from "lit";
 
-import type { MeterTopology, OffsetCalibrationResult, OffsetReadinessResult, OffsetPreparationStatus, SessionStatus } from "../types";
+import type { MeterTopology, OffsetCalibrationResult, OffsetReadinessResult, OffsetPreparationStatus, OffsetFinalizationStatus, RestartVerificationResult, SessionStatus } from "../types";
 import { moveTab } from "./tab-keyboard";
 
 const boardLabel = (index: number) => index === 0 ? "Main Board" : `Add-on ${index}`;
 const groupKeys = (board: number) => board === 0 ? ["main_1", "main_2"] : [`addon${board}_1`, `addon${board}_2`];
 
-export function offsetStep(
-  topology: MeterTopology | null,
-  session: SessionStatus | null,
-  board: number,
-  stage: 1 | 2,
-  acknowledged: boolean,
-  retryConfirmed: boolean,
-  readiness: OffsetReadinessResult | null,
-  result: OffsetCalibrationResult | null,
-  busy: boolean,
-  selectBoard: (board: number) => void,
-  selectStage: (stage: 1 | 2) => void,
-  setAcknowledged: (value: boolean) => void,
-  setRetryConfirmed: (value: boolean) => void,
-  check: () => void,
-  calibrate: () => void,
-  reconnect: () => void,
-  skip: () => void,
-  back: () => void,
-  continueOffset: () => void,
-  stock: { preparation: OffsetPreparationStatus | null; backupAcknowledged: boolean; setBackup: (value: boolean) => void; prepare: () => void } | null = null,
-): TemplateResult {
+export interface OffsetData {
+  topology: MeterTopology | null;
+  session: SessionStatus | null;
+  board: number;
+  stage: 1 | 2;
+  acknowledged: boolean;
+  retryConfirmed: boolean;
+  readiness: OffsetReadinessResult | null;
+  result: OffsetCalibrationResult | null;
+  busy: boolean;
+  stock?: { preparation: OffsetPreparationStatus | null; backupAcknowledged: boolean; setBackup: (value: boolean) => void; prepare: () => void } | null;
+}
+export interface OffsetActions {
+  selectBoard: (board: number) => void;
+  selectStage: (stage: 1 | 2) => void;
+  setAcknowledged: (value: boolean) => void;
+  setRetryConfirmed: (value: boolean) => void;
+  check: () => void;
+  calibrate: () => void;
+  reconnect: () => void;
+  skip: () => void;
+  back: () => void;
+  continueOffset: () => void;
+}
+export function offsetStep(data: OffsetData, actions: OffsetActions): TemplateResult {
+  const { topology, session, board, stage, acknowledged, retryConfirmed, readiness, result, busy, stock = null } = data;
+  const { selectBoard, selectStage, setAcknowledged, setRetryConfirmed, check, calibrate, reconnect, skip, back, continueOffset } = actions;
+
   const capability = session?.offset_capability;
   const boards = session?.offset_boards ?? [];
   const finalized = session?.offset_disposition === "completed" || session?.offset_disposition === "skipped"
@@ -45,7 +51,7 @@ export function offsetStep(
   const selectedInstances = groupKeys(board).map((id) => id.replace("main_", "meter_main"));
   const matching = preparation?.stage === stage && preparation.targets.length > 0 && preparation.targets.every((id) => selectedInstances.includes(id));
   const attempted = Boolean(matching && preparation?.attempted.length);
-  const nativeReview = nativePreparation || Boolean(preparation && (!preparation.installed || !preparation.action_ready || attempted));
+  const nativeReview = nativePreparation;
   const recovery = Boolean(result?.retry_allowed) || stageState === "partial" || stageState === "indeterminate" || attempted && stageState !== "completed";
   const actionReady = !stock || Boolean(matching && preparation?.action_ready && !attempted);
   const unavailable = capability?.status !== "available";
@@ -67,16 +73,16 @@ export function offsetStep(
       ` : html`
         <ol class="offset-stage-stepper" aria-label="Offset calibration stages">
           <li class=${stage === 1 ? "active" : stageTwoReady ? "complete" : "pending"}>
-            <button data-offset-stage="1" aria-current=${stage === 1 ? "step" : nothing} @click=${() => selectStage(1)}>1. Voltage/current zero offset</button>
+            <button ?disabled=${busy} data-offset-stage="1" aria-current=${stage === 1 ? "step" : nothing} @click=${() => selectStage(1)}>1. Voltage/current zero offset</button>
           </li>
           <li class=${stage === 2 ? "active" : finalized ? "complete" : "pending"}>
-            <button data-offset-stage="2" aria-current=${stage === 2 ? "step" : nothing} ?disabled=${!stageTwoReady}
+            <button data-offset-stage="2" aria-current=${stage === 2 ? "step" : nothing} ?disabled=${busy || !stageTwoReady}
               @click=${() => selectStage(2)}>2. Active/reactive power offset</button>
           </li>
         </ol>
         <div class="board-tabs" role="tablist" aria-label="Offset calibration boards">
           ${Array.from({ length: topology?.board_count ?? boards.length }, (_, index) => html`
-            <button role="tab" data-offset-board id=${`offset-board-tab-${index}`} aria-controls="offset-board-panel"
+            <button ?disabled=${busy} role="tab" data-offset-board id=${`offset-board-tab-${index}`} aria-controls="offset-board-panel"
               aria-selected=${index === board} tabindex=${index === board ? "0" : "-1"}
               @keydown=${(event: KeyboardEvent) => moveTab(event, index)} @click=${() => selectBoard(index)}>
               ${boardLabel(index)}
@@ -167,4 +173,38 @@ export function offsetStep(
       </footer>
     </section>
   `;
+}
+
+export interface OffsetPersistenceData {
+  offsetFinalization: OffsetFinalizationStatus | null;
+  restartResult: RestartVerificationResult | null;
+  hasPendingGains: boolean;
+  busy: boolean;
+  restartBusy: boolean;
+}
+export interface OffsetPersistenceActions {
+  backToOffsets: () => void;
+  restart: () => void;
+  review: () => void;
+  reconcile: () => void;
+}
+export function offsetPersistence(data: OffsetPersistenceData, actions: OffsetPersistenceActions): TemplateResult {
+  const { offsetFinalization: receipt, restartResult, hasPendingGains, busy, restartBusy } = data;
+  const installed = Boolean(receipt?.installed && !receipt.cancelled && receipt.operation_id);
+  const blocked = busy || restartBusy;
+  return html`<section class="step-content" aria-labelledby="offset-final-heading">
+    <h2 id="offset-final-heading">Keep captured offset calibration</h2>
+    <p>Captured results stay in private backup. Both RMS and power tables are required for every affected chip before disabling native offset restore. Unknown evidence is not zero.</p>
+    ${installed ? html`<p>Final configuration installed. Confirm fresh configuration selection; this confirms configured mode, not register readback. Retained values are not lost.</p>` : html`<p>Review and install captured offsets before confirming their configuration selection. Retained values, including zeros, stay in backup.</p>`}
+    ${hasPendingGains ? html`<p class="info-band">Restart and verify pending gain calibration before continuing. This does not verify offsets.</p>` : nothing}
+    <details><summary>Retained results and authority</summary>
+      ${receipt?.results.length ? html`<table aria-label="Retained offset results"><thead><tr><th>Chip</th><th>Stage</th><th>ABC values</th><th>Actual prior register verification</th></tr></thead><tbody>${receipt.results.map(([id, stage, table, verified]) => html`<tr><td>${id}</td><td>${stage}</td><td>${table.map(([a, b]) => `${a}/${b}`).join(", ")}</td><td>${verified ? "Verified at capture" : "Not verified"}</td></tr>`)}</tbody></table>` : nothing}
+      <p>${restartResult ? `Gain authority: ${restartResult.source_authority.replaceAll("_", " ")}.` : "No restart-verified gain evidence is available."} Selecting offset configuration never clears gain flash.</p>
+    </details>
+    <footer class="action-footer"><button class="secondary" ?disabled=${blocked} @click=${actions.backToOffsets}>Back to offset stages</button>
+      ${hasPendingGains ? html`<button class="primary" ?disabled=${blocked} @click=${actions.restart}>${restartBusy ? "Restarting and verifying gains…" : "Restart and verify gains only"}</button>`
+        : installed ? html`<button class="primary" ?disabled=${blocked} @click=${actions.reconcile}>Confirm installed offset configuration</button>`
+          : html`<button class="primary" ?disabled=${blocked || !receipt?.results.length} @click=${actions.review}>Review captured offsets for installation</button>`}
+    </footer>
+  </section>`;
 }

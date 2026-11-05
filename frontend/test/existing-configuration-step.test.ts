@@ -39,7 +39,7 @@ describe("existing configuration step", () => {
     expect(root.textContent).toContain("Existing generic totals stay unchanged unless you replace them");
     expect(root.textContent).toContain("helper contract update");
     expect([...root.querySelectorAll(".warning-band li")].map((item) => item.textContent).join(" ")).not.toContain("stored_semantics_stale");
-    expect(root.querySelector("details")?.textContent).toContain("stored_semantics_stale");
+    expect(root.querySelector(".warning-band details")?.textContent).toContain("stored_semantics_stale");
     expect(root.querySelector(".existing-configuration")?.getAttribute("aria-label")).toBe("Review Existing Setup");
     expect(root.querySelector(".existing-configuration h2")).toBeNull();
     expect([...root.querySelectorAll(".status-list > div")].map((row) => getComputedStyle(row).display)).toEqual(

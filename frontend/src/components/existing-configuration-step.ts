@@ -28,7 +28,7 @@ export function existingConfigurationStep(
   const warnings = [...new Set([...configuration.warnings, ...configuration.capabilities.reason_codes])];
   return html`<section class="existing-configuration" aria-label="Review Existing Setup">
     <p class="info-band"><strong>${warnings.includes("stored_semantics_stale") ? "Configuration changed externally" : "Ready for setup"}</strong></p>
-    <p>This meter already has an ESPHome configuration. Manage it here or leave it unchanged.</p>
+    <p>This meter already has an ESPHome configuration. Review and manage it to save approved settings with Helper, or calibrate only and preserve its existing ownership.</p><details><summary>Configuration and inspection details</summary>
     <dl class="status-list">
       <div><dt>ESPHome configuration</dt><dd>${metadata.configurationFilename}</dd></div>
       <div><dt>Project</dt><dd>${metadata.projectName} · ${metadata.projectVersion}</dd></div>
@@ -43,6 +43,7 @@ export function existingConfigurationStep(
       <div><dt>What setup records</dt><dd>Reviewed meter profile, circuit settings, helper totals, and package options become helper-managed.</dd></div>
       <div><dt>What to confirm</dt><dd>Confirm settings the source cannot establish, such as CT identity and circuit purpose. Keep existing CT gains without choosing a replacement model.</dd></div>
     </dl>
+    </details>
     ${warnings.length ? html`<div class="warning-band" role="note"><strong>Review notes</strong><ul>${warnings.map((warning) => html`<li>${warningCopy[warning] ?? "Some settings could not be identified from the source and need review."}</li>`)}</ul><details><summary>Technical details</summary><code>${warnings.join(", ")}</code></details></div>` : nothing}
     <div class="action-footer"><button class="secondary" @click=${onBack}>Back</button><button class="secondary" @click=${onCalibrateOnly}>Keep ESPHome configuration and calibrate only</button><button class="primary" @click=${onManage}>Review and manage with helper</button></div>
   </section>`;
@@ -57,7 +58,7 @@ export function existingMeterInspection(
   adopt: (deviceId: string) => void,
   searched = false,
 ): TemplateResult {
-  return html`<section class="existing-inspection" aria-labelledby="find-existing-heading">
+  return html`<details class="existing-inspection"><summary>Meter not listed?</summary>
     <h3 id="find-existing-heading">Find another ESPHome meter</h3>
     <p>Checks one selected ESPHome entry before adoption. It does not install firmware.</p>
     <button class="secondary" data-action="find-existing" ?disabled=${Boolean(busyAction)} @click=${find}>
@@ -67,18 +68,18 @@ export function existingMeterInspection(
     ${candidates.length ? html`<div class="meter-list">
       ${candidates.map((candidate) => html`<div class="meter-row">
         <span><strong>${candidate.title}</strong><small>${candidate.project_name ?? "Project label unavailable"}${candidate.project_version ? ` · ${candidate.project_version}` : ""}</small></span>
-        <span>${candidate.compatibility.join(", ")}</span>
+        <details><summary>Technical details</summary><p>${candidate.compatibility.join(", ")}</p></details>
         <button class="primary" data-action="inspect-existing" ?disabled=${Boolean(busyAction)} @click=${() => inspect(candidate.entry_id)}>
           ${busyAction === `inspect:${candidate.entry_id}` ? "Inspecting…" : "Inspect"}
         </button>
       </div>`)}
     </div>` : ""}
     ${inspection ? html`<div class="info-band" role="status">
-      <strong>${inspection.device.title} passed inspection.</strong>
+      <strong>${inspection.device.title} passed inspection.</strong><p>Adopt this meter to calibrate it in Helper. Adoption does not install firmware or grant permission to replace its configuration.</p>
       <span>${inspection.topology.board_count} board${inspection.topology.board_count === 1 ? "" : "s"}; live meter-chip communication corroborated.</span>
       <button class="primary" data-action="adopt-inspected" ?disabled=${Boolean(busyAction)} @click=${() => adopt(inspection.device.entry_id)}>
         ${busyAction === `adopt:${inspection.device.entry_id}` ? "Adopting…" : "Adopt inspected meter"}
       </button>
     </div>` : ""}
-  </section>`;
+  </details>`;
 }

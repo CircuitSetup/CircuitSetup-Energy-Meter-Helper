@@ -14,9 +14,9 @@ describe("workflowProgress", () => {
       { id: "complete", index: 2, status: "upcoming" },
     ];
     render(workflowProgress(phases, false, toggle, navigate, false), host);
-    expect(host.querySelector("[aria-current=step]")?.textContent).toContain("Meter");
-    expect(host.querySelector(".completed")?.textContent).toContain("Device");
-    expect(host.querySelector(".upcoming")?.textContent).toContain("Complete");
+    expect(host.querySelector("[aria-current=step]")?.textContent).toContain("Configure meter");
+    expect(host.querySelector(".completed")?.textContent).toContain("Choose another meter");
+    expect(host.querySelector(".upcoming")?.textContent).toContain("Done");
     expect(host.querySelector(".mobile-progress button")?.getAttribute("aria-expanded")).toBe("false");
     expect(host.querySelector(".mobile-progress span")?.textContent).toContain("Phase 2 of 3");
     (host.querySelector(".completed button") as HTMLButtonElement).click();

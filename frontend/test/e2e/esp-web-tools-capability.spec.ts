@@ -4,7 +4,7 @@ const MANIFEST_URL = "https://circuitsetup.github.io/ESPWebInstaller/manifests/m
 
 test("inline ESP Web Tools registers in the helper panel without opening a page", async ({ page }) => {
   await page.goto("/test/harness.html");
-  await expect(page.getByRole("heading", { name: "Setup Device" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Choose meter" })).toBeVisible();
 
   await expect.poll(() => page.evaluate(
     () => Boolean(customElements.get("esp-web-install-button")),

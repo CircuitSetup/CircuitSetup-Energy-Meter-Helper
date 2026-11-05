@@ -91,7 +91,7 @@ export function advancedTotalsEditor(
       measurement_method: "two_ct_sum", energy_mode: "consumption", outputs: { watts: true, amps: false, kwh: true }, origin: "advanced",
     }] });
   };
-  return html`<section aria-labelledby="advanced-totals-heading"><details class="advanced-totals"><summary id="advanced-totals-heading">Advanced totals</summary>
+  return html`<section aria-labelledby="advanced-totals-heading"><details class="advanced-totals" ?open=${!fresh || configuration.aggregates.length > 0 || catalog.stale_automatic_total_settings.length > 0}><summary id="advanced-totals-heading">Advanced totals</summary>
     <p>Watts and Amps control Home Assistant visibility. kWh controls the energy sensor, including hidden sensors; turning it off removes it.</p>
     ${!writable ? html`<p class="info-band" role="status">Aggregate editing unavailable: ${reason === "unmanaged_total_present" ? "This meter has legacy unmanaged totals." : "This meter does not expose managed totals."} Upgrade the meter configuration before editing. Existing aggregates remain reviewable.</p>` : nothing}
     ${!fresh ? html`<p class="info-band" role="status">Total graph unavailable or updating. Draft sources can still be edited or removed; complete the graph before continuing.</p>` : nothing}
@@ -149,9 +149,10 @@ export function advancedTotalsEditor(
         <div class="aggregate-fields">
           <div class="aggregate-name-field"><label>Name <input aria-label=${`${aggregate.aggregate_id} aggregate name`} maxlength="64" .value=${aggregate.name}
             @input=${(event: Event) => { const input = event.target as HTMLInputElement; if (!writable) { input.value = aggregate.name; return; } patch(aggregate, { name: input.value }); }} /></label>
-            <p class="aggregate-id">Total ID: <code>${aggregate.aggregate_id}</code></p>
+            <details class="total-technical-details"><summary>Identity details</summary><p class="aggregate-id">Total ID: <code>${aggregate.aggregate_id}</code></p>
             ${existingConfiguration && !existingConfiguration.aggregates.some((item) => item.aggregate_id === aggregate.aggregate_id)
               ? html`<p class="proposed-sensor-id">Proposed sensor ID prefix: <code>${generatedTotalId(aggregate.name)}</code></p>` : nothing}
+            </details>
           </div>
           <label>Role <select aria-label=${`${aggregate.aggregate_id} aggregate role`} .value=${aggregate.role}
             @change=${(event: Event) => { const input = event.target as HTMLSelectElement; if (!writable || !roles.includes(input.value as typeof roles[number])) { input.value = aggregate.role; return; } patch(aggregate, { role: input.value as CircuitAggregate["role"] }); }}>
@@ -183,7 +184,7 @@ export function advancedTotalsEditor(
               return html`<option value=${item.aggregate_id} ?selected=${item.aggregate_id === parent} ?disabled=${Boolean(blocked)}>${item.name}${blocked ? ` — ${blocked}` : ""}</option>`;
             })}</select></label>
         </div>
-        <p class="aggregate-formula">Formula: ${aggregate.sources.length ? aggregate.sources.map(label).join(" + ") : "Select sources"}</p>
+        <p>Sources: ${aggregate.sources.length ? aggregate.sources.map(label).join(", ") : "Select sources"}</p><details class="total-technical-details"><summary>Formula details</summary><p class="aggregate-formula">Formula: ${aggregate.sources.length ? aggregate.sources.map(label).join(" + ") : "Select sources"}</p></details>
         ${fresh && !problem ? html`<p>Coverage: ${coverageLabel(leaves)}</p>` : nothing}
         ${problem ? html`<p class="warning-band" role="status">${problem} Complete the total before continuing.</p>` : nothing}
         ${overlaps ? html`<p class="warning-band" role="note">This total overlaps another report. Keep them separate; do not add them together.</p>` : nothing}

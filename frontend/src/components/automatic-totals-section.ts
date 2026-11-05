@@ -55,13 +55,14 @@ export function automaticTotalsSection(
           changeOutput(key, input.checked);
         }} />${label}</label>`;
       return html`<fieldset class="automatic-total-card"><legend>${currentName}</legend>
-        <p class="aggregate-id">Total ID: <code>${resolved.candidate.aggregate_id}</code></p>
+
         <label class="automatic-total-name">Name <input aria-label=${`${resolved.candidate.candidate_id} suggested total name`} maxlength="64" required .value=${live(currentName)} ?disabled=${!writable}
           @input=${(event: Event) => patch(resolved.candidate.candidate_id, current, { name: (event.target as HTMLInputElement).value })} /></label>
-        ${savedSensorIds
+<p>Sources: ${sources}</p><details class="total-technical-details"><summary>Technical details</summary><p class="aggregate-id">Total ID: <code>${resolved.candidate.aggregate_id}</code></p>        ${savedSensorIds
           ? html`<p class="aggregate-id">Existing sensor IDs are preserved; see Configuration review for exact IDs.</p>`
           : html`<p class="aggregate-id">Proposed sensor IDs: <code>${sensorIds.length ? sensorIds.join(", ") : currentName.trim() ? "none until an output is selected" : "enter a name first"}</code></p>`}
-        <p>Sources: ${sources}</p><p>Formula: ${sourceFormula(resolved.candidate.sources, totals, configuration.aggregates)} · ${resolved.candidate.role.replaceAll("_", " ")} · ${resolved.candidate.measurement_method.replaceAll("_", " ")}</p>
+        <p>Formula: ${sourceFormula(resolved.candidate.sources, totals, configuration.aggregates)} · ${resolved.candidate.role.replaceAll("_", " ")} · ${resolved.candidate.measurement_method.replaceAll("_", " ")}</p>
+</details>
         ${parents.length ? html`<p>Feeds into: ${parents.map((parent) => parent.name).join(" and ")}</p>` : ""}
         <label class="automatic-total-control"><input type="checkbox" role="switch" aria-label=${`Create ${currentName} total`} .checked=${current.enabled} ?disabled=${!writable} @change=${changeEnabled} />Create this total</label>
         <div class="automatic-total-controls">${control("watts", "Watts")}${control("amps", "Amps")}${control("kwh", "kWh", resolved.candidate.energy_mode === "none")}</div>

@@ -128,7 +128,7 @@ it("reviews human-readable typed formulas and separates public outputs from inte
   host = document.createElement("div");
   render(configReview(null, meter.configuration, meter.configuration_impact, meter.totals), host);
   expect(host.textContent).toContain("home = Overall meter total");
-  expect(host.textContent).toContain("Suggested circuit totals");
+  expect(host.textContent).not.toContain("Suggested circuit totals");
   expect(host.textContent).toContain("Advanced total hierarchy");
   expect(host.textContent).toContain("3 public total entities");
 });
@@ -136,7 +136,7 @@ it("reviews human-readable typed formulas and separates public outputs from inte
 it("summarizes server counts and legacy ownership, not the number of requested outputs", () => {
   const meter = unowned(); meter.configuration_impact.public_total_entity_count = 8; meter.configuration_impact.internal_total_sensor_count = 4;
   host = document.createElement("div");
-  render(summaryStep(meter.topology, null, null, new Map(), new Map(), null, true, null, () => {}, () => {}, meter, meter.configuration_impact), host);
+  render(summaryStep({ topology: meter.topology, session: null, transaction: null, stability: new Map(), calibration: new Map(), restart: null, completedWithoutChanges: true, projectVersion: null, meterConfiguration: meter, impact: meter.configuration_impact }, { saveCalibration: () => {}, back: () => {} }), host);
   expect(host.textContent).toContain("8 public total entities; 4 internal total sensors");
   expect(host.textContent).toContain("Legacy read-only totals");
   expect(host.textContent).toContain("Unsupported external custom energy");
@@ -145,15 +145,14 @@ it("summarizes server counts and legacy ownership, not the number of requested o
 it("labels unresolved installed native visibility as incomplete in summary", () => {
   const meter = unowned(); meter.totals.migration.native_visibility_resolved = false;
   host = document.createElement("div");
-  render(summaryStep(meter.topology, null, null, new Map(), new Map(), null, true, null, () => {}, () => {}, meter, meter.configuration_impact), host);
+  render(summaryStep({ topology: meter.topology, session: null, transaction: null, stability: new Map(), calibration: new Map(), restart: null, completedWithoutChanges: true, projectVersion: null, meterConfiguration: meter, impact: meter.configuration_impact }, { saveCalibration: () => {}, back: () => {} }), host);
   expect(host.textContent).toContain("Counts are confirmed but incomplete: native visibility is unresolved.");
 });
 
 it.each(["legacy_editable", "runtime_only"] as const)("keeps separate source evidence distinct from installation in %s summary", (mode) => {
   const source = unowned(); source.configuration_impact.public_total_entity_count = 11;
   host = document.createElement("div");
-  render(summaryStep(source.topology, null, null, new Map(), new Map(), null, true, null, () => {}, () => {},
-    null, null, () => {}, () => {}, mode, "calibrate_only", false, false, source), host);
+  render(summaryStep({ topology: source.topology, session: null, transaction: null, stability: new Map(), calibration: new Map(), restart: null, completedWithoutChanges: true, projectVersion: null, meterConfiguration: null, impact: null, configurationMode: mode, legacyChoice: "calibrate_only", configurationInstalled: false, handoffDeclined: false, sourceConfiguration: source }, { saveCalibration: () => {}, back: () => {}, finish: () => {}, keepCalibrationInFlash: () => {} }), host);
   expect(host.querySelector("#summary-totals-heading")?.textContent ?? null).toBe(mode === "legacy_editable" ? "Legacy read-only totals" : null);
   expect(host.textContent).not.toContain("Installed electrical profile");
   if (mode === "legacy_editable") {

@@ -811,6 +811,7 @@ def test_explicit_inspection_uses_secondary_api_and_reuses_adoption_boundary(
         assert adopted == {
             "device_id": "legacy-meter",
             "configuration": "legacy.yaml",
+            "imported": False,
         }
         assert updates and updates[-1]["data"]
         helper.data = updates[-1]["data"]  # type: ignore[assignment]

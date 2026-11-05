@@ -22,15 +22,19 @@ from aiohasupervisor.models import AddonState as SupervisorAddonState
 from aiohasupervisor.models.addons import InstalledAddonComplete
 from aiohasupervisor.models.ingress import CreateSessionOptions
 from aiohttp import hdrs
-from homeassistant.components.hassio import HassIO, get_supervisor_client
+from homeassistant.components.hassio import get_supervisor_client
+from homeassistant.components.hassio import handler as hassio_handler
 from homeassistant.components.hassio.const import (
-    DATA_COMPONENT,
+    DOMAIN as HASSIO_DOMAIN,
+)
+from homeassistant.components.hassio.const import (
     X_HASS_SOURCE,
     X_INGRESS_PATH,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.hassio import is_hassio
 
 try:
     from homeassistant.components.http.const import DATA_SUPERVISOR_USER  # type: ignore[attr-defined]
@@ -422,6 +426,7 @@ class SessionStatus:
     has_pending_calibration: bool = False
     calibration_plan: CalibrationPlan = "full"
     configured_offset_targets: tuple[tuple[int, int], ...] = ()
+    has_pending_gain_calibration: bool = False
 
 
 @dataclass(slots=True)
@@ -995,7 +1000,7 @@ class EntryWorkflow:
         with self._guard(mac):
             self._prune_device_sessions_locked(mac)
             session = next(
-                (item.status() for item in self._sessions.values() if item.mac == mac),
+                (self._status(item) for item in self._sessions.values() if item.mac == mac),
                 None,
             )
         return {
@@ -1008,7 +1013,7 @@ class EntryWorkflow:
             "verified_calibration": await self._store.async_get_verified_calibration(mac),
         }
 
-    async def async_adopt_device(self, device_id: str) -> dict[str, str]:
+    async def async_adopt_device(self, device_id: str) -> dict[str, str | bool]:
         device = self._adoption_device(device_id)
         self._assert_rebind_idle(device_id)
         builder = self._require_builder()
@@ -1021,6 +1026,7 @@ class EntryWorkflow:
             return {
                 "device_id": device_id,
                 "configuration": inspection.configuration,
+                "imported": False,
             }
         name = getattr(entry, "data", {}).get("device_name")
         if not isinstance(name, str):
@@ -1031,7 +1037,7 @@ class EntryWorkflow:
             strict=inspection is not None,
         )
         if status.configuration is not None:
-            return {"device_id": device_id, "configuration": status.configuration}
+            return {"device_id": device_id, "configuration": status.configuration, "imported": False}
         import_data = status.import_data
         if import_data is None:
             info = getattr(getattr(entry, "runtime_data", None), "device_info", None)
@@ -1046,7 +1052,7 @@ class EntryWorkflow:
         configuration = await builder.async_import_device(
             import_data
         )
-        return {"device_id": device_id, "configuration": configuration}
+        return {"device_id": device_id, "configuration": configuration, "imported": True}
 
     async def async_preview_ct_config(
         self,
@@ -1611,15 +1617,6 @@ class EntryWorkflow:
             handle.state = "stable" if stable else "unstable"
             self._refresh(handle)
             self._publish(handle)
-            if target == "voltage":
-                return {
-                    "target": target,
-                    "target_id": target_id,
-                    "stable": stable,
-                    "windows": tuple(
-                        _public_sample_window(window) for window in windows
-                    ),
-                }
             return {
                 "target": target,
                 "target_id": target_id,
@@ -3820,6 +3817,10 @@ class EntryWorkflow:
         return replace(
             status,
             has_pending_calibration=self._has_pending_calibration(handle.mac),
+            has_pending_gain_calibration=bool(
+                (pending := self._sessions_owner.pending_calibration(handle.mac))
+                and pending.gain_groups
+            ),
         )
 
     def _has_pending_calibration(self, mac: str) -> bool:
@@ -3893,8 +3894,7 @@ async def async_installed_device_builders(
     hass: HomeAssistant,
 ) -> dict[str, InstalledAddonComplete]:
     """Discover installed official channels, including stopped add-ons."""
-    hassio = hass.data.get(DATA_COMPONENT)
-    if not isinstance(hassio, HassIO):
+    if not is_hassio(hass):
         return {}
     supervisor = get_supervisor_client(hass)
     installed = {}
@@ -3930,7 +3930,6 @@ async def create_device_builder(
     )
     if addon is None:
         return None
-    hassio = hass.data[DATA_COMPONENT]
     supervisor = get_supervisor_client(hass)
     if addon.available is not True:
         raise SupervisorResponseError(
@@ -3968,13 +3967,20 @@ async def create_device_builder(
     ingress_token = ingress_entry.removeprefix(_INGRESS_ENTRY_PREFIX)
     _validate_supervisor_token(ingress_token, "Device Builder ingress")
     await _async_validated_ingress_session(hass, supervisor)
-    url = str(hassio.base_url.with_path(f"/ingress/{ingress_token}"))
+    if get_connection := getattr(hassio_handler, "get_supervisor_connection", None):
+        connection = get_connection(hass)
+        base_url, websession = connection.base_url, connection.session
+    else:
+        # Older HA releases keep the shared TCP transport on the HassIO client.
+        hassio = hass.data[HASSIO_DOMAIN]
+        base_url, websession = hassio.base_url, hassio.websession
+    url = str(base_url.with_path(f"/ingress/{ingress_token}"))
 
     async def connect(websocket_url: str) -> Any:
         session = await _async_validated_ingress_session(hass, supervisor)
         cookie = SimpleCookie()
         cookie[_INGRESS_SESSION_COOKIE] = session
-        return await hassio.websession.ws_connect(
+        return await websession.ws_connect(
             websocket_url,
             headers={
                 hdrs.COOKIE: cookie.output(header="", sep="").strip(),

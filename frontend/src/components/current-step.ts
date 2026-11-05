@@ -37,7 +37,7 @@ export function currentStep(
     <section class="step-content calibration-step" aria-labelledby="step-heading">
       ${calibrationProgress(referenceReady, stability, result, session?.calibration_plan ?? "full")}
       <div class="board-tabs" role="tablist" aria-label="Calibration boards">
-        ${Array.from({ length: Math.ceil(ctCount / 6) }, (_, index) => html`<button role="tab"
+        ${Array.from({ length: Math.ceil(ctCount / 6) }, (_, index) => html`<button ?disabled=${busy} role="tab"
           id=${`current-board-tab-${index}`} aria-controls="current-board-panel"
           aria-selected=${index === board} tabindex=${index === board ? "0" : "-1"}
           @keydown=${(event: KeyboardEvent) => moveTab(event, index)}
@@ -62,7 +62,7 @@ export function currentStep(
         <button class="primary" @click=${calibrate} ?disabled=${busy || !referenceReady || !stability?.stable || (result?.iteration ?? 0) >= 3 || Boolean(result && !result.retry_allowed && result.iteration > 0)}>${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Calibrating current…` : result?.retry_allowed ? "Retry current calibration" : "Calibrate current"}</button></div>
       ${stability ? html`<div class=${stability.stable ? "success-band" : "warning-band"} role="status">${stability.stable ? "Stable and ready for calibration." : stability.windows.length ? "Data is changing too much; keep the load steady." : "Waiting for live data…"}</div>` : ""}
       ${stabilityEvidence(stability, selected.map((value) => `CT${value}`))}
-      ${result?.state === "applied_pending_restart_verification" ? html`<div class="success-band" role="status">Current calibration complete for CT${first}–CT${first + 2}.</div>` : ""}
+      ${result?.state === "applied_pending_restart_verification" ? html`<div class="success-band" role="status">Current calibration complete for ${result.changed_channels.map((value) => `CT${value}`).join(", ") || "no changed channels"}.</div>` : ""}
       ${calibrationEvidence(result)}
       ${result?.state.includes("indeterminate") ? html`<aside class="recovery-panel" role="status"><strong>Calibration outcome indeterminate</strong><p>No automatic retry will be made.</p><button class="secondary" @click=${reconnect}>Reconnect and inspect</button><button class="danger" @click=${cancel}>Cancel session</button></aside>` : ""}
       </div>

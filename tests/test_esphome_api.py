@@ -122,6 +122,7 @@ class FakeHass:
     def __init__(self, entry: FakeEntry | None = None) -> None:
         self.config_entries = FakeConfigEntries(entry or FakeEntry())
         self.config = SimpleNamespace(
+            components=set(),
             time_zone="America/New_York", config_dir=".",
             path=lambda *parts: str(Path(".").joinpath(*parts)),
         )

@@ -27,8 +27,7 @@ it("shows the backend immediate board-total formula for Overall while retaining 
   meter.configuration.aggregates = [aggregate("a", "First report", [{ kind: "native_total", source_id: "board-main" }]),
     aggregate("b", "Second report", [{ kind: "native_total", source_id: "board-main" }])];
   document.body.append(root);
-  render(summaryStep(meter.topology, null, null, new Map(), new Map(), null, true, "version",
-    () => undefined, () => undefined, meter, meter.configuration_impact), root);
+  render(summaryStep({ topology: meter.topology, session: null, transaction: null, stability: new Map(), calibration: new Map(), restart: null, completedWithoutChanges: true, projectVersion: "version", meterConfiguration: meter, impact: meter.configuration_impact }, { saveCalibration: () => undefined, back: () => undefined }), root);
   expect(root.textContent).toContain("Formula: Main Board total + Add-on 1 total");
   expect(root.textContent).toContain("Coverage: CT1, CT2, CT3, CT4, CT5, CT6, CT7, CT8, CT9, CT10, CT11, CT12");
   expect(root.textContent).toContain("Feeds into: First report, Second report");
@@ -52,8 +51,7 @@ it("renders backend public outputs, dependencies, formulas, coverage and pending
   meter.totals.migration.legacy_parent_links = [{ child_id: "hidden", proposed_parent_id: "parent" }];
   meter.totals.migration.parent_review_required = true;
   document.body.append(root);
-  render(summaryStep(meter.topology, null, null, new Map(), new Map(), null, true, "version",
-    () => undefined, () => undefined, meter, meter.configuration_impact), root);
+  render(summaryStep({ topology: meter.topology, session: null, transaction: null, stability: new Map(), calibration: new Map(), restart: null, completedWithoutChanges: true, projectVersion: "version", meterConfiguration: meter, impact: meter.configuration_impact }, { saveCalibration: () => undefined, back: () => undefined }), root);
   expect(root.textContent).toContain("Parent report");
   expect(root.textContent).toContain("Public outputs: Watts, kWh");
   expect(root.textContent).toContain("Internal outputs: Watts");
@@ -73,9 +71,7 @@ it("labels source-owned unknown outputs as unverified and never presents runtime
   ] };
   meter.configuration.aggregates = [aggregate("legacy", "Legacy report", [{ kind: "channel", channel: 1 }])];
   document.body.append(root);
-  const show = (mode: "legacy_editable" | "runtime_only") => render(summaryStep(meter.topology, null, null,
-    new Map(), new Map(), null, true, "version", () => undefined, () => undefined, null, null,
-    () => undefined, () => undefined, mode, "calibrate_only", false, false, meter), root);
+  const show = (mode: "legacy_editable" | "runtime_only") => render(summaryStep({ topology: meter.topology, session: null, transaction: null, stability: new Map(), calibration: new Map(), restart: null, completedWithoutChanges: true, projectVersion: "version", meterConfiguration: null, impact: null, configurationMode: mode, legacyChoice: "calibrate_only", configurationInstalled: false, handoffDeclined: false, sourceConfiguration: meter }, { saveCalibration: () => undefined, back: () => undefined, finish: () => undefined, keepCalibrationInFlash: () => undefined }), root);
   show("legacy_editable");
   expect(root.textContent).toContain("Legacy report");
   expect(root.textContent).toContain("Read-only source YAML");
@@ -97,7 +93,6 @@ it.each([
   meter.total_details = [{ kind: "aggregate", total_id: "report", ownership: "helper_managed",
     public_outputs: ["Watts"], internal_outputs: [], unverified_outputs: [] }];
   document.body.append(root);
-  render(summaryStep(meter.topology, null, null, new Map(), new Map(), null, true, "version",
-    () => undefined, () => undefined, meter, meter.configuration_impact), root);
+  render(summaryStep({ topology: meter.topology, session: null, transaction: null, stability: new Map(), calibration: new Map(), restart: null, completedWithoutChanges: true, projectVersion: "version", meterConfiguration: meter, impact: meter.configuration_impact }, { saveCalibration: () => undefined, back: () => undefined }), root);
   expect(root.textContent).toContain(`Formula: ${formula}`);
 });
