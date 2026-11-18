@@ -219,6 +219,23 @@ function validResponse(operation: string): unknown {
 }
 
 describe("HelperApi", () => {
+  it("validates the target and retry data for retained gain recovery", async () => {
+    const hass = new FakeHass(); const api = new HelperApi(hass, "entry-1");
+    const result = { state: "indeterminate", group_key: "main_2", phase: "B", changed_channels: [5], iteration: 1,
+      before_values: [], after_values: [], error_percent_values: [], retry_allowed: false, gain_evidence: null, restore_evidence: null };
+    const gain_recovery = { target: "current", target_id: "5", results: [result] };
+    hass.responses.get_session = { ...session, state: "indeterminate", gain_recovery };
+    await expect(api.getSession("session-1")).resolves.toMatchObject({ gain_recovery });
+    hass.responses.get_session = { ...session, gain_recovery: { ...gain_recovery, target_id: "6" } };
+    await expect(api.getSession("session-1")).rejects.toThrow("get_session");
+    hass.responses.get_session = { ...session, gain_recovery: { ...gain_recovery, results: [{ ...result, retry_allowed: true }] } };
+    await expect(api.getSession("session-1")).rejects.toThrow("get_session");
+    const outside = { ...calibration, state: "result_outside_tolerance", after_values: [4.8], error_percent_values: [4], retry_allowed: true };
+    hass.responses.get_session = { ...session, state: "result_outside_tolerance",
+      gain_recovery: { target: "current", target_id: "1", results: [outside] } };
+    await expect(api.getSession("session-1")).resolves.toMatchObject({ gain_recovery: { results: [outside] } });
+  });
+
   it("accepts server purpose and captured stock results without inventing retry or register proof", async () => {
     const hass = new FakeHass(); const api = new HelperApi(hass, "entry-1");
     hass.responses.preview_ct_config = { ...transaction, purpose: "offset_preparation" };

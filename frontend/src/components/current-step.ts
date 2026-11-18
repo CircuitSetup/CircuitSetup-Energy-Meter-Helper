@@ -21,13 +21,16 @@ export function currentStep(
   reconnect: () => void,
   cancel: () => void,
   busy = false,
+  calibrationAvailable = true,
 ): TemplateResult {
   const ctCount = topology?.ct_count ?? inventory?.channels.length ?? 6;
   const board = Math.floor((channel - 1) / 6);
   const group = Math.floor((channel - 1) / 3);
   const first = group * 3 + 1;
   const channels = Array.from({ length: 3 }, (_, index) => first + index).filter((value) => value <= ctCount);
-  const selected = channels.filter((value) => (references.get(value) ?? 0) > 0);
+  const recovery = session?.gain_recovery?.target === "current" ? session.gain_recovery : null;
+  const recoveryChannels = recovery?.results[0]?.changed_channels;
+  const selected = channels.filter((value) => (!recoveryChannels || recoveryChannels.includes(value)) && (references.get(value) ?? 0) > 0);
   const sourceIds = board === 0 ? ["meter_main1", "meter_main2"] : [`addon${board}_1`, `addon${board}_2`];
   const multiplierRequired = inventory === null;
   const multiplierValid = reportingMultiplier !== null
@@ -37,7 +40,7 @@ export function currentStep(
     <section class="step-content calibration-step" aria-labelledby="step-heading">
       ${calibrationProgress(referenceReady, stability, result, session?.calibration_plan ?? "full")}
       <div class="board-tabs" role="tablist" aria-label="Calibration boards">
-        ${Array.from({ length: Math.ceil(ctCount / 6) }, (_, index) => html`<button ?disabled=${busy} role="tab"
+        ${Array.from({ length: Math.ceil(ctCount / 6) }, (_, index) => html`<button ?disabled=${busy || recovery} role="tab"
           id=${`current-board-tab-${index}`} aria-controls="current-board-panel"
           aria-selected=${index === board} tabindex=${index === board ? "0" : "-1"}
           @keydown=${(event: KeyboardEvent) => moveTab(event, index)}
@@ -46,7 +49,7 @@ export function currentStep(
       <div id="current-board-panel" role="tabpanel" aria-labelledby=${`current-board-tab-${board}`}>
       <div class="target-tabs" aria-label="Current calibration groups">
         ${[0, 1].map((offset) => { const value = board * 6 + offset * 3 + 1; return html`<button
-          aria-pressed=${value === first} @click=${() => select(value)}>Group ${board * 2 + offset + 1}</button>`; })}
+          ?disabled=${busy || recovery} aria-pressed=${value === first} @click=${() => select(value)}>Group ${board * 2 + offset + 1}</button>`; })}
       </div>
       <h2>Calibrate CT${first}–CT${first + 2}</h2>
       <p>Leave blank to keep existing gains. Select references only for channels to calibrate.</p>
@@ -54,17 +57,18 @@ export function currentStep(
       <div class="reference-block">
         ${channels.map((value) => html`<label>CT${value} · ${inventory?.channels.find((item) => item.channel === value)?.name ?? "Unnamed circuit"} reference (A)
           <input data-current-reference=${value} aria-label=${`CT${value} reference`} type="number" min="0.01" step="0.01"
+            ?disabled=${recoveryChannels && !recoveryChannels.includes(value)}
             .value=${references.has(value) ? String(references.get(value)) : ""}
             @input=${(event: Event) => { const input = event.target as HTMLInputElement; setReference(value, input.value === "" ? null : Number(input.value)); }} /></label>`)}
       ${multiplierRequired ? html`<label>Reporting multiplier <select data-role="reporting-multiplier" required @change=${(event: Event) => { const value = Number((event.target as HTMLSelectElement).value); setReportingMultiplier(value || null); }}><option value="" ?selected=${reportingMultiplier === null}>Choose multiplier</option>${[1, 2, 4, 8].map((value) => html`<option value=${value} ?selected=${reportingMultiplier === value}>${value}</option>`)}</select></label><p>ESPHome source editing is unavailable, so the multiplier cannot be read from authoritative config. Choose it.</p>` : ""}
       </div>
-      <div class="calibration-actions"><button class="secondary" @click=${check} ?disabled=${busy || !referenceReady}>${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Loading live current data…` : "Check stability"}</button>
-        <button class="primary" @click=${calibrate} ?disabled=${busy || !referenceReady || !stability?.stable || (result?.iteration ?? 0) >= 3 || Boolean(result && !result.retry_allowed && result.iteration > 0)}>${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Calibrating current…` : result?.retry_allowed ? "Retry current calibration" : "Calibrate current"}</button></div>
+      <div class="calibration-actions"><button class="secondary" @click=${check} ?disabled=${busy || !calibrationAvailable || !referenceReady}>${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Loading live current data…` : "Check stability"}</button>
+        <button class="primary" @click=${calibrate} ?disabled=${busy || !calibrationAvailable || !referenceReady || !stability?.stable || (result?.iteration ?? 0) >= 3 || Boolean(result && !result.retry_allowed && result.iteration > 0)}>${busy ? html`<span class="loading-spinner" aria-hidden="true"></span>Calibrating current…` : result?.retry_allowed ? "Retry current calibration" : "Calibrate current"}</button></div>
       ${stability ? html`<div class=${stability.stable ? "success-band" : "warning-band"} role="status">${stability.stable ? "Stable and ready for calibration." : stability.windows.length ? "Data is changing too much; keep the load steady." : "Waiting for live data…"}</div>` : ""}
       ${stabilityEvidence(stability, selected.map((value) => `CT${value}`))}
       ${result?.state === "applied_pending_restart_verification" ? html`<div class="success-band" role="status">Current calibration complete for ${result.changed_channels.map((value) => `CT${value}`).join(", ") || "no changed channels"}.</div>` : ""}
       ${calibrationEvidence(result)}
-      ${result?.state.includes("indeterminate") ? html`<aside class="recovery-panel" role="status"><strong>Calibration outcome indeterminate</strong><p>No automatic retry will be made.</p><button class="secondary" @click=${reconnect}>Reconnect and inspect</button><button class="danger" @click=${cancel}>Cancel session</button></aside>` : ""}
+      ${recovery || result?.state.includes("indeterminate") ? html`<aside class="recovery-panel" role="status"><strong>${result?.state.includes("indeterminate") ? "Calibration outcome indeterminate" : "Calibration outside tolerance"}</strong><p>${result?.retry_allowed ? "Enter the references for the affected CTs and check stability before retrying." : "No automatic retry will be made."}</p><button class="secondary" ?disabled=${busy} @click=${reconnect}>Reconnect and inspect</button><button class="danger" ?disabled=${busy} @click=${cancel}>Cancel session</button></aside>` : ""}
       </div>
     </section>
   `;

@@ -11,6 +11,8 @@ from typing import Any
 import pytest
 
 from custom_components.circuitsetup_energy_meter_helper.calibration_engine import (
+    CalibrationResult,
+    CalibrationState,
     OffsetCalibrationResult,
     OffsetCalibrationState,
 )
@@ -19,6 +21,9 @@ from custom_components.circuitsetup_energy_meter_helper.device_builder import (
 )
 from custom_components.circuitsetup_energy_meter_helper.entity_binding import (
     OffsetControlStatus,
+)
+from custom_components.circuitsetup_energy_meter_helper.log_parser import (
+    RestoreEvidence,
 )
 from custom_components.circuitsetup_energy_meter_helper.meter_config_mutator import (
     expected_meter_entity_evidence,
@@ -54,6 +59,9 @@ from custom_components.circuitsetup_energy_meter_helper.store import (
 )
 from custom_components.circuitsetup_energy_meter_helper.topology import (
     topology_from_native,
+)
+from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
+    sanitize_payload,
 )
 from custom_components.circuitsetup_energy_meter_helper.workflow import (
     EntryWorkflow,
@@ -1589,6 +1597,71 @@ def _workflow(
     )
     workflow._sessions[handle.session_id] = handle
     return workflow, handle, sessions, api
+
+
+def test_active_work_keeps_gain_recovery_through_a_stability_check() -> None:
+    async def run() -> None:
+        workflow, handle, _, _ = _workflow()
+        workflow._device = lambda _device_id: None  # type: ignore[method-assign,assignment]
+        workflow._mac = lambda _device_id: MAC  # type: ignore[method-assign]
+        handle.binding.native = True
+
+        async def no_verification(_mac: str) -> None:
+            return None
+
+        workflow._store.async_get_verified_calibration = no_verification  # type: ignore[method-assign]
+        failed = CalibrationResult(
+            CalibrationState.RESULT_OUTSIDE_TOLERANCE,
+            "main_1", None, (1, 2, 3), 1,
+            (120.0,) * 3, (115.0,) * 3, (4.2,) * 3, None, None, True,
+        )
+        successful = replace(
+            failed,
+            state=CalibrationState.APPLIED_PENDING_RESTART_VERIFICATION,
+            retry_allowed=False,
+        )
+        indeterminate = replace(
+            failed,
+            state=CalibrationState.INDETERMINATE,
+            before_values=(),
+            after_values=(),
+            error_percent_values=(),
+            restore_evidence={
+                "meter_main1": RestoreEvidence(
+                    2, "meter_main1", ((7305, 27518),) * 3,
+                    "flash", True, "positive_loaded_line", False, (),
+                )
+            },
+            retry_allowed=False,
+        )
+        outcomes = iter(((failed,), (successful,), (indeterminate,)))
+
+        async def calibrate(*_args: Any, **_kwargs: Any) -> tuple[CalibrationResult, ...]:
+            return next(outcomes)
+
+        workflow._calibration.async_calibrate_voltages = calibrate  # type: ignore[method-assign]
+        await workflow.async_calibrate_voltage(handle.session_id, "main", 120.0, False)
+        await workflow.async_check_stability(handle.session_id, "voltage", "main")
+        active = await workflow.async_get_active_work(handle.device_id)
+        recovery = active["session"].gain_recovery
+        assert recovery is not None
+        assert (recovery.target, recovery.target_id, recovery.results) == (
+            "voltage", "main", (failed,)
+        )
+        with pytest.raises(WorkflowHandleError, match="gain calibration recovery"):
+            await workflow.async_complete_calibration_without_changes(handle.session_id)
+        with pytest.raises(WorkflowHandleError, match="gain calibration recovery"):
+            await workflow.async_restart_and_verify(handle.session_id)
+        await workflow.async_calibrate_voltage(handle.session_id, "main", 120.0, True)
+        assert (await workflow.async_get_session(handle.session_id)).gain_recovery is None
+        await workflow.async_calibrate_voltage(handle.session_id, "main", 120.0, True)
+        resumed = sanitize_payload(await workflow.async_get_active_work(handle.device_id))
+        assert resumed["session"]["gain_recovery"]["results"][0]["restore_evidence"] == {
+            "available": True
+        }
+        await workflow.async_close()
+
+    asyncio.run(run())
 
 
 def test_reconnect_session_reconnects_and_inspects_the_live_meter() -> None:

@@ -22,6 +22,7 @@ from homeassistant.core import HomeAssistant
 import voluptuous as vol
 # isort: on
 
+from .calibration_engine import CalibrationStabilityError
 from .config_mutator import ConfigMutationError
 from .config_transaction import RollbackFailedError
 from .const import CONF_ESPHOME_ENTRY_ID, DATA_PANEL_REBIND_ENTRY_ID, DOMAIN
@@ -253,6 +254,8 @@ class TransactionOwner(Protocol):
     async def async_rollback(self, transaction_id: str) -> Any: ...
 
     async def async_abandon(self, transaction_id: str) -> Any: ...
+
+    async def async_restore_before_unload(self) -> None: ...
 
 
 class WorkflowOwner(Protocol):
@@ -836,15 +839,17 @@ class EntryWebsocketController:
                     clear_subscribers()
                 except BaseException as error:  # noqa: BLE001 - complete all teardown
                     errors.append(error)
-        if workflow is not None:
+        try:
+            await self.sessions.async_unload(
+                transactions.async_restore_before_unload if transactions is not None else None
+            )
+        except BaseException as error:  # noqa: BLE001 - retain rollback ownership for retry
+            errors.append(error)
+        if workflow is not None and not self.sessions._transactions():
             try:
                 await workflow.async_close()
             except BaseException as error:  # noqa: BLE001 - complete all teardown
                 errors.append(error)
-        try:
-            await self.sessions.async_unload()
-        except BaseException as error:  # noqa: BLE001 - scrub before reporting
-            errors.append(error)
         if errors:
             raise BaseExceptionGroup("websocket controller cleanup failed", errors)
         self.transactions = None
@@ -1935,6 +1940,8 @@ def _send_safe_error(
         code, message = "not_found", "The requested resource was not found"
     elif isinstance(error, CalibrationBusyError):
         code, message = "device_busy", "The selected meter is busy"
+    elif isinstance(error, CalibrationStabilityError):
+        code, message = "calibration_unstable", "Keep the load steady and check stability again"
     elif isinstance(error, ValueError | vol.Invalid):
         code, message = "invalid_request", "The request is invalid"
     else:

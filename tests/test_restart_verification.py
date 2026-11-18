@@ -1300,7 +1300,7 @@ def test_task17_rejects_forged_origin_before_any_calibration_mutation(
             await engine.async_calibrate_current(
                 "aabbccddeeff", session, native_meter(), 1, 10.0, 1.0, 1.0
             )
-        assert session.events == []
+        assert all(event[0] == "window" for event in session.events)
         assert sessions.pending_calibration("aabbccddeeff") is None
 
     asyncio.run(run())

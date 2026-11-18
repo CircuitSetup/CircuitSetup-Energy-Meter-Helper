@@ -88,7 +88,9 @@ export function buildInstallStep(data: BuildInstallData, actions: BuildInstallAc
       ${state === "failed" || retryableInstall ? html`
         <div class="recovery-panel" role="status">
           <strong>${sourceChanged ? "Reviewed configuration source changed" : communicationFailure ? "Meter chip communication failed" : uploadRejected ? "Firmware upload was rejected" : uploadUnknown ? "Installation outcome is unknown" : persistenceFailure ? unchanged ? "Helper settings could not be saved" : deviceVerified ? "Firmware installed; Helper data was not saved" : "Firmware uploaded; verification did not complete" : failureMessage ?? "Build or install needs attention"}</strong>
-          ${sourceChanged ? html`<p>Restore the exact reviewed YAML in ESPHome Device Builder before retrying or going Back. This review cannot verify a different source.</p>` : communicationFailure ? html`<p>The ESP32 reconnected but could not establish SPI communication with
+          ${sourceChanged ? html`<p>${purpose === "install_configuration" && retryableInstall
+            ? "Restore the exact reviewed YAML in ESPHome Device Builder to retry. Back discards this install review and keeps the current YAML."
+            : "Restore the exact reviewed YAML in ESPHome Device Builder before retrying or going Back. This review cannot verify a different source."}</p>` : communicationFailure ? html`<p>The ESP32 reconnected but could not establish SPI communication with
             ${failedPins.length ? "the meter chip(s) on CS pin(s) " + failedPins.map((pin) => "GPIO" + pin).join(", ") : "one or more meter chips (CS pin unavailable)"}.
             This is an ESP32–meter-chip link, not a Wi-Fi or Home Assistant problem.</p>
             <ol>

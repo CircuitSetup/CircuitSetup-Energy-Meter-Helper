@@ -189,6 +189,7 @@ it("offers an explicit install retry for uncertain uploads without claiming inst
   render(buildInstallStep({ purpose: "install_configuration", status: { ...status, evidence: ["upload_outcome_unknown", "source_changed"] } }, { apply: noop, compile: noop, install: noop, rollback: noop, back: noop, continueFlow: noop }), host);
   expect(host.textContent).toContain("Reviewed configuration source changed");
   expect(host.textContent).toContain("Restore the exact reviewed YAML");
+  expect(host.textContent).toContain("Back discards this install review and keeps the current YAML.");
 });
 
 it("describes a rejected upload with failed checkpoint cleanup accurately", () => {
@@ -1356,6 +1357,10 @@ describe("CircuitSetup panel", () => {
       getActiveWork: vi.fn().mockResolvedValue({ session: null, transaction: null }),
       getMeterConfiguration: vi.fn().mockImplementation(() => new Promise((resolve) => { resolveMetadata = resolve; })),
       startSession: vi.fn().mockResolvedValue(session),
+      calibrateCurrent: vi.fn().mockResolvedValue({ state: "applied_pending_restart_verification", changed_channels: [1],
+        iteration: 1, before_values: [9], after_values: [10], error_percent_values: [0], retry_allowed: false,
+        gain_evidence: null, restore_evidence: null }),
+      getSession: vi.fn().mockResolvedValue(session),
     };
     state.subscribeSession = vi.fn();
     panel.showInventory(saved as unknown as CtInventory);
@@ -1374,7 +1379,8 @@ describe("CircuitSetup panel", () => {
     await tick(); await panel.updateComplete;
     expect(state.pendingAction).toBe("session");
     expect(state.api.startSession).not.toHaveBeenCalled();
-    resolveMetadata(saved);
+    const installed = meterResponse();
+    resolveMetadata(installed);
     await start;
     await tick(); await panel.updateComplete;
     expect(state.api.getMeterConfiguration).toHaveBeenCalledWith("meter-1");
@@ -1385,6 +1391,12 @@ describe("CircuitSetup panel", () => {
     expect(state.voltageReferenceLabel("main")).toBe("Main");
     expect(state.meterSettingsDraft).toBe(draft);
     expect(state.drafts.get(1).multiplier).toBe(0);
+    state.drafts.get(1).multiplier = 2;
+    state.currentReferences.set(1, 10);
+    await state.calibrate("current");
+    expect(state.api.calibrateCurrent).toHaveBeenCalledExactlyOnceWith("session",
+      [{ channel: 1, reference: 10, reporting_multiplier: installed.channels[0]!.reporting_multiplier }], true, []);
+    expect(state.drafts.get(1).multiplier).toBe(2);
     state.resetCalibrationRun();
     expect(state.voltageReferenceIds()).toEqual(["unsaved"]);
   });
@@ -5262,6 +5274,103 @@ describe("CircuitSetup panel", () => {
     expect(state.session).toEqual(session);
     expect(state.transaction).toEqual(transaction);
     expect(panel.shadowRoot?.querySelector("h1")?.textContent).toBe("Install Configuration");
+  });
+
+  it("restores a failed current operation and keeps its recovery actions available after reconnect", async () => {
+    const panel = await mount(makeHass({}));
+    const state = panel as unknown as Record<string, any>;
+    const result = { state: "indeterminate", group_key: "main_2", phase: "B", changed_channels: [5], iteration: 1,
+      before_values: [], after_values: [], error_percent_values: [], retry_allowed: false, gain_evidence: null, restore_evidence: null };
+    const session = { session_id: "session", device_id: "meter-1", state: "indeterminate", calibration_plan: "standard",
+      safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] },
+      gain_recovery: { target: "current", target_id: "5", results: [result] } };
+    state.selectedDeviceId = "meter-1";
+    state.topology = meterResponse().topology;
+    state.configurationMode = "runtime_only";
+    state.api = {
+      getActiveWork: vi.fn().mockResolvedValue({ session, transaction: null, verified_calibration: null }),
+      reconnectSession: vi.fn().mockResolvedValue(session),
+    };
+    state.subscribeSession = vi.fn();
+
+    await state.restoreActiveWork(state.api, "meter-1", state.operationGeneration);
+    await panel.updateComplete;
+    expect(state.step).toBe("current");
+    expect(panel.shadowRoot?.querySelector("h2")?.textContent).toBe("Calibrate CT4–CT6");
+    expect(panel.shadowRoot?.textContent).toContain("Reconnect and inspect");
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("footer .primary")?.disabled).toBe(true);
+
+    await state.reconnectSession();
+    await panel.updateComplete;
+    expect(state.api.reconnectSession).toHaveBeenCalledWith("session");
+    expect(panel.shadowRoot?.textContent).toContain("Reconnect and inspect");
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>("footer .primary")?.disabled).toBe(true);
+  });
+
+  it("reconnect keeps the failed gain board when a different offset board is retained", async () => {
+    const panel = await mount(makeHass({}));
+    const state = panel as unknown as Record<string, any>;
+    const result = { state: "indeterminate", group_key: "addon1_1", phase: null, changed_channels: [7, 8, 9], iteration: 1,
+      before_values: [], after_values: [], error_percent_values: [], retry_allowed: false, gain_evidence: null, restore_evidence: null };
+    const session = { session_id: "session", device_id: "meter-1", state: "indeterminate", calibration_plan: "full",
+      safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] },
+      gain_recovery: { target: "voltage", target_id: "main", results: [result] } };
+    state.selectedDeviceId = "meter-1";
+    state.topology = { ...meterResponse().topology, addon_count: 1, board_count: 2, ct_count: 12, group_count: 4 };
+    state.session = session;
+    state.step = "voltage";
+    state.stockOffsetMode = () => true;
+    state.api = {
+      reconnectSession: vi.fn().mockResolvedValue(session),
+      getOffsetPreparation: vi.fn().mockResolvedValue(null),
+      getOffsetFinalization: vi.fn().mockResolvedValue({ board_index: 0, stage: 1, results: [] }),
+      getSession: vi.fn().mockResolvedValue(session),
+    };
+
+    await state.reconnectSession();
+
+    expect(state.board).toBe(1);
+    expect(state.step).toBe("voltage");
+  });
+
+  it("ignores a canonical preview response after another device owns panel state", async () => {
+    const panel = await mount(makeHass({}));
+    const state = panel as unknown as Record<string, any>;
+    state.selectedDeviceId = "meter-1";
+    state.setMeterConfiguration(meterResponse());
+    let resolvePreview!: (value: unknown) => void;
+    const preview = new Promise((resolve) => { resolvePreview = resolve; });
+    state.api = { previewMeterConfiguration: vi.fn().mockReturnValue(preview) };
+    const previous = state.previewCanonicalConfiguration();
+    expect(state.api.previewMeterConfiguration).toHaveBeenCalledOnce();
+    state.selectDevice("meter-2");
+    const newer = { transaction_id: "newer", purpose: "install_configuration", state: "previewed" };
+    state.transaction = newer;
+    state.pendingAction = "topology:meter-2";
+    resolvePreview({ transaction_id: "older" });
+    await previous;
+
+    expect(state.transaction).toBe(newer);
+    expect(state.pendingAction).toBe("topology:meter-2");
+  });
+
+  it("clears stable samples when calibration detects that readings changed", async () => {
+    const panel = await mount(makeHass({}));
+    const state = panel as unknown as Record<string, any>;
+    state.selectedDeviceId = "meter-1";
+    state.session = { session_id: "session", device_id: "meter-1", state: "ready", calibration_plan: "standard",
+      safety_acknowledged: true, preflight: { issues: [], zeroed_roles: [] } };
+    state.reportingMultiplier = 1;
+    state.currentReferences.set(1, 10);
+    state.stabilityByTarget.set("current:1", { stable: true, windows: [] });
+    state.api = { calibrateCurrent: vi.fn().mockRejectedValue({ code: "calibration_unstable" }) };
+    panel.showState("current");
+
+    await state.calibrate("current");
+    await panel.updateComplete;
+    expect(state.stabilityByTarget.size).toBe(0);
+    expect(panel.shadowRoot?.querySelector("[role=alert]")?.textContent).toContain("Readings changed. Keep the load steady and check stability again.");
+    expect(panel.shadowRoot?.querySelector<HTMLButtonElement>(".calibration-actions .primary")?.disabled).toBe(true);
   });
 
   it("explains an unreachable meter when calibration cannot start", async () => {

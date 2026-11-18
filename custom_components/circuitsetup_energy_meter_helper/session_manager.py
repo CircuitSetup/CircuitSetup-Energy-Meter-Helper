@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -106,6 +106,10 @@ class SessionManager:
         self._pending_calibrations: dict[str, PendingCalibrationOrigin] = {}
         self._closed = False
         self._unload_timeout = unload_timeout
+
+    @property
+    def unloading(self) -> bool:
+        return self._closed
 
     async def async_acquire_config(self, mac: str) -> ConfigLease:
         mac = canonical_mac(mac)
@@ -530,7 +534,9 @@ class SessionManager:
         ):
             raise CalibrationBusyError("calibration operation lease is not active")
 
-    async def async_unload(self) -> None:
+    async def async_unload(
+        self, before_scrub: Callable[[], Awaitable[None]] | None = None
+    ) -> None:
         self._closed = True
         pending: set[asyncio.Task[Any]] = set()
         cleanup_errors: list[BaseException] = []
@@ -615,7 +621,9 @@ class SessionManager:
             drain = asyncio.create_task(asyncio.wait(protected_pending))
             caller_cancelled |= await _wait_for_owned_cleanup(drain)
             pending.difference_update(protected_pending)
-        for transaction in transactions:
+        if before_scrub is not None:
+            await before_scrub()
+        for transaction in self._transactions():
             try:
                 release_reservation = getattr(
                     transaction, "async_release_reservation", None

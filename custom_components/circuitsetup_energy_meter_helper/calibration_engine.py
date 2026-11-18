@@ -264,9 +264,15 @@ class CalibrationEngine:
         binding: MeterBinding,
         *,
         substitutions: Mapping[str, str],
+        allow_gain_only: bool = False,
     ) -> RestartVerificationResult:
         return await self._async_verify_after_restart(
-            mac, session, binding, substitutions=substitutions, gains_only=False
+            mac,
+            session,
+            binding,
+            substitutions=substitutions,
+            gains_only=False,
+            allow_gain_only=allow_gain_only,
         )
 
     async def async_verify_gains_after_restart(
@@ -290,6 +296,7 @@ class CalibrationEngine:
         *,
         substitutions: Mapping[str, str],
         gains_only: bool,
+        allow_gain_only: bool = False,
     ) -> RestartVerificationResult:
         """Restart once and persist only exact flash evidence for changed groups."""
         if self._persist_verified is None:
@@ -311,6 +318,12 @@ class CalibrationEngine:
                     "server-owned calibration origin is missing"
                 ) from error
             expected_gains = pending.expected_phase_gains
+            if (
+                allow_gain_only
+                and expected_gains
+                and not (pending.offset_groups or pending.power_offset_groups)
+            ):
+                gains_only = True
             if gains_only and not expected_gains:
                 raise RestartVerificationError(
                     "server-owned gain calibration is missing"
@@ -1238,6 +1251,12 @@ class CalibrationEngine:
         lease = await self.sessions.async_acquire_calibration(mac)
         try:
             mac = lease.mac
+            await self._windows(
+                session,
+                tuple(sensor for group in groups for sensor in group.voltage_sensors),
+                timing_policy,
+            )
+            self._validate_binding_generation(session, binding)
             origin = await self._calibration_origin(lease, session, binding)
             marker = self._marker(changed_channels)
             await self._persist_interrupted(mac, marker)
@@ -1395,6 +1414,12 @@ class CalibrationEngine:
         lease = await self.sessions.async_acquire_calibration(mac)
         try:
             mac = lease.mac
+            await self._windows(
+                session,
+                tuple(group.current_sensors[index] for index in phase_indices),
+                timing_policy,
+            )
+            self._validate_binding_generation(session, binding)
             origin = await self._calibration_origin(lease, session, binding)
             marker = self._marker(channels)
             await self._persist_interrupted(mac, marker)
@@ -1984,15 +2009,16 @@ class CalibrationEngine:
         timing_policy: CalibrationTimingPolicy | None = None,
     ) -> SensorSampleWindow:
         descriptor = entity.descriptor
+        sample_count = self._sample_count if timing_policy is None else timing_policy.sample_count
         raw = await session.async_wait_for_sensor_window(
             descriptor.key,
             device_id=descriptor.device_id,
-            sample_count=self._sample_count,
+            sample_count=sample_count,
             after=monotonic() if boundary is None else boundary,
             timeout=self._sensor_timeout(timing_policy),
         )
         window = _sample_window(raw)
-        if len(window.values) != self._sample_count:
+        if len(window.values) != sample_count:
             raise CalibrationStabilityError("sensor window has the wrong sample count")
         if window.range_percent > self._stability_limit_percent:
             raise CalibrationStabilityError(

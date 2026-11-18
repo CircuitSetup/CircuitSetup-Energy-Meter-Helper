@@ -521,6 +521,63 @@ def parse_gain_run(
     )
 
 
+def parse_gain_clear(
+    lines: list[CalibrationLogLine],
+    *,
+    target_instance_id: str,
+    button_name: str,
+    expected_phase_gains: tuple[tuple[int, int], ...],
+    allow_already_empty: bool,
+) -> bool:
+    """Verify the gain clear and report whether it supplied a positive terminal."""
+    clearing = "Clearing stored gain calibrations and restoring config-defined values"
+    empty = "No stored gain calibrations to clear. Current values:"
+    verified = "Gain calibrations cleared; config values verified."
+    buttons = [
+        index for index, item in enumerate(lines) if _button_text(item.line) == button_name
+    ]
+    if len(buttons) != 1:
+        raise LogEvidenceError("gain clear requires one matching button response")
+
+    window: list[CalibrationLogLine] = []
+    for item in lines[buttons[0] + 1 :]:
+        if _button_text(item.line) is not None:
+            break
+        if _instance(item.line) == target_instance_id:
+            window.append(item)
+    payloads = [_calibration_payload(item.line) or "" for item in window]
+    headers = [
+        index for index, payload in enumerate(payloads) if payload in {clearing, empty}
+    ]
+    if len(headers) != 1 or any(
+        "failed" in payload.casefold() or "mismatch" in payload.casefold()
+        for payload in payloads
+    ):
+        raise LogEvidenceError("gain clear response is missing or failed")
+    header = headers[0]
+    end = next(
+        (index for index in range(header + 1, len(payloads)) if payloads[index].startswith("====")),
+        None,
+    )
+    table = _gain_table(window, payloads[header])
+    if (
+        end is None
+        or table is None
+        or _phase_pairs(table, _RESTORE_ROW_RE) != expected_phase_gains
+    ):
+        raise LogEvidenceError("gain clear response does not match configured gains")
+    terminals = [index for index, payload in enumerate(payloads) if payload == verified]
+    if payloads[header] == clearing:
+        if len(terminals) != 1 or terminals[0] <= end:
+            raise LogEvidenceError("gain clear verification is missing or duplicate")
+        return True
+    if terminals:
+        raise LogEvidenceError("gain clear response is contradictory")
+    if not allow_already_empty:
+        raise LogEvidenceError("this firmware's already-empty table cannot prove flash absence")
+    return False
+
+
 def parse_offset_run(
     lines: list[CalibrationLogLine] | tuple[CalibrationLogLine, ...],
     *,

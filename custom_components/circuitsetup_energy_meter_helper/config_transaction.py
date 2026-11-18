@@ -1124,6 +1124,7 @@ class ConfigTransactionManager:
                 transaction.purpose == "install_configuration"
                 and transaction.state
                 is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
+                and TransactionProgress.OTA_ATTEMPTED in transaction.progress
                 and any(
                     code in transaction.evidence
                     for code in (
@@ -1140,17 +1141,12 @@ class ConfigTransactionManager:
             if transaction.state is ConfigTransactionState.PREVIEWED:
                 await transaction.async_release_reservation()
             elif retryable:
-                # The flashed firmware and proposed YAML are retained. Check the
-                # exact applied source while the transaction still owns the lock.
-                if not transaction.recovered:
-                    await self._check_configuration_source(transaction, proposed=True)
+                await self._clear_install_checkpoint(transaction)
             else:
                 raise RuntimeError(
                     "only an unconfirmed preview or post-upload install retry "
                     "can be abandoned"
                 )
-            if TransactionProgress.OTA_ATTEMPTED in transaction.progress:
-                await self._clear_install_checkpoint(transaction)
             return self._finish(
                 transaction,
                 ConfigTransactionState.FAILED,
@@ -1571,6 +1567,9 @@ class ConfigTransactionManager:
                 finally:
                     transaction.persistence_commit_started = False
             await self._check_configuration_source(transaction, proposed=True)
+            if self.sessions.unloading:
+                # A protected checkpoint save may have drained during teardown.
+                return await self._rollback_locked(transaction, TransactionEvidenceCode.CANCELLED)
             return await self._upload_locked(transaction)
 
     async def _upload_locked(self, transaction: _ConfigTransaction) -> TransactionStatus:
@@ -1979,6 +1978,22 @@ class ConfigTransactionManager:
             transaction, TransactionEvidenceCode.PERSISTENCE_FAILED
         )
 
+    async def async_restore_before_unload(self) -> None:
+        """Restore outstanding local writes after operations drain, before losing YAML."""
+        for transaction in self.sessions._transactions():
+            if any(not task.done() for task in transaction.active_tasks):
+                raise RollbackFailedError("configuration operation is still active")
+            if (
+                transaction.recovered
+                or TransactionProgress.OTA_ATTEMPTED in transaction.progress
+                or not (transaction.write_started or transaction.rollback_available)
+            ):
+                continue
+            async with _operation(transaction):
+                await self._rollback_locked(transaction)
+                if not transaction.closed:
+                    raise RollbackFailedError("configuration rollback requires attention")
+
     async def async_rollback(self, transaction_id: str) -> TransactionStatus:
         """Consume the one available rollback and restore through Device Builder once."""
         transaction = self._transaction(transaction_id)
@@ -2013,6 +2028,7 @@ class ConfigTransactionManager:
             expected_current_sha256
             or sha256(plan.proposed_content.encode()).hexdigest()
         )
+        final_state = ConfigTransactionState.ROLLED_BACK
         if TransactionProgress.CONFIG_RESTORED not in transaction.progress:
             try:
                 # DeviceBuilder.async_restore_content owns restore plus exactly one validation.
@@ -2026,20 +2042,29 @@ class ConfigTransactionManager:
                 _evidence(transaction, TransactionEvidenceCode.CANCELLED)
                 self._retain_write_recovery(transaction)
                 raise
-            except (TimeoutError, ConfigChangedError):
+            except ConfigChangedError as error:
+                if not self.sessions.unloading or error.actual in (
+                    expected_current_sha256, transaction.source_sha256,
+                ):
+                    return self._retain_write_recovery(transaction)
+                # An external edit has already replaced our write.
+                _evidence(transaction, TransactionEvidenceCode.SOURCE_CHANGED)
+                final_state = ConfigTransactionState.FAILED
+            except TimeoutError:
                 return self._retain_write_recovery(transaction)
             except Exception as error:
                 _evidence(transaction, TransactionEvidenceCode.ROLLBACK_FAILED)
                 self._retain_write_recovery(transaction)
                 raise RollbackFailedError("configuration rollback failed") from error
-            _progress(transaction, TransactionProgress.CONFIG_RESTORED)
-            self.publish_status(_status(transaction))
+            else:
+                _progress(transaction, TransactionProgress.CONFIG_RESTORED)
+                self.publish_status(_status(transaction))
         transaction.write_started = False
         try:
             await transaction.async_release_reservation()
         except asyncio.CancelledError:
-            if not transaction.reservation_claimed:
-                self._finish(transaction, ConfigTransactionState.ROLLED_BACK)
+            if not transaction.reservation_claimed and not transaction.checkpoint_saved:
+                self._finish(transaction, final_state)
             else:
                 self._retain_write_recovery(transaction)
             raise
@@ -2057,7 +2082,7 @@ class ConfigTransactionManager:
                 _evidence(transaction, TransactionEvidenceCode.ROLLBACK_FAILED)
                 self._retain_write_recovery(transaction)
                 raise RollbackFailedError("configuration rollback cleanup failed") from error
-        return self._finish(transaction, ConfigTransactionState.ROLLED_BACK)
+        return self._finish(transaction, final_state)
 
     async def _rollback_after_cancellation(
         self, transaction: _ConfigTransaction

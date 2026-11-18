@@ -43,6 +43,12 @@ describe("workflowRoutes", () => {
     expect(resumeWorkflowRoute({ ...stock, sessionState: "verified", restartVerification: true })).toBe("offset");
     expect(resumeWorkflowRoute({ ...stock, sessionState: "offset_configuration_selected", offsetRecoveryPending: false, offsetConfigurationSelected: true })).toBe("summary");
   });
+  it("routes a failed gain action ahead of an earlier completed offset handoff", () => {
+    expect(resumeWorkflowRoute(context({
+      sessionState: "indeterminate", gainRecoveryTarget: "voltage",
+      offsetRecoveryPending: false, offsetConfigurationSelected: true,
+    }))).toBe("voltage");
+  });
   const matrix: Array<{
     name: string;
     changes: Partial<WorkflowContext>;

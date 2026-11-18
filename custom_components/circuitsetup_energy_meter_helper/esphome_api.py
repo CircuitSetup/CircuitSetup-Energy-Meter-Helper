@@ -20,6 +20,7 @@ from .log_parser import (
     MeterCommunicationParser,
     OffsetTableSnapshot,
     parse_calibration_sources,
+    parse_gain_clear,
     parse_gain_run,
     parse_offset_configuration_selection,
     parse_offset_table_snapshot,
@@ -157,6 +158,7 @@ class ESPHomeApiSession:
         self._gain_captures: dict[object, tuple[list[CalibrationLogLine], int, bool]] = {}
         self._gain_capture_operations: dict[object, tuple[int, int]] = {}
         self._gain_capture_client: Any | None = None
+        self._gain_clear_proves_empty = False
         self._state_tracker = StateTracker(history_size=100)
         self.key_resolutions: dict[str, EntityKey] = {}
         self.entities: tuple[Any, ...] = ()
@@ -264,6 +266,14 @@ class ESPHomeApiSession:
 
         async with self._connection_state_lock:
             ensure_attempt_is_live()
+            # Earlier stock firmware can claim empty while retaining an equal saved table.
+            release = re.fullmatch(
+                r"([0-9]{4})\.([0-9]{1,2})\.([0-9]+)",
+                str(getattr(device_info, "esphome_version", "")),
+            )
+            self._gain_clear_proves_empty = release is not None and tuple(
+                int(part) for part in release.groups()
+            ) >= (2026, 12, 0)
             self.entities = tuple(entities)
             self._state_tracker.connect(self.connection_generation + 1)
             for state, received_at in initial_states:
@@ -367,6 +377,32 @@ class ESPHomeApiSession:
     async def async_press_button(self, key: int, *, device_id: int = 0) -> None:
         """Press one ESPHome button on the ready connection."""
         self._ready_client().button_command(key, device_id)
+
+    async def async_clear_gain_calibration(
+        self,
+        key: int,
+        *,
+        device_id: int,
+        connection_generation: int,
+        target_instance_id: str,
+        button_name: str,
+        expected_phase_gains: tuple[tuple[int, int], ...],
+        timeout: float = 5.0,
+    ) -> None:
+        """Press one gain-only clear button and require its own verified response."""
+        _, captured = await self._async_capture_calibration_logs(
+            timeout,
+            button=(key, device_id),
+            expected_generation=connection_generation,
+        )
+        if parse_gain_clear(
+            captured,
+            target_instance_id=target_instance_id,
+            button_name=button_name,
+            expected_phase_gains=expected_phase_gains,
+            allow_already_empty=self._gain_clear_proves_empty,
+        ):
+            self._gain_clear_proves_empty = True
 
     async def async_wait_for_sensor_window(
         self,
@@ -521,7 +557,7 @@ class ESPHomeApiSession:
             expected_cs_pins,
             len(expected_instance_ids),
         )
-        generation, captured = await self._async_offset_dump(timeout)
+        generation, captured = await self._async_capture_calibration_logs(timeout)
         if require_communication:
             parser = MeterCommunicationParser()
             for item in captured:
@@ -548,7 +584,7 @@ class ESPHomeApiSession:
         self, expected_instance_ids: set[str], *, timeout: float = 5.0
     ) -> dict[str, int]:
         """Fresh native per-chip selection proof; not register verification."""
-        generation, captured = await self._async_offset_dump(timeout)
+        generation, captured = await self._async_capture_calibration_logs(timeout)
         return parse_offset_configuration_selection(
             captured,
             connection_generation=generation,
@@ -569,7 +605,7 @@ class ESPHomeApiSession:
         allowed_instance_ids: set[str] | None = None,
     ) -> dict[str, object]:
         """Capture the complete restart dump before judging restore evidence."""
-        generation, captured = await self._async_offset_dump(timeout)
+        generation, captured = await self._async_capture_calibration_logs(timeout)
         if generation != connection_generation:
             raise ESPHomeSessionDisconnectedError(
                 "connection generation changed during restore verification"
@@ -724,17 +760,25 @@ class ESPHomeApiSession:
 
         return asyncio.create_task(wait())
 
-    async def _async_offset_dump(
-        self, timeout: float
+    async def _async_capture_calibration_logs(
+        self,
+        timeout: float,
+        *,
+        button: tuple[int, int] | None = None,
+        expected_generation: int | None = None,
     ) -> tuple[int, list[CalibrationLogLine]]:
-        """Shared bounded raw dump for saved tables and final YAML selection."""
+        """Capture a bounded dump or one native button response on the live connection."""
         async with self._lifecycle_lock:
             client = self._ready_client()
             generation = self.connection_generation
+            if expected_generation is not None and expected_generation != generation:
+                raise ESPHomeSessionDisconnectedError(
+                    "connection generation changed before calibration log capture"
+                )
             captured: list[CalibrationLogLine] = []
             captured_bytes = 0
             overflowed = False
-            capturing = True
+            capturing = button is None
 
             def on_log(message: Any) -> None:
                 nonlocal captured_bytes, capturing, overflowed
@@ -768,11 +812,14 @@ class ESPHomeApiSession:
             unsubscribe = client.subscribe_logs(
                 on_log,
                 self._log_level("LOG_LEVEL_DEBUG"),
-                dump_config=True,
+                dump_config=button is None,
             )
             self._unsubscribe_logs = unsubscribe
             deadline = monotonic() + timeout
             try:
+                if button is not None:
+                    capturing = True
+                    client.button_command(*button)
                 while monotonic() < deadline:
                     if (
                         client is not self._client
@@ -780,11 +827,11 @@ class ESPHomeApiSession:
                         or self.connection_generation != generation
                     ):
                         raise ESPHomeSessionDisconnectedError(
-                            "connection generation changed during offset table snapshot"
+                            "connection generation changed during calibration log capture"
                         )
                     if overflowed:
                         raise ESPHomeApiRepairRequired(
-                            "bounded offset table snapshot exceeded its capture limit"
+                            "bounded calibration log capture exceeded its capture limit"
                         )
                     await asyncio.sleep(min(0.05, max(0.0, deadline - monotonic())))
                 if (
@@ -793,11 +840,11 @@ class ESPHomeApiSession:
                     or self.connection_generation != generation
                 ):
                     raise ESPHomeSessionDisconnectedError(
-                        "connection generation changed during offset table snapshot"
+                        "connection generation changed during calibration log capture"
                     )
                 if overflowed:
                     raise ESPHomeApiRepairRequired(
-                        "bounded offset table snapshot exceeded its capture limit"
+                        "bounded calibration log capture exceeded its capture limit"
                     )
                 return generation, captured
             finally:
