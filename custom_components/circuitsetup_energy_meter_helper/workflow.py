@@ -45,6 +45,8 @@ except ImportError:
 
 from .calibration_engine import (
     CalibrationEngine,
+    CalibrationResult,
+    CalibrationState,
     CalibrationTimingPolicy,
     OffsetCalibrationResult,
     OffsetCalibrationState,
@@ -412,6 +414,13 @@ class _InspectionHandle:
 
 
 @dataclass(frozen=True, slots=True)
+class GainRecovery:
+    target: Literal["voltage", "current"]
+    target_id: str
+    results: tuple[CalibrationResult, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class SessionStatus:
     session_id: str
     device_id: str
@@ -427,6 +436,7 @@ class SessionStatus:
     calibration_plan: CalibrationPlan = "full"
     configured_offset_targets: tuple[tuple[int, int], ...] = ()
     has_pending_gain_calibration: bool = False
+    gain_recovery: GainRecovery | None = None
 
 
 @dataclass(slots=True)
@@ -465,6 +475,7 @@ class _SessionHandle:
     stock_offset_pending: bool = False
     offset_preparation_id: str | None = None
     offset_finalization_id: str | None = None
+    gain_recovery: GainRecovery | None = None
 
     def status(self) -> SessionStatus:
         capability = getattr(self.binding, "offset_capability", None)
@@ -525,6 +536,7 @@ class _SessionHandle:
             boards,
             calibration_plan=self.calibration_plan,
             configured_offset_targets=self.configured_offset_targets,
+            gain_recovery=self.gain_recovery,
         )
 
     def _offset_stage_state(self, board_index: int, stage: int) -> str:
@@ -552,6 +564,7 @@ class _SessionHandle:
         self.substitutions.clear()
         self.calibrated_current_channels.clear()
         self.pending_reporting_multipliers.clear()
+        self.gain_recovery = None
 
 
 def _ct_change_requests(
@@ -2221,6 +2234,8 @@ class EntryWorkflow:
         """Review captured stock candidates through the normal configuration owner."""
         handle, revision = self._claim_ready_session(session_id, allow_verified=True)
         try:
+            if handle.gain_recovery is not None:
+                raise WorkflowHandleError("resolve the current gain calibration recovery first")
             if self.transactions is None:
                 raise WorkflowCapabilityUnavailable(
                     "stock offset finalization is unavailable"
@@ -2658,6 +2673,7 @@ class EntryWorkflow:
     ) -> Any:
         handle, revision = self._claim_ready_session(session_id)
         try:
+            self._require_gain_retry_target(handle, "voltage", reference_id)
             groups = self._voltage_reference_groups(handle, reference_id)
             calibrated = tuple(
                 (
@@ -2684,19 +2700,65 @@ class EntryWorkflow:
             for result in results:
                 if result.gain_evidence is not None and result.gain_evidence.flash_saved:
                     handle.calibration_sources[result.gain_evidence.instance_id] = "flash"
-            handle.state = next(
-                (
-                    str(result.state)
-                    for result in results
-                    if str(result.state) != "applied_pending_restart_verification"
-                ),
-                "applied_pending_restart_verification",
-            )
+            self._record_gain_outcome(handle, "voltage", reference_id, results)
             self._refresh(handle)
             self._publish(handle)
             return results
         finally:
             self._release_claim(handle, revision)
+
+    @staticmethod
+    def _require_gain_retry_target(
+        handle: _SessionHandle,
+        target: Literal["voltage", "current"],
+        target_id: str,
+        channels: tuple[int, ...] = (),
+    ) -> None:
+        recovery = handle.gain_recovery
+        if recovery is None:
+            return
+        if (
+            recovery.target != target
+            or recovery.target_id != target_id
+            or (
+                target == "current"
+                and channels != recovery.results[0].changed_channels
+            )
+            or any(
+                result.state != CalibrationState.APPLIED_PENDING_RESTART_VERIFICATION
+                and not result.retry_allowed
+                for result in recovery.results
+            )
+        ):
+            raise WorkflowHandleError("resolve the current gain calibration recovery first")
+
+    @staticmethod
+    def _record_gain_outcome(
+        handle: _SessionHandle,
+        target: Literal["voltage", "current"],
+        target_id: str,
+        results: tuple[CalibrationResult, ...],
+    ) -> None:
+        failure = next(
+            (
+                result
+                for result in results
+                if result.state != CalibrationState.APPLIED_PENDING_RESTART_VERIFICATION
+            ),
+            None,
+        )
+        handle.state = str(failure.state) if failure else "applied_pending_restart_verification"
+        handle.gain_recovery = None
+        if failure:
+            # The panel only needs restore availability, and full tables can exceed the wire depth.
+            restore_available: dict[str, object] = {"available": True}
+            retained_results = tuple(
+                replace(result, restore_evidence=restore_available)
+                if result.restore_evidence is not None
+                else result
+                for result in results
+            )
+            handle.gain_recovery = GainRecovery(target, target_id, retained_results)
 
     @staticmethod
     def _voltage_reference_groups(
@@ -2771,7 +2833,12 @@ class EntryWorkflow:
                         ),
                     )
                 )
-            operation = "current:" + ",".join(str(item[0]) for item in calibrated)
+            channels = tuple(item[0] for item in calibrated)
+            if not channels:
+                raise ValueError("current calibration requires at least one reference")
+            target_id = str(channels[0])
+            self._require_gain_retry_target(handle, "current", target_id, channels)
+            operation = "current:" + ",".join(map(str, channels))
             iteration = self._sessions_owner.next_calibration_iteration(
                 handle.mac, operation
             )
@@ -2794,7 +2861,7 @@ class EntryWorkflow:
                 for channel in result.changed_channels:
                     if channel in pending:
                         handle.pending_reporting_multipliers[channel] = pending[channel]
-            handle.state = str(result.state)
+            self._record_gain_outcome(handle, "current", target_id, (result,))
             self._refresh(handle)
             self._publish(handle)
             return result
@@ -2805,6 +2872,8 @@ class EntryWorkflow:
         """Independently verify gains without completing pending stock offsets."""
         handle, revision = self._claim_ready_session(session_id)
         try:
+            if handle.gain_recovery is not None:
+                raise WorkflowHandleError("resolve the current gain calibration recovery first")
             if not handle.stock_offset_pending:
                 raise WorkflowHandleError("pending stock offset recovery is absent")
             self._assert_claim(handle, revision)
@@ -2826,6 +2895,8 @@ class EntryWorkflow:
     async def async_restart_and_verify(self, session_id: str) -> Any:
         handle, revision = self._claim_ready_session(session_id)
         try:
+            if handle.gain_recovery is not None:
+                raise WorkflowHandleError("resolve the current gain calibration recovery first")
             self._assert_claim(handle, revision)
             if handle.stock_offset_pending:
                 raise WorkflowHandleError("stock offset results require configuration handoff")
@@ -2834,6 +2905,7 @@ class EntryWorkflow:
                 self._require_api(),
                 handle.binding,
                 substitutions=handle.substitutions,
+                allow_gain_only=True,
             )
             self._assert_claim(handle, revision)
             handle.binding = result.binding
@@ -2848,6 +2920,8 @@ class EntryWorkflow:
         self, session_id: str
     ) -> SessionStatus:
         handle = self._session(session_id)
+        if handle.gain_recovery is not None:
+            raise WorkflowHandleError("resolve the current gain calibration recovery first")
         if handle.stock_offset_pending:
             raise WorkflowHandleError("stock offset results require configuration handoff")
         if self._sessions_owner.pending_calibration(handle.mac) is not None or (
@@ -2938,27 +3012,45 @@ class EntryWorkflow:
                     handle.substitutions,
                 )
             groups = {
-                group.key.replace("main_", "meter_main"): group
-                for group in handle.binding.groups
+                group.key.replace("main_", "meter_main"): (group, index * 3 + 1)
+                for index, group in enumerate(handle.binding.groups)
             }
             instance_ids = {group.instance_id for group in record.groups}
             if not instance_ids.issubset(groups):
                 raise WorkflowHandleError("verified calibration groups are unavailable")
-            sources = await api.async_calibration_sources(instance_ids)
-            for instance_id in sorted(instance_ids):
-                if sources.get(instance_id) == "configuration":
-                    continue
-                restore = groups[instance_id].restore_gain.descriptor
-                await api.async_press_button(restore.key, device_id=restore.device_id)
-            sources = await api.async_calibration_sources(instance_ids)
-            if any(sources.get(instance_id) != "configuration" for instance_id in instance_ids):
-                raise WorkflowHandleError("flash calibration clear could not be verified")
-            if not await self._store.async_complete_verified_calibration_handoff(
-                handle.mac, verification_id, transaction_id
-            ):
-                raise WorkflowHandleError("calibration source handoff is stale")
+            # An installed CT selection can replace an uncalibrated phase's current gain.
+            installed_current_gains = {
+                selection.channel: selection.raw_gain_ct
+                for selection in await self._store.async_get_ct_selections(handle.mac)
+            }
+            generation = handle.binding.connection_generation
+            for verified in sorted(record.groups, key=lambda group: group.instance_id):
+                group, first_channel = groups[verified.instance_id]
+                restore = group.restore_gain.descriptor
+                expected_gains = tuple(
+                    (voltage, installed_current_gains.get(channel, current))
+                    for channel, (voltage, current) in enumerate(verified.phase_gains, first_channel)
+                )
+                self._assert_claim(handle, revision)
+                try:
+                    await api.async_clear_gain_calibration(
+                        restore.key,
+                        device_id=restore.device_id,
+                        connection_generation=generation,
+                        target_instance_id=verified.instance_id,
+                        button_name=restore.name,
+                        expected_phase_gains=expected_gains,
+                    )
+                except LogEvidenceError as error:
+                    raise WorkflowHandleError("flash calibration clear could not be verified") from error
+            async with api.hold_connection_generation(generation):
+                self._assert_claim(handle, revision)
+                if not await self._store.async_complete_verified_calibration_handoff(
+                    handle.mac, verification_id, transaction_id
+                ):
+                    raise WorkflowHandleError("calibration source handoff is stale")
             self._assert_claim(handle, revision)
-            handle.calibration_sources.update(sources)
+            handle.calibration_sources.update(dict.fromkeys(instance_ids, "configuration"))
             self._refresh(handle)
             self._publish(handle)
             return replace(

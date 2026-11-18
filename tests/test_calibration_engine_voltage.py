@@ -16,6 +16,7 @@ from custom_components.circuitsetup_energy_meter_helper.calibration_engine impor
 )
 from custom_components.circuitsetup_energy_meter_helper.calibration_engine import (
     CalibrationInvariantError,
+    CalibrationStabilityError,
     CalibrationState,
     CalibrationTimingPolicy,
     IterationConfirmationRequired,
@@ -287,7 +288,35 @@ def test_voltage_calibration_persists_before_mutation_and_preserves_currents() -
     asyncio.run(run())
 
 
-def test_voltage_uses_native_gain_average_without_periodic_sensor_windows() -> None:
+@pytest.mark.parametrize("target", ("voltage", "current"))
+def test_unstable_reads_prevent_calibration_mutation(target: str) -> None:
+    async def run() -> None:
+        meter = binding(0)
+        session = FakeCalibrationSession(
+            gain_evidence("meter_main1"), before=sample_window(2.0, 8.0, 2.0)
+        )
+        markers, persist = marker_writer(session.events)
+        engine = CalibrationEngine(SessionManager(), persist)
+
+        with pytest.raises(CalibrationStabilityError, match="stability limit"):
+            if target == "voltage":
+                await engine.async_calibrate_voltage(
+                    "aabbccddeeff", session, meter, "main_1", 120.0, 1.0
+                )
+            else:
+                await engine.async_calibrate_current(
+                    "aabbccddeeff", session, meter, 1, 10.0, 1.0, 1.0
+                )
+
+        assert session.window_calls == (3 if target == "voltage" else 1)
+        assert {event[0] for event in session.events} == {"window"}
+        assert not markers
+        assert not engine.sessions.is_config_locked("aabbccddeeff")
+
+    asyncio.run(run())
+
+
+def test_voltage_uses_native_gain_average_after_stability_check() -> None:
     async def run() -> None:
         meter = binding(0)
         session = FakeCalibrationSession(
@@ -304,7 +333,7 @@ def test_voltage_uses_native_gain_average_without_periodic_sensor_windows() -> N
             "aabbccddeeff", session, meter, "main_1", 120.0, 1.0
         )
 
-        assert session.window_calls == 0
+        assert session.window_calls == 3
         assert result.before_values == (120.0, 120.0, 120.0)
         assert result.after_values == pytest.approx((120.0 * 7310 / 7305,) * 3)
 
@@ -500,7 +529,7 @@ def test_each_new_calibration_lease_revalidates_retained_yaml_before_mutation() 
             "active",
             "flash_saved",
         ]
-        assert len(session.events) == event_count
+        assert all(event[0] == "window" for event in session.events[event_count:])
 
     asyncio.run(run())
 

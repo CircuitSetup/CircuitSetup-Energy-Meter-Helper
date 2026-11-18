@@ -90,8 +90,8 @@ const PACKAGE_FEATURES = new Set(["power_quality", "status_fields"]);
 type PublicRecord = Record<string, unknown>;
 type Validator<T> = (value: unknown) => T;
 type CalibrationExpectation =
-  | { target: "voltage"; groupKey: string; reference: number }
-  | { target: "current"; references: Array<{ channel: number; reference: number; rawReference: number }> };
+  | { target: "voltage"; groupKey: string; reference?: number }
+  | { target: "current"; references: Array<{ channel: number; reference?: number; rawReference?: number }> };
 
 function record(value: unknown, label: string): PublicRecord {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} response is invalid`);
@@ -547,6 +547,7 @@ function session(value: unknown, label: string): SessionStatus {
       || new Set(targets.map(([board, stage]) => `${board}:${stage}`)).size !== targets.length) throw new Error(`${label} response is invalid`);
   }
   if (item.has_pending_gain_calibration !== undefined) boolean(item.has_pending_gain_calibration, label);
+  if (item.gain_recovery != null) gainRecovery(item.gain_recovery, label);
   const offsetFields = [item.offset_capability, item.offset_disposition, item.offset_boards, item.has_pending_calibration];
   if (offsetFields.every((field) => field === undefined)) return value as SessionStatus;
   if (offsetFields.some((field) => field === undefined)) throw new Error(`${label} response is invalid`);
@@ -790,6 +791,24 @@ function stability(value: unknown, label: string, expectedTarget: "voltage" | "c
   if (stable !== ranges.every((range) => range <= 1)) throw new Error(`${label} response is invalid`);
   return value as StabilityResult;
 }
+function gainRecovery(value: unknown, label: string): void {
+  const item = record(value, label);
+  exactKeys(item, ["target", "target_id", "results"], label);
+  const target = enumeration(item.target, new Set(["voltage", "current"]), label);
+  const targetId = id(item.target_id, label);
+  const results = array(item.results, label, target === "current" ? 1 : 14).map((entry) => {
+    const result = record(entry, label);
+    if (target === "voltage") return calibration(entry, label, { target, groupKey: id(result.group_key, label) });
+    const channels = array(result.changed_channels, label, 3).map(channel => integer(channel, label));
+    if (String(channels[0]) !== targetId || channels.some(channel => channelGroup(channel) !== channelGroup(channels[0]!))) {
+      throw new Error(`${label} response is invalid`);
+    }
+    return calibration(entry, label, { target: "current", references: channels.map(channel => ({ channel })) });
+  });
+  if (!results.some(result => result.state !== "applied_pending_restart_verification")
+    || new Set(results.map(result => result.group_key)).size !== results.length) throw new Error(`${label} response is invalid`);
+}
+
 function calibration(
   value: unknown,
   label: string,
@@ -803,8 +822,10 @@ function calibration(
   const expectedChannels = expected.target === "voltage" ? groupChannels(expected.groupKey) : expected.references.map((item) => item.channel);
   const expectedPhase = expected.target === "current" && expected.references.length === 1 ? (["A", "B", "C"] as const)[(expected.references[0]!.channel - 1) % 3] : null;
   const retryAllowed = boolean(item.retry_allowed, label);
-  if (expected.target === "voltage" && (!Number.isFinite(expected.reference) || expected.reference <= 0)
-    || expected.target === "current" && expected.references.some((reference) => !Number.isFinite(reference.reference) || reference.reference <= 0 || !Number.isFinite(reference.rawReference) || reference.rawReference <= 0)
+  if (expected.target === "voltage" && expected.reference !== undefined && (!Number.isFinite(expected.reference) || expected.reference <= 0)
+    || expected.target === "current" && expected.references.some(({ reference, rawReference }) =>
+      reference !== undefined && (!Number.isFinite(reference) || reference <= 0)
+      || rawReference !== undefined && (!Number.isFinite(rawReference) || rawReference <= 0))
     || ![1, 2, 3].includes(changed.length) || (state !== "indeterminate" && before.length !== changed.length) || new Set(changed).size !== changed.length
     || changed.some((channel) => channel < 1 || channel > 42) || iteration < 1 || iteration > 3
     || item.group_key !== expectedGroup || item.phase !== expectedPhase
@@ -817,9 +838,14 @@ function calibration(
     if (item.gain_evidence == null || item.restore_evidence !== null) throw new Error(`${label} response is invalid`);
     gainEvidence(item.gain_evidence, label, expected);
     const references = expected.target === "voltage" ? after.map(() => expected.reference) : expected.references.map((item) => item.reference);
-    const expectedErrors = after.map((result, index) => 100 * Math.abs(number(result, label) - references[index]!) / references[index]!);
-    if (errors.some((error, index) => number(error, label) < 0 || !close(number(error, label), expectedErrors[index]!))) throw new Error(`${label} response is invalid`);
-    const outside = Math.max(...expectedErrors) > 1;
+    const measuredErrors = errors.map((error, index) => {
+      const value = number(error, label);
+      const reference = references[index];
+      const expectedError = reference === undefined ? value : 100 * Math.abs(number(after[index], label) - reference) / reference;
+      if (value < 0 || !close(value, expectedError)) throw new Error(`${label} response is invalid`);
+      return expectedError;
+    });
+    const outside = Math.max(...measuredErrors) > 1;
     if ((state === "result_outside_tolerance") !== outside || retryAllowed !== (outside && iteration < 3)) throw new Error(`${label} response is invalid`);
   }
   return value as CalibrationResult;
@@ -839,8 +865,8 @@ function gainEvidence(
   const groupKey = expected.target === "voltage" ? expected.groupKey : channelGroup(expected.references[0]!.channel);
   const instanceId = groupKey.startsWith("main_") ? `meter_main${groupKey.slice(-1)}` : groupKey;
   if (generation < 1 || sequence < 1 || string(evidence.instance_id, label) !== instanceId) throw new Error(`${label} response is invalid`);
-  const currentByPhase: Map<string, number> = expected.target === "current" ? new Map(expected.references.map((reference) =>
-    [(["A", "B", "C"] as const)[(reference.channel - 1) % 3], reference.rawReference])) : new Map();
+  const currentByPhase: Map<string, { rawReference?: number }> = expected.target === "current" ? new Map(expected.references.map((reference) =>
+    [(["A", "B", "C"] as const)[(reference.channel - 1) % 3], reference])) : new Map();
   const phases = array(evidence.phases, label, 3);
   if (phases.length !== 3) throw new Error(`${label} response is invalid`);
   phases.forEach((entry, index) => {
@@ -854,14 +880,17 @@ function gainEvidence(
     const oldCurrent = integer(phase.old_current_gain, label); const newCurrent = integer(phase.new_current_gain, label);
     if ([oldVoltage, newVoltage, oldCurrent, newCurrent].some((gain) => gain < 1 || gain > 65_535)) throw new Error(`${label} response is invalid`);
     if (expected.target === "voltage") {
-      if (Math.abs(referenceVoltage - expected.reference) > Math.max(0.01, 1e-6 * Math.max(Math.abs(referenceVoltage), expected.reference))
+      const reference = expected.reference;
+      if (referenceVoltage <= 0
+        || reference !== undefined && Math.abs(referenceVoltage - reference) > Math.max(0.01, 1e-6 * Math.max(Math.abs(referenceVoltage), reference))
         || Math.abs(referenceCurrent) > 1e-6 || oldCurrent !== newCurrent) throw new Error(`${label} response is invalid`);
     } else {
       const expectedCurrent = currentByPhase.get(phaseName);
       if (Math.abs(referenceVoltage) > 1e-6
         || (expectedCurrent === undefined
           ? Math.abs(referenceCurrent) > 1e-6
-          : Math.abs(referenceCurrent - expectedCurrent) > Math.max(1e-4, 1e-6 * Math.max(Math.abs(referenceCurrent), expectedCurrent)))
+          : referenceCurrent <= 0 || expectedCurrent.rawReference !== undefined
+            && Math.abs(referenceCurrent - expectedCurrent.rawReference) > Math.max(1e-4, 1e-6 * Math.max(Math.abs(referenceCurrent), expectedCurrent.rawReference)))
         || oldVoltage !== newVoltage || (expectedCurrent === undefined && oldCurrent !== newCurrent)) throw new Error(`${label} response is invalid`);
     }
   });

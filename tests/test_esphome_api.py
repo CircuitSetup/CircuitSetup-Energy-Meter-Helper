@@ -729,6 +729,91 @@ def test_gain_capture_survives_public_ring_rollover() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(
+    ("version", "responses", "accepted"),
+    (
+        ("2026.8.2", ("cleared", "empty"), (True, True)),
+        ("2026.12.0", ("empty",), (True,)),
+        ("2026.8.2", ("empty",), (False,)),
+        ("2026.12.0", ("wrong_table",), (False,)),
+        ("2026.12.0", ("wrong_chip",), (False,)),
+        ("2026.12.0", ("stale",), (False,)),
+        ("2026.12.0", ("no_terminal",), (False,)),
+        ("2026.8.2", ("failed", "empty"), (False, False)),
+    ),
+)
+def test_gain_clear_checks_fresh_targeted_firmware_evidence(
+    version: str, responses: tuple[str, ...], accepted: tuple[bool, ...]
+) -> None:
+    button = "4. Restore Main Meter 1 Gain Cal"
+    phases = ((7301, 28001), (7301, 28002), (7301, 28003))
+
+    def transcript(response: str) -> str:
+        target = "meter_main2" if response == "wrong_chip" else "meter_main1"
+        header = (
+            "No stored gain calibrations to clear. Current values:"
+            if response in {"empty", "wrong_table"}
+            else "Clearing stored gain calibrations and restoring config-defined values"
+        )
+        lines = [
+            header,
+            "| Phase | voltage_gain | current_gain |",
+            f"| A | 7301 | {28000 if response == 'wrong_table' else 28001} |",
+            "| B | 7301 | 28002 |",
+            "| C | 7301 | 28003 |",
+            "===============================================",
+        ]
+        if response in {"cleared", "wrong_chip", "stale"}:
+            lines.append("Gain calibrations cleared; config values verified.")
+        if response == "failed":
+            lines.append("Failed to clear gain calibrations!")
+        return "\n".join((
+            f"[I][atm90e32.button:012] {button}",
+            *(f"[I][atm90e32:827] [CALIBRATION][{target}] {line}" for line in lines),
+        ))
+
+    remaining = iter(responses)
+
+    class ClearClient(FakeClient):
+        async def device_info_and_list_entities(self) -> tuple[object, list[object], list[object]]:
+            _, entities, services = await super().device_info_and_list_entities()
+            return SimpleNamespace(mac_address=self.mac, esphome_version=version), entities, services
+
+        def button_command(self, key: int, device_id: int = 0) -> None:
+            super().button_command(key, device_id)
+            assert self.on_log is not None
+            response = next(remaining)
+            if response != "stale":
+                self.on_log(SimpleNamespace(message=transcript(response)))
+
+    async def run() -> None:
+        client = ClearClient()
+        session = make_session([client])
+        await session.async_connect()
+        assert client.on_log is not None
+        if "stale" in responses:
+            client.on_log(SimpleNamespace(message=transcript("stale")))
+        for success in accepted:
+            attempt = session.async_clear_gain_calibration(
+                47,
+                device_id=3,
+                connection_generation=session.connection_generation,
+                target_instance_id="meter_main1",
+                button_name=button,
+                expected_phase_gains=phases,
+                timeout=0.01,
+            )
+            if success:
+                await attempt
+            else:
+                with pytest.raises(LogEvidenceError):
+                    await attempt
+        assert client.events.count("button:3:47") == len(responses)
+        await session.async_shutdown()
+
+    asyncio.run(run())
+
+
 def test_engine_gain_waiter_uses_real_session_capture_signature() -> None:
     async def ignore_marker(mac: str, marker: object) -> None:
         del mac, marker

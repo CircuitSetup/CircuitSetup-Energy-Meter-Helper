@@ -77,6 +77,7 @@ export interface WorkflowContext {
   sessionState: string | null;
   offsetDisposition: string | null;
   pendingCalibration: boolean;
+  gainRecoveryTarget?: "voltage" | "current" | null;
   restartVerification: boolean;
   handoffAvailable: boolean;
   handoffInstalled: boolean;
@@ -178,8 +179,9 @@ export function resumeWorkflowRoute(context: WorkflowContext): WorkflowRoute {
   if (context.transactionPurpose === "offset_preparation") return "install-configuration";
   if (context.transactionPurpose === "offset_finalization") return "save-calibration";
   if (context.normalTransactionActive) return "install-configuration";
-  if (context.offsetConfigurationSelected && !context.offsetRecoveryPending) return "summary";
   if (context.sessionState === "safety_required" || context.sessionState === "preflight_failed") return "safety";
+  if (context.gainRecoveryTarget) return context.gainRecoveryTarget;
+  if (context.offsetConfigurationSelected && !context.offsetRecoveryPending) return "summary";
   if (context.offsetRecoveryPending) {
     return context.sessionState === "gains_verified_offsets_pending" || ["completed", "skipped"].includes(context.offsetDisposition ?? "")
       ? "save-calibration" : "offset";

@@ -169,6 +169,7 @@ export class CircuitSetupPanel extends LitElement {
   private connection: Exclude<ConnectionType, "unknown"> = "wifi";
   private meterSettingsDraft: MeterSettingsDraft | null = null;
   private calibrationMeterSettings: MeterSettingsDraft | null = null;
+  private calibrationInventory: CtInventory | null = null;
   private meterConfiguration: MeterConfiguration | null = null;
   private verifiedMeterConfiguration: MeterConfiguration | null = null;
   private sourceMeterConfiguration: { deviceId: string; meter: MeterConfiguration } | null = null;
@@ -471,6 +472,7 @@ export class CircuitSetupPanel extends LitElement {
 
   private resetCalibrationRun(): void {
     this.calibrationMeterSettings = null;
+    this.calibrationInventory = null;
     this.safetyAcknowledged = false;
     this.stabilityByTarget = new Map();
     this.calibrationByTarget = new Map();
@@ -665,6 +667,7 @@ export class CircuitSetupPanel extends LitElement {
       sessionState: this.session?.state ?? null,
       offsetDisposition: this.session?.offset_disposition ?? null,
       pendingCalibration: this.session?.has_pending_calibration ?? false,
+      gainRecoveryTarget: this.session?.gain_recovery?.target ?? null,
       restartVerification: this.restartResult !== null,
       handoffAvailable: this.restartResult?.source_handoff_available ?? false,
       handoffInstalled: this.restartResult?.source_handoff_firmware_installed ?? false,
@@ -1006,6 +1009,7 @@ export class CircuitSetupPanel extends LitElement {
         this.transaction = null; this.transactionPurpose = null;
       }
     }
+    this.receiveGainSession(this.session, true);
     this.navigate(resumeWorkflowRoute(this.workflowContext()));
     if (this.transaction) await this.subscribeTransaction(this.connectionGeneration);
     if (this.session) await this.subscribeSession(this.connectionGeneration);
@@ -1373,6 +1377,7 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private hasUnsupportedCalibrationChanges(): boolean {
+    if (this.calibrationInventory) return false;
     const meter = this.meterConfiguration;
     if (!meter) return false;
     const intent = meter.configuration.totals_change_intent;
@@ -1660,11 +1665,12 @@ export class CircuitSetupPanel extends LitElement {
     this.transactionPurpose = "install_configuration";
     const api = this.api; const deviceId = this.selectedDeviceId; const meter = this.meterConfiguration; const generation = ++this.operationGeneration;
     await this.run(async () => {
-      this.transaction = await api.previewMeterConfiguration(deviceId, meter.plan_id, meter.source_sha256, configuration);
+      const transaction = await api.previewMeterConfiguration(deviceId, meter.plan_id, meter.source_sha256, configuration);
       if (!this.ownsOperation(generation, api, deviceId)) return;
+      this.transaction = transaction;
       this.navigate("install-configuration"); await this.subscribeTransaction(this.connectionGeneration);
     }, "Circuit configuration could not be reviewed.", () => this.ownsOperation(generation, api, deviceId));
-    this.pendingAction = ""; this.requestUpdate();
+    if (this.ownsOperation(generation, api, deviceId)) { this.pendingAction = ""; this.requestUpdate(); }
   }
 
   private async reviewCalibrationHandoff(): Promise<void> {
@@ -1679,12 +1685,12 @@ export class CircuitSetupPanel extends LitElement {
     this.requestUpdate();
     try {
       await this.run(async () => {
-        const changes = this.calibrationDraftChanges();
+        const changes = this.calibrationInventory ? [] : this.calibrationDraftChanges();
         const transaction = await api.previewCalibratedGains(
           sessionId,
           verificationId,
           changes,
-          this.sourcePackageOptions ? this.packageOptions : undefined,
+          !this.calibrationInventory && this.sourcePackageOptions ? this.packageOptions : undefined,
         );
         if (!this.ownsOperation(generation, api, deviceId)
           || this.session?.session_id !== sessionId
@@ -1874,6 +1880,7 @@ export class CircuitSetupPanel extends LitElement {
 
   private async continueCalibrationPlan(plan = this.calibrationPlan): Promise<void> {
     if (!plan || this.navigationBusy()) return;
+    if (this.session?.gain_recovery) { this.navigate(this.session.gain_recovery.target); return; }
     if (plan !== "keep_existing") {
       if (this.calibrationPreparation?.state === "available_to_prepare") await this.prepareCalibration();
       else await this.startSession(plan, this.skipCircuitChanges);
@@ -1944,7 +1951,7 @@ export class CircuitSetupPanel extends LitElement {
         if (skipCircuitChanges) {
           const saved = await api.getMeterConfiguration(deviceId);
           if (!this.ownsOperation(generation, api, deviceId)) return;
-          // Calibration targets must match the saved device configuration, not pending edits.
+          this.calibrationInventory = saved;
           this.calibrationMeterSettings = { ...saved.configuration.meter,
             authoritative: saved.capabilities.configuration_authoritative, warnings: saved.warnings };
           this.topology = saved.topology;
@@ -1952,6 +1959,7 @@ export class CircuitSetupPanel extends LitElement {
         if (this.session) {
           await this.refreshOffsetRecovery(api, generation, true);
           if (!this.ownsOperation(generation, api, deviceId)) return;
+          this.receiveGainSession(this.session, true);
           this.navigate(resumeWorkflowRoute(this.workflowContext()));
           await this.subscribeSession(this.connectionGeneration);
           return;
@@ -2036,7 +2044,7 @@ export class CircuitSetupPanel extends LitElement {
         && this.session.device_id === deviceId
         && session.session_id === sessionId
         && session.device_id === deviceId) {
-        this.session = session;
+        this.receiveGainSession(session);
         this.requestUpdate();
       }
     }), generation, api, () => scope === this.sessionSubscriptionScope
@@ -2086,8 +2094,9 @@ export class CircuitSetupPanel extends LitElement {
     const session = await api.getSession(sessionId);
     if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId
       || session.session_id !== sessionId || session.device_id !== deviceId) return;
-    this.offsetPreparation = preparation; this.offsetFinalization = finalization; this.session = session;
-    if (restoreSelection && finalization.board_index !== null && finalization.stage !== null) {
+    this.offsetPreparation = preparation; this.offsetFinalization = finalization;
+    this.receiveGainSession(session, restoreSelection);
+    if (restoreSelection && !session.gain_recovery && finalization.board_index !== null && finalization.stage !== null) {
       this.board = finalization.board_index; this.offsetStage = finalization.stage;
     }
     const results = new Map<string, OffsetCalibrationResult>();
@@ -2142,7 +2151,8 @@ export class CircuitSetupPanel extends LitElement {
     this.pendingAction = "offset-finalization"; this.requestUpdate();
     await this.run(async () => {
       const review = await api.previewOffsetFinalization(sessionId, this.restartResult?.source_handoff_available ? this.restartResult.verification_id : undefined,
-        this.calibrationDraftChanges(), this.hasPackageChanges() ? this.packageOptions : undefined);
+        this.calibrationInventory ? [] : this.calibrationDraftChanges(),
+        !this.calibrationInventory && this.hasPackageChanges() ? this.packageOptions : undefined);
       if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
       this.transaction = review.transaction; this.transactionPurpose = review.transaction.purpose; this.calibrationHandoff = false;
       this.navigate("save-calibration"); await this.subscribeTransaction(this.connectionGeneration);
@@ -2280,7 +2290,7 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private async finishCurrent(): Promise<void> {
-    if (!this.session || this.finishBusy) return;
+    if (!this.session || this.session.gain_recovery || this.finishBusy) return;
     if (this.totalsIntentNeedsResolution()) { this.explainTotalsModeConflict(); return; }
     if (this.offsetRecoveryPending()) { this.navigate("save-calibration"); return; }
     if (this.session.has_pending_calibration) {
@@ -2288,7 +2298,7 @@ export class CircuitSetupPanel extends LitElement {
       if (this.hasUnsupportedCalibrationChanges()) this.explainCalibrationConfigurationConflict();
       return;
     }
-    if (this.calibrationDraftChanges().length || this.hasCanonicalChanges() || this.hasPackageChanges()) {
+    if (!this.calibrationInventory && (this.calibrationDraftChanges().length || this.hasCanonicalChanges() || this.hasPackageChanges())) {
       await this.finishWithoutCalibration();
       return;
     }
@@ -2319,7 +2329,7 @@ export class CircuitSetupPanel extends LitElement {
     const generation = ++this.operationGeneration;
     const targetIds = target === "voltage" ? this.selectedVoltageReferences().map(item => item.referenceId)
       : this.currentReferenceEntries().map((item) => String(item.channel));
-    if (!targetIds.length) return;
+    if (!targetIds.length || !this.gainTargetAllowed(target, targetIds)) return;
     this.pendingAction = "session"; if (target === "voltage") this.voltageBusy = true; this.requestUpdate();
     try {
       await this.run(async () => {
@@ -2348,9 +2358,13 @@ export class CircuitSetupPanel extends LitElement {
 
   private async calibrate(target: "voltage" | "current"): Promise<void> {
     if (!this.api || !this.session || this.pendingAction === "session" || (target === "voltage" && this.voltageBusy)) return;
+    const currentReferences = this.currentReferenceEntries();
+    const voltageReferences = this.selectedVoltageReferences();
+    const targetIds = target === "voltage" ? voltageReferences.map(item => item.referenceId)
+      : currentReferences.map(item => String(item.channel));
+    if (!this.gainTargetAllowed(target, targetIds)) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id; this.pendingAction = "session"; this.requestUpdate();
     const generation = ++this.operationGeneration;
-    const currentReferences = this.currentReferenceEntries();
     if (target === "current" && !currentReferences.length) {
       this.fail(new Error(), "Confirm the reporting multiplier before calibration.");
       this.pendingAction = "";
@@ -2362,27 +2376,26 @@ export class CircuitSetupPanel extends LitElement {
         if (target === "voltage") {
           if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
           const updated = new Map(this.calibrationByTarget);
-          const references = this.selectedVoltageReferences();
-          if (!references.length || references.some(({ value }) => !Number.isFinite(value) || value < 1 || value > 600)
-            || references.some(({ referenceId }) => !this.stabilityByTarget.get(`voltage:${referenceId}`)?.stable)) {
+          if (!voltageReferences.length || voltageReferences.some(({ value }) => !Number.isFinite(value) || value < 1 || value > 600)
+            || voltageReferences.some(({ referenceId }) => !this.stabilityByTarget.get(`voltage:${referenceId}`)?.stable)) {
             throw new Error("Voltage references must be valid and stable before calibration.");
           }
-          for (const { referenceId, value } of references) {
+          for (const { referenceId, value } of voltageReferences) {
             const results = await api.calibrateVoltage(sessionId, referenceId, value, true);
             if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
             results.forEach((result) => updated.set(`voltage:${result.group_key}`, result));
             this.calibrationByTarget = new Map(updated);
             this.requestUpdate();
+            if (results.some((result) => result.state !== "applied_pending_restart_verification")) break;
           }
-          this.calibrationByTarget = updated;
           const session = await api.getSession(sessionId);
           if (!this.ownsOperation(generation, api, deviceId) || session.session_id !== sessionId || session.device_id !== deviceId) return;
-          this.session = session;
-          this.announcement = "Calibrated the selected voltage reference.";
+          this.receiveGainSession(session, true);
+          this.announcement = session.gain_recovery ? "Review the voltage calibration result before continuing." : "Calibrated the selected voltage reference.";
           return;
         }
         const result = await api.calibrateCurrent(sessionId, currentReferences, true,
-          this.calibrationDraftChanges().map((change) => ({
+          this.calibrationInventory ? [] : this.calibrationDraftChanges().map((change) => ({
               channel: change.channel,
               reporting_multiplier: change.reporting_multiplier ?? 1,
             })));
@@ -2392,7 +2405,7 @@ export class CircuitSetupPanel extends LitElement {
         this.calibrationByTarget = updated;
         const session = await api.getSession(sessionId);
         if (!this.ownsOperation(generation, api, deviceId) || session.session_id !== sessionId || session.device_id !== deviceId) return;
-        this.session = session;
+        this.receiveGainSession(session);
         this.announcement = `Current calibration iteration ${result.iteration} finished. Review the result before continuing.`;
       }, "Calibration did not complete. Reconnect and inspect before another attempt.",
       () => this.ownsOperation(generation, api, deviceId));
@@ -2421,6 +2434,8 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private voltageReferenceIds(): string[] {
+    const recovery = this.session?.gain_recovery;
+    if (recovery?.target === "voltage") return [recovery.target_id];
     const groups = this.voltageGroupKeys();
     const references = (this.calibrationMeterSettings ?? this.meterSettingsDraft)?.voltage_references.filter((reference) => reference.group_keys.some((key) => groups.includes(key))) ?? [];
     if (references.length) return references.map((reference) => reference.reference_id);
@@ -2452,19 +2467,22 @@ export class CircuitSetupPanel extends LitElement {
 
   private currentReferenceEntries(): Array<{ channel: number; reference: number; reporting_multiplier: number }> {
     const first = Math.floor((this.channel - 1) / 3) * 3 + 1;
-    return Array.from({ length: 3 }, (_, index) => first + index).flatMap((channel) => {
+    const recovery = this.session?.gain_recovery;
+    const channels = recovery?.target === "current" ? recovery.results[0]!.changed_channels
+      : Array.from({ length: 3 }, (_, index) => first + index);
+    return channels.flatMap((channel) => {
       const reference = this.currentReferences.get(channel);
-      const multiplier = this.drafts.get(channel)?.multiplier
-        ?? this.inventory?.channels[channel - 1]?.reporting_multiplier
-        ?? this.reportingMultiplier;
-      return reference && reference > 0 && multiplier !== null
+      const multiplier = this.calibrationInventory
+        ? this.calibrationInventory.channels[channel - 1]?.reporting_multiplier
+        : this.drafts.get(channel)?.multiplier ?? this.inventory?.channels[channel - 1]?.reporting_multiplier ?? this.reportingMultiplier;
+      return reference && reference > 0 && multiplier != null
         ? [{ channel, reference, reporting_multiplier: multiplier }]
         : [];
     });
   }
 
   private async restart(): Promise<void> {
-    if (!this.api || !this.session || !this.topology || this.restartBusy) return;
+    if (!this.api || !this.session || this.session.gain_recovery || !this.topology || this.restartBusy) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
     const topology = this.topology;
     const generation = ++this.operationGeneration;
@@ -2560,21 +2578,57 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private async reconnectSession(): Promise<void> {
-    if (!this.api || !this.session) return;
+    if (!this.api || !this.session || this.navigationBusy()) return;
     const api = this.api; const deviceId = this.selectedDeviceId; const sessionId = this.session.session_id;
     const generation = ++this.operationGeneration;
+    this.pendingAction = "reconnect";
+    this.requestUpdate();
     await this.run(async () => {
       const session = this.step === "offset"
         ? await api.reconnectSession(sessionId, this.board, this.offsetStage)
         : await api.reconnectSession(sessionId);
       if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
-      this.session = session;
+      this.receiveGainSession(session, true);
       this.offsetAcknowledged = [false, false]; this.offsetReadinessByTarget = new Map();
       await this.refreshOffsetRecovery(api, generation, true);
       if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+      if (this.session.gain_recovery) {
+        this.stabilityByTarget = new Map();
+        this.navigate(this.session.gain_recovery.target);
+      }
       this.announcement = `Session reconnected with state ${this.session.state}.`;
     }, "Session reconnection failed. Retry only after checking the meter connection.",
     () => this.ownsOperation(generation, api, deviceId));
+    if (this.ownsOperation(generation, api, deviceId)) { this.pendingAction = ""; this.requestUpdate(); }
+  }
+
+  private receiveGainSession(session: SessionStatus | null, restoreSelection = false): void {
+    const previous = this.session?.gain_recovery;
+    this.session = session;
+    const recovery = session?.gain_recovery;
+    if (!recovery && !(previous && recovery === null)) return;
+    const updated = new Map(this.calibrationByTarget);
+    const keys = (target: "voltage" | "current", result: CalibrationResult) => target === "voltage"
+      ? [`voltage:${result.group_key}`] : result.changed_channels.map(channel => `current:${channel}`);
+    if (previous) for (const result of previous.results) for (const key of keys(previous.target, result)) {
+      if (updated.get(key)?.state !== "applied_pending_restart_verification") updated.delete(key);
+    }
+    if (recovery) for (const result of recovery.results) for (const key of keys(recovery.target, result)) updated.set(key, result);
+    this.calibrationByTarget = updated;
+    if (!recovery || !restoreSelection && previous?.target === recovery.target && previous.target_id === recovery.target_id) return;
+    if (recovery.target === "current") this.channel = Number(recovery.target_id);
+    else {
+      const failed = recovery.results.find((result) => result.state !== "applied_pending_restart_verification");
+      if (failed) this.board = Math.floor((failed.changed_channels[0]! - 1) / 6);
+    }
+  }
+
+  private gainTargetAllowed(target: "voltage" | "current", targetIds: string[]): boolean {
+    const recovery = this.session?.gain_recovery;
+    if (!recovery) return true;
+    if (recovery.target !== target || recovery.results.some(result => result.state !== "applied_pending_restart_verification" && !result.retry_allowed)) return false;
+    const expected = target === "voltage" ? [recovery.target_id] : recovery.results[0]!.changed_channels.map(String);
+    return targetIds.length === expected.length && targetIds.every((id, index) => id === expected[index]);
   }
 
   private resultFor(target: "voltage" | "current"): CalibrationResult | null {
@@ -2603,7 +2657,8 @@ export class CircuitSetupPanel extends LitElement {
   }
 
   private calibrationContinuationBlocked(target: "voltage" | "current"): boolean {
-    return this.navigationBusy() || ["calibration_outcome_indeterminate", "restart_failed", "preflight_failed"].includes(this.session?.state ?? "")
+    return this.navigationBusy() || Boolean(this.session?.gain_recovery)
+      || ["calibration_outcome_indeterminate", "restart_failed", "preflight_failed"].includes(this.session?.state ?? "")
       || [...this.calibrationByTarget].some(([key, result]) => key.startsWith(target + ":") && result.state !== "applied_pending_restart_verification");
   }
 
@@ -2663,6 +2718,7 @@ export class CircuitSetupPanel extends LitElement {
       await operation();
     } catch (error) {
       if (!isCurrent()) return;
+      if ((error as WsError).code === "calibration_unstable") this.stabilityByTarget = new Map();
       this.fail(error, this.safeErrorMessage(error, typeof fallback === "function" ? fallback() : fallback));
     }
     if (isCurrent()) this.requestUpdate();
@@ -2676,6 +2732,7 @@ export class CircuitSetupPanel extends LitElement {
       ? `The selected ${board} could not verify meter-chip communication. Check the meter connection and retry. Existing recovery data is unchanged.`
       : "Meter-chip communication could not be verified. Check the meter connection and retry.";
     if (code === "meter_unavailable") return "The meter is offline or its ESPHome API is unreachable. Restore its connection in Home Assistant and retry.";
+    if (code === "calibration_unstable") return "Readings changed. Keep the load steady and check stability again.";
     if (code === "offset_diagnostics_incomplete") return `Fresh offset diagnostics for the selected ${board} were incomplete. Retry to request fresh diagnostics. Existing recovery data is unchanged.`;
     if (code === "offset_chip_identity_unavailable") return `The meter-chip mapping for the selected ${board} could not be verified from the authoritative configuration. Review the source/package definitions and retry. Existing recovery data is unchanged.`;
     if (code === "offset_tables_unavailable") return `The meter did not report all offset values needed to back up this calibration stage for the selected ${board}. This can happen before the first offset calibration, even when the firmware supports offset calibration. Retry to request fresh diagnostics, or choose Skip offset calibration to continue with voltage/current calibration. Existing recovery data is unchanged.`;
@@ -2815,7 +2872,7 @@ export class CircuitSetupPanel extends LitElement {
       retryConfirmed: this.offsetRetryConfirmed,
       readiness: this.offsetReadinessByTarget.get(this.offsetKey()) ?? null,
       result: this.offsetResultByTarget.get(this.offsetKey()) ?? null,
-      busy: this.offsetBusy,
+       busy: this.offsetBusy || this.pendingAction === "reconnect",
       stock: this.stockOffsetMode() ? { preparation: this.offsetPreparation, backupAcknowledged: this.offsetBackupAcknowledged,
         setBackup: (value) => { this.offsetBackupAcknowledged = value; this.requestUpdate(); },
         prepare: () => void this.reviewOffsetPreparation() } : null}, {selectBoard: (value) => { this.board = value; this.offsetRetryConfirmed = false; this.requestUpdate(); },
@@ -2832,18 +2889,19 @@ export class CircuitSetupPanel extends LitElement {
       continueOffset: () => this.continueOffset()});
     if (this.step === "voltage") return html`${(this.calibrationMeterSettings ?? this.meterSettingsDraft)?.warnings.includes("slow_interval_extends_calibration") ? html`<div class="warning-band" role="status">This meter uses a ${(this.calibrationMeterSettings ?? this.meterSettingsDraft)!.update_interval_s}-second update interval. Calibration takes longer; keep the reference stable until each check finishes.</div>` : nothing}${voltageStep(this.topology, this.session, this.board, this.voltageReferenceIds().map((id, index) => this.voltageReferences instanceof Map ? this.voltageReferences.get(id) ?? 0 : this.voltageReferences[index] ?? 0), this.voltageReferenceIds().map((id) => this.voltageReferenceLabel(id)), this.stabilityFor("voltage"), this.voltageResultsForBoard(), this.navigationBusy(),
       (value) => { this.board = value; this.requestUpdate(); },
-      (index, value) => { const id = this.voltageReferenceIds()[index]; if (id) this.voltageReferences = new Map(this.voltageReferences).set(id, value); this.requestUpdate(); }, () => void this.checkStability("voltage"), () => void this.calibrate("voltage"), () => void this.reconnectSession(), () => void this.cancelSession(), this.selectedVoltageReferences().length > 0)}
+       (index, value) => { const id = this.voltageReferenceIds()[index]; if (id) this.voltageReferences = new Map(this.voltageReferences).set(id, value); this.requestUpdate(); }, () => void this.checkStability("voltage"), () => void this.calibrate("voltage"), () => void this.reconnectSession(), () => void this.cancelSession(), this.selectedVoltageReferences().length > 0 && this.gainTargetAllowed("voltage", this.selectedVoltageReferences().map(item => item.referenceId)))}
       ${this.calibrationContinuation("voltage")}
-      <footer class="action-footer offset-footer"><button class="secondary" ?disabled=${this.navigationBusy()} @click=${() => this.back()}>Back</button>
+       <footer class="action-footer offset-footer"><button class="secondary" ?disabled=${this.navigationBusy() || this.session?.gain_recovery} @click=${() => this.back()}>Back</button>
         <button class="primary" ?disabled=${this.calibrationContinuationBlocked("voltage")} @click=${() => { this.voltageSkipped = !this.hasCompletedCalibration("voltage"); this.navigate("current"); }}>${this.calibrationContinueLabel("voltage")}</button></footer>`;
-    if (this.step === "current") return html`${currentStep(this.topology, this.inventory, this.session, this.channel, this.currentReferences, this.reportingMultiplier, this.stabilityFor("current"), this.resultFor("current"),
+    if (this.step === "current") return html`${currentStep(this.topology, this.calibrationInventory ?? this.inventory, this.session, this.channel, this.currentReferences, this.reportingMultiplier, this.stabilityFor("current"), this.resultFor("current"),
       this.calibratedInstances("current"),
       (value) => { this.channel = value; this.requestUpdate(); },
       (channel, value) => { const references = new Map(this.currentReferences); if (value === null || !Number.isFinite(value) || value <= 0) references.delete(channel); else references.set(channel, value); this.currentReferences = references; this.requestUpdate(); },
       (value) => { this.reportingMultiplier = value; this.requestUpdate(); },
-      () => void this.checkStability("current"), () => void this.calibrate("current"), () => void this.reconnectSession(), () => void this.cancelSession(), this.navigationBusy())}
+       () => void this.checkStability("current"), () => void this.calibrate("current"), () => void this.reconnectSession(), () => void this.cancelSession(), this.navigationBusy(),
+       this.gainTargetAllowed("current", this.currentReferenceEntries().map(item => String(item.channel))))}
       ${this.calibrationContinuation("current")}
-      <footer class="action-footer offset-footer"><button class="secondary" ?disabled=${this.navigationBusy()} @click=${() => this.back()}>Back</button>
+       <footer class="action-footer offset-footer"><button class="secondary" ?disabled=${this.navigationBusy() || this.session?.gain_recovery} @click=${() => this.back()}>Back</button>
         <button class="primary" ?disabled=${this.calibrationContinuationBlocked("current")} @click=${() => { this.currentSkipped = !this.hasCompletedCalibration("current"); void this.finishCurrent(); }}>${this.finishBusy ? "Finishing…" : this.calibrationContinueLabel("current")}</button></footer>`;
     if (this.step === "restart") return restartStep(this.session?.state ?? this.error, this.restartResult,
       Boolean(this.transaction?.rollback_available), this.restartBusy, () => void this.restart(), () => void this.transactionAction("rollback"), () => this.back());

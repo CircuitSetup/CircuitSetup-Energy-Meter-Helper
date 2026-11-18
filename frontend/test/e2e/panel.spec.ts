@@ -2132,7 +2132,7 @@ test("journey 10: mobile phases only advance as the conditional flow advances", 
   expect(third).toBeGreaterThan(second);
 });
 
-for (const addons of [0, 6]) test(`workflow visual evidence ${addons ? 42 : 6} CT desktop and mobile`, async ({ page }) => {
+for (const addons of [0, 6]) test(`workflow visual evidence ${addons ? 42 : 6} CT desktop and mobile`, async ({ page }, testInfo) => {
   await mockHomeAssistant(page, { addons });
   await openInventory(page);
   await expect(page.locator('[data-ct-row]')).toHaveCount(6);
@@ -2142,13 +2142,13 @@ for (const addons of [0, 6]) test(`workflow visual evidence ${addons ? 42 : 6} C
     await expect(page.locator('vite-error-overlay')).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.evaluate(() => window.scrollTo(0, 0));
-    await page.screenshot({ path: `C:/Users/John/.codex/visualizations/2026/11/01/01a197ad-0051-7f21-b733-697fc4b92034/circuits-${addons ? 42 : 6}-${viewport.width}.png`, fullPage: false });
+    await page.screenshot({ path: testInfo.outputPath(`circuits-${addons ? 42 : 6}-${viewport.width}.png`), fullPage: false });
     if (addons) {
       await page.getByRole('tab', { name: 'Add-on 6', exact: true }).click();
       await expect(page.getByLabel('CT42 name', { exact: true })).toBeVisible();
     }
     await page.locator('[data-ct-row]').first().scrollIntoViewIfNeeded();
-    await page.screenshot({ path: `C:/Users/John/.codex/visualizations/2026/11/01/01a197ad-0051-7f21-b733-697fc4b92034/circuits-${addons ? 42 : 6}-${viewport.width}-rows.png`, fullPage: false });
+    await page.screenshot({ path: testInfo.outputPath(`circuits-${addons ? 42 : 6}-${viewport.width}-rows.png`), fullPage: false });
   }
   expect(page.url()).toContain('/test/harness.html');
   await expect(page).toHaveTitle('CircuitSetup Energy Meter Helper QA');

@@ -1208,6 +1208,7 @@ function session(value, label) {
     if (targets.some(([board, stage]) => board < 0 || board > 6 || stage !== 1 && stage !== 2) || new Set(targets.map(([board, stage]) => `${board}:${stage}`)).size !== targets.length) throw new Error(`${label} response is invalid`);
   }
   if (item.has_pending_gain_calibration !== void 0) boolean(item.has_pending_gain_calibration, label);
+  if (item.gain_recovery != null) gainRecovery(item.gain_recovery, label);
   const offsetFields = [item.offset_capability, item.offset_disposition, item.offset_boards, item.has_pending_calibration];
   if (offsetFields.every((field) => field === void 0)) return value;
   if (offsetFields.some((field) => field === void 0)) throw new Error(`${label} response is invalid`);
@@ -1457,6 +1458,22 @@ function stability(value, label, expectedTarget, expectedTargetId) {
   if (stable !== ranges.every((range2) => range2 <= 1)) throw new Error(`${label} response is invalid`);
   return value;
 }
+function gainRecovery(value, label) {
+  const item = record(value, label);
+  exactKeys(item, ["target", "target_id", "results"], label);
+  const target = enumeration(item.target, /* @__PURE__ */ new Set(["voltage", "current"]), label);
+  const targetId = id(item.target_id, label);
+  const results = array(item.results, label, target === "current" ? 1 : 14).map((entry) => {
+    const result = record(entry, label);
+    if (target === "voltage") return calibration(entry, label, { target, groupKey: id(result.group_key, label) });
+    const channels = array(result.changed_channels, label, 3).map((channel) => integer(channel, label));
+    if (String(channels[0]) !== targetId || channels.some((channel) => channelGroup(channel) !== channelGroup(channels[0]))) {
+      throw new Error(`${label} response is invalid`);
+    }
+    return calibration(entry, label, { target: "current", references: channels.map((channel) => ({ channel })) });
+  });
+  if (!results.some((result) => result.state !== "applied_pending_restart_verification") || new Set(results.map((result) => result.group_key)).size !== results.length) throw new Error(`${label} response is invalid`);
+}
 function calibration(value, label, expected) {
   const item = record(value, label);
   const state = enumeration(item.state, /* @__PURE__ */ new Set(["applied_pending_restart_verification", "result_outside_tolerance", "indeterminate"]), label);
@@ -1472,7 +1489,7 @@ function calibration(value, label, expected) {
   const expectedChannels = expected.target === "voltage" ? groupChannels(expected.groupKey) : expected.references.map((item2) => item2.channel);
   const expectedPhase = expected.target === "current" && expected.references.length === 1 ? ["A", "B", "C"][(expected.references[0].channel - 1) % 3] : null;
   const retryAllowed = boolean(item.retry_allowed, label);
-  if (expected.target === "voltage" && (!Number.isFinite(expected.reference) || expected.reference <= 0) || expected.target === "current" && expected.references.some((reference) => !Number.isFinite(reference.reference) || reference.reference <= 0 || !Number.isFinite(reference.rawReference) || reference.rawReference <= 0) || ![1, 2, 3].includes(changed.length) || state !== "indeterminate" && before.length !== changed.length || new Set(changed).size !== changed.length || changed.some((channel) => channel < 1 || channel > 42) || iteration < 1 || iteration > 3 || item.group_key !== expectedGroup || item.phase !== expectedPhase || changed.length !== expectedChannels.length || changed.some((channel, index) => channel !== expectedChannels[index]) || (state === "indeterminate" ? after.length !== 0 || errors.length !== 0 : after.length !== changed.length || errors.length !== changed.length)) throw new Error(`${label} response is invalid`);
+  if (expected.target === "voltage" && expected.reference !== void 0 && (!Number.isFinite(expected.reference) || expected.reference <= 0) || expected.target === "current" && expected.references.some(({ reference, rawReference }) => reference !== void 0 && (!Number.isFinite(reference) || reference <= 0) || rawReference !== void 0 && (!Number.isFinite(rawReference) || rawReference <= 0)) || ![1, 2, 3].includes(changed.length) || state !== "indeterminate" && before.length !== changed.length || new Set(changed).size !== changed.length || changed.some((channel) => channel < 1 || channel > 42) || iteration < 1 || iteration > 3 || item.group_key !== expectedGroup || item.phase !== expectedPhase || changed.length !== expectedChannels.length || changed.some((channel, index) => channel !== expectedChannels[index]) || (state === "indeterminate" ? after.length !== 0 || errors.length !== 0 : after.length !== changed.length || errors.length !== changed.length)) throw new Error(`${label} response is invalid`);
   if (state === "indeterminate") {
     if (item.gain_evidence !== null || retryAllowed) throw new Error(`${label} response is invalid`);
     if (item.restore_evidence != null) record(item.restore_evidence, label);
@@ -1480,9 +1497,14 @@ function calibration(value, label, expected) {
     if (item.gain_evidence == null || item.restore_evidence !== null) throw new Error(`${label} response is invalid`);
     gainEvidence(item.gain_evidence, label, expected);
     const references = expected.target === "voltage" ? after.map(() => expected.reference) : expected.references.map((item2) => item2.reference);
-    const expectedErrors = after.map((result, index) => 100 * Math.abs(number(result, label) - references[index]) / references[index]);
-    if (errors.some((error, index) => number(error, label) < 0 || !close(number(error, label), expectedErrors[index]))) throw new Error(`${label} response is invalid`);
-    const outside = Math.max(...expectedErrors) > 1;
+    const measuredErrors = errors.map((error, index) => {
+      const value2 = number(error, label);
+      const reference = references[index];
+      const expectedError = reference === void 0 ? value2 : 100 * Math.abs(number(after[index], label) - reference) / reference;
+      if (value2 < 0 || !close(value2, expectedError)) throw new Error(`${label} response is invalid`);
+      return expectedError;
+    });
+    const outside = Math.max(...measuredErrors) > 1;
     if (state === "result_outside_tolerance" !== outside || retryAllowed !== (outside && iteration < 3)) throw new Error(`${label} response is invalid`);
   }
   return value;
@@ -1499,7 +1521,7 @@ function gainEvidence(value, label, expected) {
   const groupKey = expected.target === "voltage" ? expected.groupKey : channelGroup(expected.references[0].channel);
   const instanceId = groupKey.startsWith("main_") ? `meter_main${groupKey.slice(-1)}` : groupKey;
   if (generation < 1 || sequence < 1 || string(evidence.instance_id, label) !== instanceId) throw new Error(`${label} response is invalid`);
-  const currentByPhase = expected.target === "current" ? new Map(expected.references.map((reference) => [["A", "B", "C"][(reference.channel - 1) % 3], reference.rawReference])) : /* @__PURE__ */ new Map();
+  const currentByPhase = expected.target === "current" ? new Map(expected.references.map((reference) => [["A", "B", "C"][(reference.channel - 1) % 3], reference])) : /* @__PURE__ */ new Map();
   const phases = array(evidence.phases, label, 3);
   if (phases.length !== 3) throw new Error(`${label} response is invalid`);
   phases.forEach((entry, index) => {
@@ -1516,10 +1538,11 @@ function gainEvidence(value, label, expected) {
     const newCurrent = integer(phase.new_current_gain, label);
     if ([oldVoltage, newVoltage, oldCurrent, newCurrent].some((gain) => gain < 1 || gain > 65535)) throw new Error(`${label} response is invalid`);
     if (expected.target === "voltage") {
-      if (Math.abs(referenceVoltage - expected.reference) > Math.max(0.01, 1e-6 * Math.max(Math.abs(referenceVoltage), expected.reference)) || Math.abs(referenceCurrent) > 1e-6 || oldCurrent !== newCurrent) throw new Error(`${label} response is invalid`);
+      const reference = expected.reference;
+      if (referenceVoltage <= 0 || reference !== void 0 && Math.abs(referenceVoltage - reference) > Math.max(0.01, 1e-6 * Math.max(Math.abs(referenceVoltage), reference)) || Math.abs(referenceCurrent) > 1e-6 || oldCurrent !== newCurrent) throw new Error(`${label} response is invalid`);
     } else {
       const expectedCurrent = currentByPhase.get(phaseName);
-      if (Math.abs(referenceVoltage) > 1e-6 || (expectedCurrent === void 0 ? Math.abs(referenceCurrent) > 1e-6 : Math.abs(referenceCurrent - expectedCurrent) > Math.max(1e-4, 1e-6 * Math.max(Math.abs(referenceCurrent), expectedCurrent))) || oldVoltage !== newVoltage || expectedCurrent === void 0 && oldCurrent !== newCurrent) throw new Error(`${label} response is invalid`);
+      if (Math.abs(referenceVoltage) > 1e-6 || (expectedCurrent === void 0 ? Math.abs(referenceCurrent) > 1e-6 : referenceCurrent <= 0 || expectedCurrent.rawReference !== void 0 && Math.abs(referenceCurrent - expectedCurrent.rawReference) > Math.max(1e-4, 1e-6 * Math.max(Math.abs(referenceCurrent), expectedCurrent.rawReference))) || oldVoltage !== newVoltage || expectedCurrent === void 0 && oldCurrent !== newCurrent) throw new Error(`${label} response is invalid`);
     }
   });
   const mismatches = array(evidence.register_mismatch_phases, label, 3);
@@ -2109,7 +2132,7 @@ function buildInstallStep(data, actions) {
       ${state === "failed" || retryableInstall ? b`
         <div class="recovery-panel" role="status">
           <strong>${sourceChanged ? "Reviewed configuration source changed" : communicationFailure ? "Meter chip communication failed" : uploadRejected ? "Firmware upload was rejected" : uploadUnknown ? "Installation outcome is unknown" : persistenceFailure ? unchanged ? "Helper settings could not be saved" : deviceVerified ? "Firmware installed; Helper data was not saved" : "Firmware uploaded; verification did not complete" : failureMessage ?? "Build or install needs attention"}</strong>
-          ${sourceChanged ? b`<p>Restore the exact reviewed YAML in ESPHome Device Builder before retrying or going Back. This review cannot verify a different source.</p>` : communicationFailure ? b`<p>The ESP32 reconnected but could not establish SPI communication with
+          ${sourceChanged ? b`<p>${purpose === "install_configuration" && retryableInstall ? "Restore the exact reviewed YAML in ESPHome Device Builder to retry. Back discards this install review and keeps the current YAML." : "Restore the exact reviewed YAML in ESPHome Device Builder before retrying or going Back. This review cannot verify a different source."}</p>` : communicationFailure ? b`<p>The ESP32 reconnected but could not establish SPI communication with
             ${failedPins.length ? "the meter chip(s) on CS pin(s) " + failedPins.map((pin) => "GPIO" + pin).join(", ") : "one or more meter chips (CS pin unavailable)"}.
             This is an ESP32–meter-chip link, not a Wi-Fi or Home Assistant problem.</p>
             <ol>
@@ -2949,13 +2972,15 @@ function calibrationEvidence(result) {
     </details>
   </section>`;
 }
-function currentStep(topology2, inventory, session2, channel, references, reportingMultiplier, stability2, result, completedInstanceIds, select, setReference, setReportingMultiplier, check, calibrate, reconnect, cancel, busy = false) {
+function currentStep(topology2, inventory, session2, channel, references, reportingMultiplier, stability2, result, completedInstanceIds, select, setReference, setReportingMultiplier, check, calibrate, reconnect, cancel, busy = false, calibrationAvailable = true) {
   const ctCount = topology2?.ct_count ?? inventory?.channels.length ?? 6;
   const board = Math.floor((channel - 1) / 6);
   const group = Math.floor((channel - 1) / 3);
   const first = group * 3 + 1;
   const channels = Array.from({ length: 3 }, (_2, index) => first + index).filter((value) => value <= ctCount);
-  const selected = channels.filter((value) => (references.get(value) ?? 0) > 0);
+  const recovery = session2?.gain_recovery?.target === "current" ? session2.gain_recovery : null;
+  const recoveryChannels = recovery?.results[0]?.changed_channels;
+  const selected = channels.filter((value) => (!recoveryChannels || recoveryChannels.includes(value)) && (references.get(value) ?? 0) > 0);
   const sourceIds = board === 0 ? ["meter_main1", "meter_main2"] : [`addon${board}_1`, `addon${board}_2`];
   const multiplierRequired = inventory === null;
   const multiplierValid = reportingMultiplier !== null && [1, 2, 4, 8].includes(reportingMultiplier);
@@ -2964,7 +2989,7 @@ function currentStep(topology2, inventory, session2, channel, references, report
     <section class="step-content calibration-step" aria-labelledby="step-heading">
       ${calibrationProgress(referenceReady, stability2, result, session2?.calibration_plan ?? "full")}
       <div class="board-tabs" role="tablist" aria-label="Calibration boards">
-        ${Array.from({ length: Math.ceil(ctCount / 6) }, (_2, index) => b`<button ?disabled=${busy} role="tab"
+        ${Array.from({ length: Math.ceil(ctCount / 6) }, (_2, index) => b`<button ?disabled=${busy || recovery} role="tab"
           id=${`current-board-tab-${index}`} aria-controls="current-board-panel"
           aria-selected=${index === board} tabindex=${index === board ? "0" : "-1"}
           @keydown=${(event) => moveTab(event, index)}
@@ -2975,7 +3000,7 @@ function currentStep(topology2, inventory, session2, channel, references, report
         ${[0, 1].map((offset) => {
     const value = board * 6 + offset * 3 + 1;
     return b`<button
-          aria-pressed=${value === first} @click=${() => select(value)}>Group ${board * 2 + offset + 1}</button>`;
+          ?disabled=${busy || recovery} aria-pressed=${value === first} @click=${() => select(value)}>Group ${board * 2 + offset + 1}</button>`;
   })}
       </div>
       <h2>Calibrate CT${first}–CT${first + 2}</h2>
@@ -2984,6 +3009,7 @@ function currentStep(topology2, inventory, session2, channel, references, report
       <div class="reference-block">
         ${channels.map((value) => b`<label>CT${value} · ${inventory?.channels.find((item) => item.channel === value)?.name ?? "Unnamed circuit"} reference (A)
           <input data-current-reference=${value} aria-label=${`CT${value} reference`} type="number" min="0.01" step="0.01"
+            ?disabled=${recoveryChannels && !recoveryChannels.includes(value)}
             .value=${references.has(value) ? String(references.get(value)) : ""}
             @input=${(event) => {
     const input = event.target;
@@ -2994,13 +3020,13 @@ function currentStep(topology2, inventory, session2, channel, references, report
     setReportingMultiplier(value || null);
   }}><option value="" ?selected=${reportingMultiplier === null}>Choose multiplier</option>${[1, 2, 4, 8].map((value) => b`<option value=${value} ?selected=${reportingMultiplier === value}>${value}</option>`)}</select></label><p>ESPHome source editing is unavailable, so the multiplier cannot be read from authoritative config. Choose it.</p>` : ""}
       </div>
-      <div class="calibration-actions"><button class="secondary" @click=${check} ?disabled=${busy || !referenceReady}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Loading live current data…` : "Check stability"}</button>
-        <button class="primary" @click=${calibrate} ?disabled=${busy || !referenceReady || !stability2?.stable || (result?.iteration ?? 0) >= 3 || Boolean(result && !result.retry_allowed && result.iteration > 0)}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Calibrating current…` : result?.retry_allowed ? "Retry current calibration" : "Calibrate current"}</button></div>
+      <div class="calibration-actions"><button class="secondary" @click=${check} ?disabled=${busy || !calibrationAvailable || !referenceReady}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Loading live current data…` : "Check stability"}</button>
+        <button class="primary" @click=${calibrate} ?disabled=${busy || !calibrationAvailable || !referenceReady || !stability2?.stable || (result?.iteration ?? 0) >= 3 || Boolean(result && !result.retry_allowed && result.iteration > 0)}>${busy ? b`<span class="loading-spinner" aria-hidden="true"></span>Calibrating current…` : result?.retry_allowed ? "Retry current calibration" : "Calibrate current"}</button></div>
       ${stability2 ? b`<div class=${stability2.stable ? "success-band" : "warning-band"} role="status">${stability2.stable ? "Stable and ready for calibration." : stability2.windows.length ? "Data is changing too much; keep the load steady." : "Waiting for live data…"}</div>` : ""}
       ${stabilityEvidence(stability2, selected.map((value) => `CT${value}`))}
       ${result?.state === "applied_pending_restart_verification" ? b`<div class="success-band" role="status">Current calibration complete for ${result.changed_channels.map((value) => `CT${value}`).join(", ") || "no changed channels"}.</div>` : ""}
       ${calibrationEvidence(result)}
-      ${result?.state.includes("indeterminate") ? b`<aside class="recovery-panel" role="status"><strong>Calibration outcome indeterminate</strong><p>No automatic retry will be made.</p><button class="secondary" @click=${reconnect}>Reconnect and inspect</button><button class="danger" @click=${cancel}>Cancel session</button></aside>` : ""}
+      ${recovery || result?.state.includes("indeterminate") ? b`<aside class="recovery-panel" role="status"><strong>${result?.state.includes("indeterminate") ? "Calibration outcome indeterminate" : "Calibration outside tolerance"}</strong><p>${result?.retry_allowed ? "Enter the references for the affected CTs and check stability before retrying." : "No automatic retry will be made."}</p><button class="secondary" ?disabled=${busy} @click=${reconnect}>Reconnect and inspect</button><button class="danger" ?disabled=${busy} @click=${cancel}>Cancel session</button></aside>` : ""}
       </div>
     </section>
   `;
@@ -3965,12 +3991,13 @@ function voltageStep(topology2, session2, board, references, referenceLabels = [
   const complete = completedInstanceIds.size === sourceIds.length && sourceIds.every((instance) => completedInstanceIds.has(instance));
   const retry = results.find((result) => result.retry_allowed) ?? null;
   const terminal = results.some((result) => result.state !== "applied_pending_restart_verification" && !result.retry_allowed);
+  const recovery = session2?.gain_recovery?.target === "voltage" ? session2.gain_recovery : null;
   const boardLabel2 = board === 0 ? "Main Board" : `Add-on ${board}`;
   return b`
     <section class="step-content calibration-step" aria-labelledby="step-heading">
       ${calibrationProgress(referenceReady, stability2, complete ? results[0] ?? null : null, session2?.calibration_plan ?? "full")}
       <div class="board-tabs" role="tablist" aria-label="Voltage calibration boards">
-        ${Array.from({ length: topology2?.board_count ?? 1 }, (_2, index) => b`<button ?disabled=${busy} role="tab" data-voltage-board
+        ${Array.from({ length: topology2?.board_count ?? 1 }, (_2, index) => b`<button ?disabled=${busy || recovery} role="tab" data-voltage-board
           id=${`voltage-board-tab-${index}`} aria-controls="voltage-board-panel"
           aria-selected=${index === board} tabindex=${index === board ? "0" : "-1"}
           @keydown=${(event) => moveTab(event, index)}
@@ -3991,7 +4018,7 @@ function voltageStep(topology2, session2, board, references, referenceLabels = [
       ${stabilityEvidence(stability2)}
       ${complete ? b`<div class="success-band" role="status">Voltage calibration complete for ${boardLabel2}.</div>` : ""}
       ${results.map((result) => calibrationEvidence(result))}
-      ${results.some((result) => result.state === "indeterminate") ? b`<aside class="recovery-panel" role="status"><strong>Calibration outcome indeterminate</strong><p>No automatic retry will be made.</p><button class="secondary" @click=${reconnect}>Reconnect and inspect</button><button class="danger" @click=${cancel}>Cancel session</button></aside>` : ""}
+      ${recovery || results.some((result) => result.state === "indeterminate") ? b`<aside class="recovery-panel" role="status"><strong>${(recovery?.results ?? results).some((result) => result.state === "indeterminate") ? "Calibration outcome indeterminate" : "Calibration outside tolerance"}</strong><p>${retry && !terminal ? "Enter the affected reference and check stability before retrying." : "No automatic retry will be made."}</p><button class="secondary" ?disabled=${busy} @click=${reconnect}>Reconnect and inspect</button><button class="danger" ?disabled=${busy} @click=${cancel}>Cancel session</button></aside>` : ""}
       </div>
     </section>
   `;
@@ -4352,8 +4379,9 @@ function resumeWorkflowRoute(context) {
   if (context.transactionPurpose === "offset_preparation") return "install-configuration";
   if (context.transactionPurpose === "offset_finalization") return "save-calibration";
   if (context.normalTransactionActive) return "install-configuration";
-  if (context.offsetConfigurationSelected && !context.offsetRecoveryPending) return "summary";
   if (context.sessionState === "safety_required" || context.sessionState === "preflight_failed") return "safety";
+  if (context.gainRecoveryTarget) return context.gainRecoveryTarget;
+  if (context.offsetConfigurationSelected && !context.offsetRecoveryPending) return "summary";
   if (context.offsetRecoveryPending) {
     return context.sessionState === "gains_verified_offsets_pending" || ["completed", "skipped"].includes(context.offsetDisposition ?? "") ? "save-calibration" : "offset";
   }
@@ -4504,6 +4532,7 @@ class CircuitSetupPanel extends i$2 {
     this.connection = "wifi";
     this.meterSettingsDraft = null;
     this.calibrationMeterSettings = null;
+    this.calibrationInventory = null;
     this.meterConfiguration = null;
     this.verifiedMeterConfiguration = null;
     this.sourceMeterConfiguration = null;
@@ -4790,6 +4819,7 @@ class CircuitSetupPanel extends i$2 {
   }
   resetCalibrationRun() {
     this.calibrationMeterSettings = null;
+    this.calibrationInventory = null;
     this.safetyAcknowledged = false;
     this.stabilityByTarget = /* @__PURE__ */ new Map();
     this.calibrationByTarget = /* @__PURE__ */ new Map();
@@ -4975,6 +5005,7 @@ class CircuitSetupPanel extends i$2 {
       sessionState: this.session?.state ?? null,
       offsetDisposition: this.session?.offset_disposition ?? null,
       pendingCalibration: this.session?.has_pending_calibration ?? false,
+      gainRecoveryTarget: this.session?.gain_recovery?.target ?? null,
       restartVerification: this.restartResult !== null,
       handoffAvailable: this.restartResult?.source_handoff_available ?? false,
       handoffInstalled: this.restartResult?.source_handoff_firmware_installed ?? false,
@@ -5301,6 +5332,7 @@ class CircuitSetupPanel extends i$2 {
         this.transactionPurpose = null;
       }
     }
+    this.receiveGainSession(this.session, true);
     this.navigate(resumeWorkflowRoute(this.workflowContext()));
     if (this.transaction) await this.subscribeTransaction(this.connectionGeneration);
     if (this.session) await this.subscribeSession(this.connectionGeneration);
@@ -5658,6 +5690,7 @@ class CircuitSetupPanel extends i$2 {
     return Boolean(this.configurationMode === "legacy_editable" && this.existingConfigurationChoice === "manage_with_helper" && !this.configurationInstalled || intent?.adopt_managed_totals || intent?.legacy_parent_decisions.length || this.existingConfigurationChoice !== "calibrate_only" && !this.labelOnly && this.canonicalConfigurationChanged && !reverted);
   }
   hasUnsupportedCalibrationChanges() {
+    if (this.calibrationInventory) return false;
     const meter = this.meterConfiguration;
     if (!meter) return false;
     const intent = meter.configuration.totals_change_intent;
@@ -5979,13 +6012,16 @@ class CircuitSetupPanel extends i$2 {
     const meter = this.meterConfiguration;
     const generation = ++this.operationGeneration;
     await this.run(async () => {
-      this.transaction = await api.previewMeterConfiguration(deviceId, meter.plan_id, meter.source_sha256, configuration);
+      const transaction2 = await api.previewMeterConfiguration(deviceId, meter.plan_id, meter.source_sha256, configuration);
       if (!this.ownsOperation(generation, api, deviceId)) return;
+      this.transaction = transaction2;
       this.navigate("install-configuration");
       await this.subscribeTransaction(this.connectionGeneration);
     }, "Circuit configuration could not be reviewed.", () => this.ownsOperation(generation, api, deviceId));
-    this.pendingAction = "";
-    this.requestUpdate();
+    if (this.ownsOperation(generation, api, deviceId)) {
+      this.pendingAction = "";
+      this.requestUpdate();
+    }
   }
   async reviewCalibrationHandoff() {
     if (!this.api || !this.session || !this.restartResult?.source_handoff_available || this.pendingAction) return;
@@ -6006,12 +6042,12 @@ class CircuitSetupPanel extends i$2 {
     try {
       await this.run(
         async () => {
-          const changes = this.calibrationDraftChanges();
+          const changes = this.calibrationInventory ? [] : this.calibrationDraftChanges();
           const transaction2 = await api.previewCalibratedGains(
             sessionId,
             verificationId,
             changes,
-            this.sourcePackageOptions ? this.packageOptions : void 0
+            !this.calibrationInventory && this.sourcePackageOptions ? this.packageOptions : void 0
           );
           if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId || this.restartResult?.verification_id !== verificationId) return;
           this.calibrationHandoff = true;
@@ -6191,6 +6227,10 @@ class CircuitSetupPanel extends i$2 {
   }
   async continueCalibrationPlan(plan = this.calibrationPlan) {
     if (!plan || this.navigationBusy()) return;
+    if (this.session?.gain_recovery) {
+      this.navigate(this.session.gain_recovery.target);
+      return;
+    }
     if (plan !== "keep_existing") {
       if (this.calibrationPreparation?.state === "available_to_prepare") await this.prepareCalibration();
       else await this.startSession(plan, this.skipCircuitChanges);
@@ -6269,6 +6309,7 @@ class CircuitSetupPanel extends i$2 {
         if (skipCircuitChanges) {
           const saved = await api.getMeterConfiguration(deviceId);
           if (!this.ownsOperation(generation, api, deviceId)) return;
+          this.calibrationInventory = saved;
           this.calibrationMeterSettings = {
             ...saved.configuration.meter,
             authoritative: saved.capabilities.configuration_authoritative,
@@ -6279,6 +6320,7 @@ class CircuitSetupPanel extends i$2 {
         if (this.session) {
           await this.refreshOffsetRecovery(api, generation, true);
           if (!this.ownsOperation(generation, api, deviceId)) return;
+          this.receiveGainSession(this.session, true);
           this.navigate(resumeWorkflowRoute(this.workflowContext()));
           await this.subscribeSession(this.connectionGeneration);
           return;
@@ -6378,7 +6420,7 @@ class CircuitSetupPanel extends i$2 {
     await this.ownSubscription(
       api.subscribeSession(sessionId, (session2) => {
         if (this.owns(generation, api) && scope === this.sessionSubscriptionScope && this.session?.session_id === sessionId && this.session.device_id === deviceId && session2.session_id === sessionId && session2.device_id === deviceId) {
-          this.session = session2;
+          this.receiveGainSession(session2);
           this.requestUpdate();
         }
       }),
@@ -6427,8 +6469,8 @@ class CircuitSetupPanel extends i$2 {
     if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId || session2.session_id !== sessionId || session2.device_id !== deviceId) return;
     this.offsetPreparation = preparation;
     this.offsetFinalization = finalization;
-    this.session = session2;
-    if (restoreSelection && finalization.board_index !== null && finalization.stage !== null) {
+    this.receiveGainSession(session2, restoreSelection);
+    if (restoreSelection && !session2.gain_recovery && finalization.board_index !== null && finalization.stage !== null) {
       this.board = finalization.board_index;
       this.offsetStage = finalization.stage;
     }
@@ -6507,8 +6549,8 @@ class CircuitSetupPanel extends i$2 {
         const review = await api.previewOffsetFinalization(
           sessionId,
           this.restartResult?.source_handoff_available ? this.restartResult.verification_id : void 0,
-          this.calibrationDraftChanges(),
-          this.hasPackageChanges() ? this.packageOptions : void 0
+          this.calibrationInventory ? [] : this.calibrationDraftChanges(),
+          !this.calibrationInventory && this.hasPackageChanges() ? this.packageOptions : void 0
         );
         if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
         this.transaction = review.transaction;
@@ -6688,7 +6730,7 @@ class CircuitSetupPanel extends i$2 {
     this.requestUpdate();
   }
   async finishCurrent() {
-    if (!this.session || this.finishBusy) return;
+    if (!this.session || this.session.gain_recovery || this.finishBusy) return;
     if (this.totalsIntentNeedsResolution()) {
       this.explainTotalsModeConflict();
       return;
@@ -6702,7 +6744,7 @@ class CircuitSetupPanel extends i$2 {
       if (this.hasUnsupportedCalibrationChanges()) this.explainCalibrationConfigurationConflict();
       return;
     }
-    if (this.calibrationDraftChanges().length || this.hasCanonicalChanges() || this.hasPackageChanges()) {
+    if (!this.calibrationInventory && (this.calibrationDraftChanges().length || this.hasCanonicalChanges() || this.hasPackageChanges())) {
       await this.finishWithoutCalibration();
       return;
     }
@@ -6737,7 +6779,7 @@ class CircuitSetupPanel extends i$2 {
     const sessionId = this.session.session_id;
     const generation = ++this.operationGeneration;
     const targetIds = target === "voltage" ? this.selectedVoltageReferences().map((item) => item.referenceId) : this.currentReferenceEntries().map((item) => String(item.channel));
-    if (!targetIds.length) return;
+    if (!targetIds.length || !this.gainTargetAllowed(target, targetIds)) return;
     this.pendingAction = "session";
     if (target === "voltage") this.voltageBusy = true;
     this.requestUpdate();
@@ -6769,13 +6811,16 @@ class CircuitSetupPanel extends i$2 {
   }
   async calibrate(target) {
     if (!this.api || !this.session || this.pendingAction === "session" || target === "voltage" && this.voltageBusy) return;
+    const currentReferences = this.currentReferenceEntries();
+    const voltageReferences = this.selectedVoltageReferences();
+    const targetIds = target === "voltage" ? voltageReferences.map((item) => item.referenceId) : currentReferences.map((item) => String(item.channel));
+    if (!this.gainTargetAllowed(target, targetIds)) return;
     const api = this.api;
     const deviceId = this.selectedDeviceId;
     const sessionId = this.session.session_id;
     this.pendingAction = "session";
     this.requestUpdate();
     const generation = ++this.operationGeneration;
-    const currentReferences = this.currentReferenceEntries();
     if (target === "current" && !currentReferences.length) {
       this.fail(new Error(), "Confirm the reporting multiplier before calibration.");
       this.pendingAction = "";
@@ -6791,29 +6836,28 @@ class CircuitSetupPanel extends i$2 {
           if (target === "voltage") {
             if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
             const updated2 = new Map(this.calibrationByTarget);
-            const references = this.selectedVoltageReferences();
-            if (!references.length || references.some(({ value }) => !Number.isFinite(value) || value < 1 || value > 600) || references.some(({ referenceId }) => !this.stabilityByTarget.get(`voltage:${referenceId}`)?.stable)) {
+            if (!voltageReferences.length || voltageReferences.some(({ value }) => !Number.isFinite(value) || value < 1 || value > 600) || voltageReferences.some(({ referenceId }) => !this.stabilityByTarget.get(`voltage:${referenceId}`)?.stable)) {
               throw new Error("Voltage references must be valid and stable before calibration.");
             }
-            for (const { referenceId, value } of references) {
+            for (const { referenceId, value } of voltageReferences) {
               const results = await api.calibrateVoltage(sessionId, referenceId, value, true);
               if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
               results.forEach((result2) => updated2.set(`voltage:${result2.group_key}`, result2));
               this.calibrationByTarget = new Map(updated2);
               this.requestUpdate();
+              if (results.some((result2) => result2.state !== "applied_pending_restart_verification")) break;
             }
-            this.calibrationByTarget = updated2;
             const session22 = await api.getSession(sessionId);
             if (!this.ownsOperation(generation, api, deviceId) || session22.session_id !== sessionId || session22.device_id !== deviceId) return;
-            this.session = session22;
-            this.announcement = "Calibrated the selected voltage reference.";
+            this.receiveGainSession(session22, true);
+            this.announcement = session22.gain_recovery ? "Review the voltage calibration result before continuing." : "Calibrated the selected voltage reference.";
             return;
           }
           const result = await api.calibrateCurrent(
             sessionId,
             currentReferences,
             true,
-            this.calibrationDraftChanges().map((change) => ({
+            this.calibrationInventory ? [] : this.calibrationDraftChanges().map((change) => ({
               channel: change.channel,
               reporting_multiplier: change.reporting_multiplier ?? 1
             }))
@@ -6824,7 +6868,7 @@ class CircuitSetupPanel extends i$2 {
           this.calibrationByTarget = updated;
           const session2 = await api.getSession(sessionId);
           if (!this.ownsOperation(generation, api, deviceId) || session2.session_id !== sessionId || session2.device_id !== deviceId) return;
-          this.session = session2;
+          this.receiveGainSession(session2);
           this.announcement = `Current calibration iteration ${result.iteration} finished. Review the result before continuing.`;
         },
         "Calibration did not complete. Reconnect and inspect before another attempt.",
@@ -6858,6 +6902,8 @@ class CircuitSetupPanel extends i$2 {
     return board === 0 ? `main_${group}` : `addon${board}_${group}`;
   }
   voltageReferenceIds() {
+    const recovery = this.session?.gain_recovery;
+    if (recovery?.target === "voltage") return [recovery.target_id];
     const groups = this.voltageGroupKeys();
     const references = (this.calibrationMeterSettings ?? this.meterSettingsDraft)?.voltage_references.filter((reference) => reference.group_keys.some((key) => groups.includes(key))) ?? [];
     if (references.length) return references.map((reference) => reference.reference_id);
@@ -6882,14 +6928,16 @@ class CircuitSetupPanel extends i$2 {
   }
   currentReferenceEntries() {
     const first = Math.floor((this.channel - 1) / 3) * 3 + 1;
-    return Array.from({ length: 3 }, (_2, index) => first + index).flatMap((channel) => {
+    const recovery = this.session?.gain_recovery;
+    const channels = recovery?.target === "current" ? recovery.results[0].changed_channels : Array.from({ length: 3 }, (_2, index) => first + index);
+    return channels.flatMap((channel) => {
       const reference = this.currentReferences.get(channel);
-      const multiplier = this.drafts.get(channel)?.multiplier ?? this.inventory?.channels[channel - 1]?.reporting_multiplier ?? this.reportingMultiplier;
-      return reference && reference > 0 && multiplier !== null ? [{ channel, reference, reporting_multiplier: multiplier }] : [];
+      const multiplier = this.calibrationInventory ? this.calibrationInventory.channels[channel - 1]?.reporting_multiplier : this.drafts.get(channel)?.multiplier ?? this.inventory?.channels[channel - 1]?.reporting_multiplier ?? this.reportingMultiplier;
+      return reference && reference > 0 && multiplier != null ? [{ channel, reference, reporting_multiplier: multiplier }] : [];
     });
   }
   async restart() {
-    if (!this.api || !this.session || !this.topology || this.restartBusy) return;
+    if (!this.api || !this.session || this.session.gain_recovery || !this.topology || this.restartBusy) return;
     const api = this.api;
     const deviceId = this.selectedDeviceId;
     const sessionId = this.session.session_id;
@@ -6986,25 +7034,61 @@ class CircuitSetupPanel extends i$2 {
     }
   }
   async reconnectSession() {
-    if (!this.api || !this.session) return;
+    if (!this.api || !this.session || this.navigationBusy()) return;
     const api = this.api;
     const deviceId = this.selectedDeviceId;
     const sessionId = this.session.session_id;
     const generation = ++this.operationGeneration;
+    this.pendingAction = "reconnect";
+    this.requestUpdate();
     await this.run(
       async () => {
         const session2 = this.step === "offset" ? await api.reconnectSession(sessionId, this.board, this.offsetStage) : await api.reconnectSession(sessionId);
         if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
-        this.session = session2;
+        this.receiveGainSession(session2, true);
         this.offsetAcknowledged = [false, false];
         this.offsetReadinessByTarget = /* @__PURE__ */ new Map();
         await this.refreshOffsetRecovery(api, generation, true);
         if (!this.ownsOperation(generation, api, deviceId) || this.session?.session_id !== sessionId) return;
+        if (this.session.gain_recovery) {
+          this.stabilityByTarget = /* @__PURE__ */ new Map();
+          this.navigate(this.session.gain_recovery.target);
+        }
         this.announcement = `Session reconnected with state ${this.session.state}.`;
       },
       "Session reconnection failed. Retry only after checking the meter connection.",
       () => this.ownsOperation(generation, api, deviceId)
     );
+    if (this.ownsOperation(generation, api, deviceId)) {
+      this.pendingAction = "";
+      this.requestUpdate();
+    }
+  }
+  receiveGainSession(session2, restoreSelection = false) {
+    const previous = this.session?.gain_recovery;
+    this.session = session2;
+    const recovery = session2?.gain_recovery;
+    if (!recovery && !(previous && recovery === null)) return;
+    const updated = new Map(this.calibrationByTarget);
+    const keys = (target, result) => target === "voltage" ? [`voltage:${result.group_key}`] : result.changed_channels.map((channel) => `current:${channel}`);
+    if (previous) for (const result of previous.results) for (const key of keys(previous.target, result)) {
+      if (updated.get(key)?.state !== "applied_pending_restart_verification") updated.delete(key);
+    }
+    if (recovery) for (const result of recovery.results) for (const key of keys(recovery.target, result)) updated.set(key, result);
+    this.calibrationByTarget = updated;
+    if (!recovery || !restoreSelection && previous?.target === recovery.target && previous.target_id === recovery.target_id) return;
+    if (recovery.target === "current") this.channel = Number(recovery.target_id);
+    else {
+      const failed = recovery.results.find((result) => result.state !== "applied_pending_restart_verification");
+      if (failed) this.board = Math.floor((failed.changed_channels[0] - 1) / 6);
+    }
+  }
+  gainTargetAllowed(target, targetIds) {
+    const recovery = this.session?.gain_recovery;
+    if (!recovery) return true;
+    if (recovery.target !== target || recovery.results.some((result) => result.state !== "applied_pending_restart_verification" && !result.retry_allowed)) return false;
+    const expected = target === "voltage" ? [recovery.target_id] : recovery.results[0].changed_channels.map(String);
+    return targetIds.length === expected.length && targetIds.every((id2, index) => id2 === expected[index]);
   }
   resultFor(target) {
     const currentIds = this.currentReferenceEntries().map((item) => String(item.channel));
@@ -7026,7 +7110,7 @@ class CircuitSetupPanel extends i$2 {
     return new Set([...this.calibrationByTarget.entries()].flatMap(([key, result]) => key.startsWith(`${target}:`) && result.state === "applied_pending_restart_verification" && result.gain_evidence?.flash_saved ? [result.gain_evidence.instance_id] : []));
   }
   calibrationContinuationBlocked(target) {
-    return this.navigationBusy() || ["calibration_outcome_indeterminate", "restart_failed", "preflight_failed"].includes(this.session?.state ?? "") || [...this.calibrationByTarget].some(([key, result]) => key.startsWith(target + ":") && result.state !== "applied_pending_restart_verification");
+    return this.navigationBusy() || Boolean(this.session?.gain_recovery) || ["calibration_outcome_indeterminate", "restart_failed", "preflight_failed"].includes(this.session?.state ?? "") || [...this.calibrationByTarget].some(([key, result]) => key.startsWith(target + ":") && result.state !== "applied_pending_restart_verification");
   }
   unrunReferences(target) {
     if (target === "current") return [...this.currentReferences].filter(([channel, value]) => value > 0 && this.calibrationByTarget.get("current:" + channel)?.state !== "applied_pending_restart_verification").map(([channel]) => "CT" + channel);
@@ -7068,6 +7152,7 @@ class CircuitSetupPanel extends i$2 {
       await operation();
     } catch (error) {
       if (!isCurrent()) return;
+      if (error.code === "calibration_unstable") this.stabilityByTarget = /* @__PURE__ */ new Map();
       this.fail(error, this.safeErrorMessage(error, typeof fallback === "function" ? fallback() : fallback));
     }
     if (isCurrent()) this.requestUpdate();
@@ -7078,6 +7163,7 @@ class CircuitSetupPanel extends i$2 {
     if (code === "offset_communication_failed") return `The selected ${board} could not verify meter-chip communication. Check the meter connection and retry. Existing recovery data is unchanged.`;
     if (code === "meter_communication_failed") return this.step === "offset" ? `The selected ${board} could not verify meter-chip communication. Check the meter connection and retry. Existing recovery data is unchanged.` : "Meter-chip communication could not be verified. Check the meter connection and retry.";
     if (code === "meter_unavailable") return "The meter is offline or its ESPHome API is unreachable. Restore its connection in Home Assistant and retry.";
+    if (code === "calibration_unstable") return "Readings changed. Keep the load steady and check stability again.";
     if (code === "offset_diagnostics_incomplete") return `Fresh offset diagnostics for the selected ${board} were incomplete. Retry to request fresh diagnostics. Existing recovery data is unchanged.`;
     if (code === "offset_chip_identity_unavailable") return `The meter-chip mapping for the selected ${board} could not be verified from the authoritative configuration. Review the source/package definitions and retry. Existing recovery data is unchanged.`;
     if (code === "offset_tables_unavailable") return `The meter did not report all offset values needed to back up this calibration stage for the selected ${board}. This can happen before the first offset calibration, even when the firmware supports offset calibration. Retry to request fresh diagnostics, or choose Skip offset calibration to continue with voltage/current calibration. Existing recovery data is unchanged.`;
@@ -7288,7 +7374,7 @@ class CircuitSetupPanel extends i$2 {
       retryConfirmed: this.offsetRetryConfirmed,
       readiness: this.offsetReadinessByTarget.get(this.offsetKey()) ?? null,
       result: this.offsetResultByTarget.get(this.offsetKey()) ?? null,
-      busy: this.offsetBusy,
+      busy: this.offsetBusy || this.pendingAction === "reconnect",
       stock: this.stockOffsetMode() ? {
         preparation: this.offsetPreparation,
         backupAcknowledged: this.offsetBackupAcknowledged,
@@ -7349,17 +7435,17 @@ class CircuitSetupPanel extends i$2 {
       () => void this.calibrate("voltage"),
       () => void this.reconnectSession(),
       () => void this.cancelSession(),
-      this.selectedVoltageReferences().length > 0
+      this.selectedVoltageReferences().length > 0 && this.gainTargetAllowed("voltage", this.selectedVoltageReferences().map((item) => item.referenceId))
     )}
       ${this.calibrationContinuation("voltage")}
-      <footer class="action-footer offset-footer"><button class="secondary" ?disabled=${this.navigationBusy()} @click=${() => this.back()}>Back</button>
+       <footer class="action-footer offset-footer"><button class="secondary" ?disabled=${this.navigationBusy() || this.session?.gain_recovery} @click=${() => this.back()}>Back</button>
         <button class="primary" ?disabled=${this.calibrationContinuationBlocked("voltage")} @click=${() => {
       this.voltageSkipped = !this.hasCompletedCalibration("voltage");
       this.navigate("current");
     }}>${this.calibrationContinueLabel("voltage")}</button></footer>`;
     if (this.step === "current") return b`${currentStep(
       this.topology,
-      this.inventory,
+      this.calibrationInventory ?? this.inventory,
       this.session,
       this.channel,
       this.currentReferences,
@@ -7386,10 +7472,11 @@ class CircuitSetupPanel extends i$2 {
       () => void this.calibrate("current"),
       () => void this.reconnectSession(),
       () => void this.cancelSession(),
-      this.navigationBusy()
+      this.navigationBusy(),
+      this.gainTargetAllowed("current", this.currentReferenceEntries().map((item) => String(item.channel)))
     )}
       ${this.calibrationContinuation("current")}
-      <footer class="action-footer offset-footer"><button class="secondary" ?disabled=${this.navigationBusy()} @click=${() => this.back()}>Back</button>
+       <footer class="action-footer offset-footer"><button class="secondary" ?disabled=${this.navigationBusy() || this.session?.gain_recovery} @click=${() => this.back()}>Back</button>
         <button class="primary" ?disabled=${this.calibrationContinuationBlocked("current")} @click=${() => {
       this.currentSkipped = !this.hasCompletedCalibration("current");
       void this.finishCurrent();

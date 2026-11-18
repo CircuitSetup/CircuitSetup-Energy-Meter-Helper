@@ -29,12 +29,13 @@ export function voltageStep(
   const complete = completedInstanceIds.size === sourceIds.length && sourceIds.every((instance) => completedInstanceIds.has(instance));
   const retry = results.find((result) => result.retry_allowed) ?? null;
   const terminal = results.some((result) => result.state !== "applied_pending_restart_verification" && !result.retry_allowed);
+  const recovery = session?.gain_recovery?.target === "voltage" ? session.gain_recovery : null;
   const boardLabel = board === 0 ? "Main Board" : `Add-on ${board}`;
   return html`
     <section class="step-content calibration-step" aria-labelledby="step-heading">
       ${calibrationProgress(referenceReady, stability, complete ? results[0] ?? null : null, session?.calibration_plan ?? "full")}
       <div class="board-tabs" role="tablist" aria-label="Voltage calibration boards">
-        ${Array.from({ length: topology?.board_count ?? 1 }, (_, index) => html`<button ?disabled=${busy} role="tab" data-voltage-board
+        ${Array.from({ length: topology?.board_count ?? 1 }, (_, index) => html`<button ?disabled=${busy || recovery} role="tab" data-voltage-board
           id=${`voltage-board-tab-${index}`} aria-controls="voltage-board-panel"
           aria-selected=${index === board} tabindex=${index === board ? "0" : "-1"}
           @keydown=${(event: KeyboardEvent) => moveTab(event, index)}
@@ -55,7 +56,7 @@ export function voltageStep(
       ${stabilityEvidence(stability)}
       ${complete ? html`<div class="success-band" role="status">Voltage calibration complete for ${boardLabel}.</div>` : ""}
       ${results.map((result) => calibrationEvidence(result))}
-      ${results.some((result) => result.state === "indeterminate") ? html`<aside class="recovery-panel" role="status"><strong>Calibration outcome indeterminate</strong><p>No automatic retry will be made.</p><button class="secondary" @click=${reconnect}>Reconnect and inspect</button><button class="danger" @click=${cancel}>Cancel session</button></aside>` : ""}
+      ${recovery || results.some((result) => result.state === "indeterminate") ? html`<aside class="recovery-panel" role="status"><strong>${(recovery?.results ?? results).some(result => result.state === "indeterminate") ? "Calibration outcome indeterminate" : "Calibration outside tolerance"}</strong><p>${retry && !terminal ? "Enter the affected reference and check stability before retrying." : "No automatic retry will be made."}</p><button class="secondary" ?disabled=${busy} @click=${reconnect}>Reconnect and inspect</button><button class="danger" ?disabled=${busy} @click=${cancel}>Cancel session</button></aside>` : ""}
       </div>
     </section>
   `;

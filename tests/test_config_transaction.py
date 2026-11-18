@@ -1191,31 +1191,149 @@ def test_chip_failure_can_abandon_without_rollback_and_release_lock() -> None:
     asyncio.run(run())
 
 
-def test_chip_failure_abandon_rejects_external_source_changes() -> None:
-    from custom_components.circuitsetup_energy_meter_helper.log_parser import (
-        MeterCommunicationError,
+def test_abandon_after_uncertain_upload_preserves_external_source_changes() -> None:
+    async def run() -> None:
+        builder = Builder(upload=ConnectionError())
+        persistence = Persistence()
+        manager = _manager(builder, persistence)
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        await manager.async_compile(preview.transaction_id)
+        result = await manager.async_confirm_install(preview.transaction_id, "admin")
+        assert TransactionEvidenceCode.UPLOAD_OUTCOME_UNKNOWN in result.evidence
+        assert await persistence.async_get_install_recovery("aabbccddeeff")
+        builder.remote_content = "external edit"
+        calls = builder.calls.copy()
+        abandoned = await manager.async_abandon(preview.transaction_id)
+        assert TransactionEvidenceCode.CANCELLED in abandoned.evidence
+        assert builder.calls == calls
+        assert builder.remote_content == "external edit"
+        assert await persistence.async_get_install_recovery("aabbccddeeff") is None
+        assert not manager.sessions.is_config_locked("aabbccddeeff")
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("phase", ("validated", "compiled", "compiling", "external_edit", "ota_attempted"))
+def test_controller_unload_restores_only_pre_ota_writes(phase: str) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
+        EntryWebsocketController,
+    )
+
+    async def run() -> None:
+        builder = Builder(upload=ConnectionError())
+        persistence = Persistence()
+        manager = _manager(builder, persistence)
+        controller = EntryWebsocketController(None, manager.sessions, persistence)
+        controller.transactions = manager
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        if phase == "external_edit":
+            builder.remote_content = "edited outside Helper"
+        internal = manager._transaction(preview.transaction_id)
+        if phase in ("compiled", "ota_attempted"):
+            await manager.async_compile(preview.transaction_id)
+        if phase == "ota_attempted":
+            await manager.async_confirm_install(preview.transaction_id, "admin")
+        compile_task = None
+        if phase == "compiling":
+            builder.pause("compile")
+            compile_task = asyncio.create_task(manager.async_compile(preview.transaction_id))
+            await builder.started["compile"].wait()
+
+        class Workflow:
+            async def async_close(self) -> None:
+                builder.calls.append("close")
+
+        controller.workflow = Workflow()
+        await controller.async_close()
+        assert builder.calls[-1] == "close"
+        if phase == "ota_attempted":
+            assert "restore" not in builder.calls
+            assert await persistence.async_get_install_recovery("aabbccddeeff")
+        elif phase == "external_edit":
+            assert builder.remote_content == "edited outside Helper"
+            assert builder.restored_content is None
+            assert TransactionEvidenceCode.SOURCE_CHANGED in internal.evidence
+        else:
+            assert builder.calls[-2] == "restore" and builder.calls.count("restore") == 1
+            assert builder.remote_content == "prior"
+        if compile_task is not None:
+            assert compile_task.cancelled()
+        assert not manager.sessions.is_config_locked("aabbccddeeff")
+
+    asyncio.run(run())
+
+
+def test_controller_unload_preserves_rollback_and_builder_for_retry() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
+        EntryWebsocketController,
     )
 
     async def run() -> None:
         builder = Builder()
-        manager = _manager(
-            builder, Persistence(), evidence=MeterCommunicationError((0,))
-        )
+        manager = _manager(builder, Persistence())
+        controller = EntryWebsocketController(None, manager.sessions, None)
+        controller.transactions = manager
+
+        class Workflow:
+            async def async_close(self) -> None:
+                builder.calls.append("close")
+
+        controller.workflow = Workflow()
+        preview = await _preview(manager)
+        await manager.async_confirm_write(preview.transaction_id, "admin")
+        builder.restore_error = ConnectionError("restore acknowledgment was lost")
+        with pytest.raises(ExceptionGroup):
+            await controller.async_close()
+        assert "close" not in builder.calls
+        assert manager.sessions.is_config_locked("aabbccddeeff")
+        assert manager._transaction(preview.transaction_id).prior_content == "prior"
+        builder.restore_error = None
+        await controller.async_close()
+        assert builder.remote_content == "prior"
+        assert builder.calls[-1] == "close"
+        assert not manager.sessions.is_config_locked("aabbccddeeff")
+
+    asyncio.run(run())
+
+
+def test_unload_during_pre_ota_checkpoint_drains_save_and_restores_yaml() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
+        EntryWebsocketController,
+    )
+
+    async def run() -> None:
+        saving = asyncio.Event()
+        release = asyncio.Event()
+
+        class BlockingPersistence(Persistence):
+            async def async_save_install_recovery(self, mac, transaction_id, checkpoint):
+                if checkpoint is not None:
+                    saving.set()
+                    await release.wait()
+                await super().async_save_install_recovery(mac, transaction_id, checkpoint)
+
+        builder = Builder()
+        persistence = BlockingPersistence()
+        manager = _manager(builder, persistence)
+        controller = EntryWebsocketController(None, manager.sessions, persistence)
+        controller.transactions = manager
         preview = await _preview(manager)
         await manager.async_confirm_write(preview.transaction_id, "admin")
         await manager.async_compile(preview.transaction_id)
-        await manager.async_confirm_install(preview.transaction_id, "admin")
-        builder.remote_content = "external edit"
-
-        with pytest.raises(ValueError, match="confirmed configuration source"):
-            await manager.async_abandon(preview.transaction_id)
-
-        status = manager.status(preview.transaction_id)
-        assert status.state is ConfigTransactionState.INSTALL_CONFIRMATION_REQUIRED
-        assert not status.rollback_available
-        assert manager.sessions.is_config_locked("aabbccddeeff")
-        assert "restore" not in builder.calls
-        await manager.sessions.async_unload()
+        install = asyncio.create_task(manager.async_confirm_install(preview.transaction_id, "admin"))
+        await saving.wait()
+        close = asyncio.create_task(controller.async_close())
+        while not manager.sessions.unloading:
+            await asyncio.sleep(0)
+        assert not close.done()
+        release.set()
+        await close
+        assert (await install).state is ConfigTransactionState.ROLLED_BACK
+        assert "upload" not in builder.calls
+        assert builder.remote_content == "prior"
+        assert await persistence.async_get_install_recovery("aabbccddeeff") is None
 
     asyncio.run(run())
 
@@ -2556,7 +2674,12 @@ def test_unload_bounds_hung_reconciliation_then_marks_and_scrubs() -> None:
     asyncio.run(run())
 
 
-def test_unload_timeout_does_not_wait_for_cancellation_suppression() -> None:
+@pytest.mark.parametrize("with_controller", (False, True))
+def test_unload_timeout_does_not_wait_for_cancellation_suppression(with_controller: bool) -> None:
+    from custom_components.circuitsetup_energy_meter_helper.websocket_api import (
+        EntryWebsocketController,
+    )
+
     class CancellationSuppressingBuilder(UncertainUpdateBuilder):
         def __init__(self) -> None:
             super().__init__("proposed")
@@ -2591,16 +2714,27 @@ def test_unload_timeout_does_not_wait_for_cancellation_suppression() -> None:
         )
         await asyncio.wait_for(builder.read_started.wait(), 1)
 
-        await asyncio.wait_for(sessions.async_unload(), 1)
-
+        if with_controller:
+            controller = EntryWebsocketController(None, sessions, None)
+            controller.transactions = manager
+            with pytest.raises(ExceptionGroup):
+                await asyncio.wait_for(controller.async_close(), 1)
+            assert sessions.is_config_locked("aabbccddeeff")
+            assert internal.plan is not None and internal.prior_content == "prior"
+        else:
+            await asyncio.wait_for(sessions.async_unload(), 1)
+            assert not sessions.is_config_locked("aabbccddeeff")
+            assert internal.plan is None and internal.prior_content is None
+            assert not write.done()
         assert builder.cancel_seen.is_set()
-        assert not write.done()
-        assert not sessions.is_config_locked("aabbccddeeff")
         assert internal.evidence[-1] is TransactionEvidenceCode.WRITE_RECOVERY_REQUIRED
-        assert internal.plan is None and internal.prior_content is None
         builder.release.set()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(write, 1)
+        if with_controller:
+            await controller.async_close()
+            assert builder.remote_content == "prior"
+            assert internal.closed
 
     asyncio.run(run())
 

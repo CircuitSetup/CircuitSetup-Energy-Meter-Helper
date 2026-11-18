@@ -169,7 +169,7 @@ def test_current_calibrates_multiple_references_on_one_chip_in_one_gain_run() ->
             "flash_saved",
         ]
         assert [event[0] for event in session.events].count("button") == 1
-        assert session.window_calls == 0
+        assert session.window_calls == 2
         ct1 = meter.role("ct1.reference_current").descriptor
         ct2 = meter.role("ct2.reference_current").descriptor
         assert ("number", ct1.key, 5.0, ct1.device_id) in session.events

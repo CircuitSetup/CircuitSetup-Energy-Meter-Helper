@@ -2972,6 +2972,75 @@ def test_native_only_restart_verification_persists_without_source_handoff(
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("pending_offsets", (False, True))
+def test_restart_verifies_only_gain_changes_when_previous_offsets_are_saved(
+    monkeypatch: pytest.MonkeyPatch, pending_offsets: bool
+) -> None:
+    from tests.test_restart_verification import (
+        CalibrationEngine,
+        EntityCatalog,
+        LogFallbackRestartSession,
+        RestartVerificationError,
+        _ignore_marker,
+        _prime_origin,
+        bind_meter,
+        substitutions,
+        topology,
+    )
+
+    async def run() -> None:
+        workflow, _, sessions = await _native_only_workflow(monkeypatch)
+        status = await workflow.async_start_session("meter", calibration_plan="standard")
+        await workflow.async_acknowledge_safety(status.session_id, True)
+        handle = workflow._sessions[status.session_id]
+        lines = (
+            Path(__file__).parent / "fixtures/logs/gain_restore_with_offsets.log"
+        ).read_text(encoding="utf-8").splitlines()
+        api = LogFallbackRestartSession(tuple(lines))
+        handle.substitutions = substitutions(0)
+        handle.binding = bind_meter(
+            EntityCatalog(api.entities, 1), topology(0), handle.substitutions
+        )
+        monkeypatch.setattr(workflow, "_api", api)
+        gains = ((1440, 800), (1444, 802), (1449, 804))
+        await _prime_origin(
+            sessions,
+            api,
+            handle.binding,
+            {"meter_main1": gains},
+            offsets={"meter_main1": ((99, -21), (12, -22), (13, -23))}
+            if pending_offsets else None,
+            power_offsets={"meter_main1": ((11, -21), (12, -22), (13, -23))}
+            if pending_offsets else None,
+        )
+        saved: list[VerifiedCalibrationRecord] = []
+
+        async def persist(record: VerifiedCalibrationRecord) -> None:
+            saved.append(record)
+
+        workflow._calibration = CalibrationEngine(
+            sessions, _ignore_marker, persist_verified=persist, restart_restore_timeout=0.02
+        )
+
+        if pending_offsets:
+            with pytest.raises(
+                RestartVerificationError, match="restored offsets were not verified exactly"
+            ):
+                await workflow.async_restart_and_verify(status.session_id)
+            assert not saved
+            assert sessions.pending_calibration(handle.mac) is not None
+        else:
+            result = await workflow.async_restart_and_verify(status.session_id)
+            assert saved == [result]
+            assert result.groups[0].phase_gains == gains
+            assert result.source_handoff_available
+            assert not result.has_offset_calibration
+            assert (await workflow.async_get_session(status.session_id)).state == "verified"
+            assert sessions.pending_calibration(handle.mac) is None
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize(
     ("marker_state", "addon_source"),
     [("active", "configuration"), ("flash_saved", "flash")],
@@ -3144,6 +3213,7 @@ def test_flash_handoff_clears_only_verified_groups_after_firmware_install(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Wrong ordering or group selection could erase unrelated flash calibration."""
+    from tests.test_esphome_api import FakeClient, make_session
 
     async def run() -> None:
         workflow, _binding, _sessions = await _native_only_workflow(monkeypatch)
@@ -3180,6 +3250,10 @@ def test_flash_handoff_clears_only_verified_groups_after_firmware_install(
             ) -> VerifiedCalibrationRecord | None:
                 return record if mac == record.mac else None
 
+            async def async_get_ct_selections(self, mac: str) -> tuple[StoredCTSelection, ...]:
+                assert mac == record.mac
+                return (StoredCTSelection(2, None, None, 29002, 1.0, "b" * 64),)
+
             async def async_complete_verified_calibration_handoff(
                 self, mac: str, verification_id: str, target_transaction_id: str
             ) -> bool:
@@ -3188,23 +3262,37 @@ def test_flash_handoff_clears_only_verified_groups_after_firmware_install(
                 completed.append((mac, verification_id, target_transaction_id))
                 return True
 
-        source_reads = 0
         pressed: list[tuple[int, int]] = []
+        restore = handle.binding.groups[0].restore_gain.descriptor
 
-        async def sources(_instances: set[str]) -> dict[str, str]:
-            nonlocal source_reads
-            source_reads += 1
-            return {"meter_main1": "flash" if source_reads == 1 else "configuration"}
+        class ClearClient(FakeClient):
+            def button_command(self, key: int, device_id: int = 0) -> None:
+                assert _sessions.is_calibration_locked(handle.mac)
+                assert _sessions.is_config_locked(handle.mac)
+                pressed.append((key, device_id))
+                assert self.on_log is not None
+                self.on_log(SimpleNamespace(message="\n".join((
+                    f"[I][atm90e32.button:012] {restore.name}",
+                    *(f"[I][atm90e32:827] [CALIBRATION][meter_main1] {line}" for line in (
+                        "Clearing stored gain calibrations and restoring config-defined values",
+                        "| Phase | voltage_gain | current_gain |",
+                        "| A | 7301 | 28001 |",
+                        "| B | 7301 | 29002 |",
+                        "| C | 7301 | 28003 |",
+                        "===============================================",
+                        "Gain calibrations cleared; config values verified.",
+                    )),
+                ))))
 
-        async def press(key: int, *, device_id: int = 0) -> None:
-            assert _sessions.is_calibration_locked(handle.mac)
-            assert _sessions.is_config_locked(handle.mac)
-            pressed.append((key, device_id))
+        capture = make_session([ClearClient()])
+        await capture.async_connect()
+
+        async def clear(*args: Any, **kwargs: Any) -> None:
+            await capture.async_clear_gain_calibration(*args, **kwargs, timeout=0.01)
 
         workflow._store = Store()  # type: ignore[assignment]
-        workflow._api.async_calibration_sources = sources  # type: ignore[method-assign,union-attr]
-        workflow._api.async_press_button = press  # type: ignore[method-assign,union-attr]
-        restore = handle.binding.groups[0].restore_gain.descriptor
+        workflow._api.async_clear_gain_calibration = clear  # type: ignore[method-assign,union-attr]
+        workflow._api.hold_connection_generation = capture.hold_connection_generation  # type: ignore[method-assign,union-attr]
 
         config_lease = await _sessions.async_acquire_config(handle.mac)
         try:
@@ -3214,7 +3302,6 @@ def test_flash_handoff_clears_only_verified_groups_after_firmware_install(
                 )
             assert pressed == []
             assert completed == []
-            assert source_reads == 0
         finally:
             config_lease.release()
 
@@ -3229,6 +3316,7 @@ def test_flash_handoff_clears_only_verified_groups_after_firmware_install(
         assert handle.calibration_sources["meter_main2"] == "configuration"
         assert not _sessions.is_calibration_locked(handle.mac)
         assert not _sessions.is_config_locked(handle.mac)
+        await capture.async_shutdown()
         await workflow.async_close()
 
     asyncio.run(run())
@@ -4419,7 +4507,7 @@ def test_setup_uses_the_home_assistant_diagnostics_snapshot_for_the_panel() -> N
         assert connection.results[-1] == (
             1,
             {
-                "integration_version": "0.3.6",
+                "integration_version": "0.3.7",
                 "home_assistant_version": HA_VERSION,
                 "config_entry_version": 1,
                 "setup_state": "no_device",

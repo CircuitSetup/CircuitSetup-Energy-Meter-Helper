@@ -497,6 +497,7 @@ export interface SessionStatus {
   offset_boards?: OffsetBoardStatus[];
   has_pending_calibration?: boolean;
   has_pending_gain_calibration?: boolean;
+  gain_recovery?: { target: "voltage" | "current"; target_id: string; results: CalibrationResult[] } | null;
   calibration_plan?: "standard" | "full";
   configured_offset_targets?: Array<[number, 1 | 2]>;
 }

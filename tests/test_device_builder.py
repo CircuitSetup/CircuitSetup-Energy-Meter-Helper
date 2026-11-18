@@ -77,6 +77,31 @@ def test_trusted_server_skips_auth() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("stream", (False, True))
+def test_failed_send_releases_request_tracking(stream: bool) -> None:
+    async def run() -> None:
+        class FailingSocket(FakeWebSocket):
+            async def send_json(self, message: dict) -> None:
+                raise ConnectionError("send failed")
+
+        socket = FailingSocket({"server_version": "1.0", "requires_auth": False})
+        client = DeviceBuilderClient("http://builder", connect=lambda _: socket)
+        await client.async_connect()
+        try:
+            with pytest.raises(ConnectionError, match="send failed"):
+                if stream:
+                    await client._async_stream_command("jobs/subscribe", {})
+                else:
+                    await client.async_list_devices()
+            assert not client._pending
+            assert not client._stream_handlers
+            assert not client._stream_futures
+        finally:
+            await client.async_disconnect()
+
+    asyncio.run(run())
+
+
 def test_server_version_is_parsed_and_replaced_on_reconnect() -> None:
     async def run() -> None:
         websockets = [
@@ -787,7 +812,8 @@ def test_rollback_failure_is_separate() -> None:
     asyncio.run(run())
 
 
-def test_restore_expected_hash_refuses_a_foreign_race() -> None:
+@pytest.mark.parametrize("latest", ("foreign", "proposed"))
+def test_restore_expected_hash_refuses_a_foreign_race(latest: str) -> None:
     """Rollback's immediate precondition prevents overwriting a later edit."""
 
     async def run() -> None:
@@ -801,10 +827,11 @@ def test_restore_expected_hash_refuses_a_foreign_race() -> None:
         await asyncio.sleep(0)
         await ws.send_result("1", "foreign")
         await asyncio.sleep(0)
-        await ws.send_result("2", "foreign")
+        await ws.send_result("2", latest)
 
-        with pytest.raises(ConfigChangedError):
+        with pytest.raises(ConfigChangedError) as changed:
             await task
+        assert changed.value.actual == sha256(latest.encode()).hexdigest()
         assert all(message["command"] != "devices/update_config" for message in ws.sent)
         await client.async_disconnect()
 

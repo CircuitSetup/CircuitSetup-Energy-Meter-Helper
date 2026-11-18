@@ -293,10 +293,10 @@ class DeviceBuilderClient:
         message_id = str(self._next_message_id)
         future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
         self._pending[message_id] = future
-        await websocket.send_json(
-            {"command": command, "message_id": message_id, "args": args}
-        )
         try:
+            await websocket.send_json(
+                {"command": command, "message_id": message_id, "args": args}
+            )
             return await future
         finally:
             self._pending.pop(message_id, None)
@@ -351,10 +351,10 @@ class DeviceBuilderClient:
 
         self._stream_handlers[message_id] = handle
         self._stream_futures[message_id] = future
-        await websocket.send_json(
-            {"command": command, "message_id": message_id, "args": args}
-        )
         try:
+            await websocket.send_json(
+                {"command": command, "message_id": message_id, "args": args}
+            )
             return await future, tuple(output)
         finally:
             self._stream_handlers.pop(message_id, None)
@@ -434,8 +434,9 @@ class DeviceBuilderClient:
                     content,
                 )
             except ConfigChangedError:
-                if (await self.async_get_config(configuration)).sha256 != restored_sha256:
-                    raise
+                current = await self.async_get_config(configuration)
+                if current.sha256 != restored_sha256:
+                    raise ConfigChangedError(expected_current_sha256, current.sha256) from None
             validation = await self.async_validate(configuration)
             if not validation.success:
                 raise RollbackError("Device Builder rollback validation failed")

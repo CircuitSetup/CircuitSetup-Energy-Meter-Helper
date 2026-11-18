@@ -41,7 +41,8 @@ The guided workflow has five phases: **Choose meter**, **Configure meter**,
   configuration or calibration work.
 - **Existing external source:** explicitly choose **Edit setup** or **Calibrate**.
   Editing requires an editable ESPHome Device Builder source; the helper preserves
-  YAML it does not own.
+  YAML it does not own. **Continue to calibration with saved settings** uses the
+  installed CT multipliers and leaves draft circuit changes available for review.
 - **No editable source:** use calibration only. Continuing without Device Builder
   retains an existing meter binding.
 
@@ -59,12 +60,14 @@ Choose **Calibrate voltage and current** to retain current offsets, or open
 offsets, voltage, then current. Review the choice and select **Continue to
 calibration**; selecting an option alone does not start calibration.
 Skipping or partially completing offsets keeps the remaining gain calibration
-available.
+available. The Helper checks fresh readings before writing gains. If a gain run
+needs recovery, reopening the panel returns to the affected calibration step.
 
 After calibration, choose **Keep calibration on meter** for meter-flash
 persistence, or **Save to ESPHome and install** to persist it in the configuration.
 Installing firmware can replace flash-only calibration values, so review the
-summary before installing.
+summary before installing. The Helper completes a gain handoff only when
+firmware can confirm that flash was cleared and the configured gains are active.
 
 Current native offset preparation does not create a configuration transaction.
 Historical preparation can require a private backup and a reviewed zero-offset
