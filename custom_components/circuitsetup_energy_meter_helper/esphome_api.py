@@ -490,6 +490,7 @@ class ESPHomeApiSession:
             )
 
             def on_log(message: Any) -> None:
+                nonlocal sources
                 self._on_log(client, message)
                 if client is not self._client or not self.connected:
                     return
@@ -500,15 +501,11 @@ class ESPHomeApiSession:
                     else str(raw)
                 )
                 # Consume fresh messages directly: a full dump can exceed the log ring.
-                observed = parse_calibration_sources(
+                sources = parse_calibration_sources(
                     tuple(_strip_terminal_sequences(text).splitlines()),
                     expected_instance_ids,
                     offset_stage=offset_stage,
-                )
-                sources.update(
-                    (key, value)
-                    for key, value in observed.items()
-                    if value != "unknown"
+                    previous_sources=sources,
                 )
 
             self._clear_log_subscription()
@@ -523,8 +520,6 @@ class ESPHomeApiSession:
                     raise ESPHomeSessionDisconnectedError(
                         "connection changed during status dump"
                     )
-                if all(source != "unknown" for source in sources.values()):
-                    return dict(sources)
                 await asyncio.sleep(min(0.05, max(0.0, deadline - monotonic())))
             if self._ready_client() is not client:
                 raise ESPHomeSessionDisconnectedError(
@@ -894,11 +889,12 @@ class ESPHomeApiSession:
                 )
                 deadline = monotonic() + timeout
                 while (
-                    not expected_pins <= parser.checked_cs_pins
+                    not expected_pins <= parser.finished_cs_pins
                     if expected_pins is not None
-                    else len(parser.checked_cs_pins) < expected_chips
+                    else len(parser.finished_cs_pins) < expected_chips
                 ):
                     self._ready_client()
+                    _raise_scoped_communication_error(parser, expected_pins)
                     remaining = deadline - monotonic()
                     if remaining <= 0:
                         break

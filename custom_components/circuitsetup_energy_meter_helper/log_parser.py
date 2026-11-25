@@ -29,7 +29,17 @@ _COMPARE_ROW_RE = re.compile(
     r"(?P<flash_current>\d+)\s*\|"
 )
 _MISMATCH_RE = re.compile(r"Mismatch detected for Phase (?P<phase>[ABC])!")
-_BUTTON_RE = re.compile(r"\[[^\]]*atm90e32\.button[^\]]*\]\s*:?\s*(?P<button>.+?)\s*$")
+_BUTTON_RE = re.compile(
+    r"\[atm90e32(?P<legacy>\.button)?(?::\d+)?\]\s*:?\s*(?P<button>.+?)\s*$"
+)
+_METER_BUTTON_NAME = re.compile(
+    r"(?:[123]\. Run|z[123]\. (?:Clear|Restore)) .+ (?:Gain|Offset) Cal"
+)
+_ACTION_REJECTIONS = {
+    "Calibration in progress; try again shortly",
+    "Component failed; calibration action unavailable",
+    "Gain calibration failed; invalid measurement, reference or gain readback.",
+}
 _OFFSET_ROW_RE = re.compile(
     r"\|\s*(?P<phase>[ABC])\s*\|\s*(?P<voltage>[+-]?\d+)\s*\|\s*"
     r"(?P<current>[+-]?\d+)\s*\|\s*$"
@@ -74,11 +84,10 @@ _GAIN_RUN_TERMINALS = (
     _GAIN_FAILED,
     _GAIN_ROLLBACK_FAILED,
 )
-_GAIN_CONFIG_FALLBACK = (
-    "Gain calibration restore failed verification; config values verified."
-)
-_GAIN_CONFIG_FALLBACK_FAILED = (
-    "Gain calibration restore failed; config readback verification failed."
+_RESTORE_FAILURE_RE = re.compile(
+    r"\b(?P<kind>power offset|offset|gain) (?:calibration )?restore "
+    r"(?:failed verification|failed; config readback verification failed|and config fallback both failed verification)",
+    re.IGNORECASE,
 )
 
 
@@ -105,6 +114,7 @@ class MeterCommunicationParser:
 
     def __init__(self) -> None:
         self.checked_cs_pins: set[int] = set()
+        self.finished_cs_pins: set[int] = set()
         self.failed_cs_pins: set[int] = set()
         self.unattributed_failure = False
         self.failed = False
@@ -113,27 +123,40 @@ class MeterCommunicationParser:
 
     def feed(self, line: str) -> None:
         payload = re.sub(r"^(?:\[[^\]]*\])+\s*:?\s*", "", line).strip()
-        if payload.casefold() == "atm90e32:":
-            self._active, self._pin = True, None
-            return
         tagged_meter = re.search(r"\[atm90e32(?::\d+)?\]", line, re.IGNORECASE) is not None
-        if line.startswith("[") and not tagged_meter:
+        meter_header = payload.casefold() == "atm90e32:"
+        # A new top-level config section closes the previous component dump.
+        if meter_header or (
+            not tagged_meter and re.search(r"\[C\]\[[^\]]*\]:? \S[^\n]*:$", line)
+        ):
+            if self._pin is not None and not self._active:
+                self.finished_cs_pins.add(self._pin)
+            self._active, self._pin = meter_header, None
+            return
+        core_failure = (
+            re.search(r"\[component(?::\d+)?\]", line) is not None
+            and payload == "atm90e32.sensor is marked FAILED: Communication failed"
+        )
+        if line.startswith("[") and not (tagged_meter or core_failure):
             return
         if payload.casefold().startswith("cs pin:") and (self._active or tagged_meter):
             match = re.fullmatch(r"CS Pin:\s*(?:GPIO)?(\d{1,2})(?:\s+.*)?", payload, re.IGNORECASE)
             self._active = True
             self._pin = int(match[1]) if match and int(match[1]) <= 63 else None
-        elif re.fullmatch(r"Communication(?: with ATM90E32)? failed[.!]?", payload, re.IGNORECASE):
-            if self._active or tagged_meter:
+        elif core_failure or re.fullmatch(
+            r"Communication(?: with ATM90E32)? failed[.!]?", payload, re.IGNORECASE
+        ):
+            if core_failure or self._active or tagged_meter:
                 self.failed = True
-                if self._pin is not None:
+                if self._pin is not None and (self._active or core_failure):
                     self.failed_cs_pins.add(self._pin)
                 else:
                     self.unattributed_failure = True
         elif self._active and payload.casefold().startswith("update interval:"):
             if self._pin is not None:
                 self.checked_cs_pins.add(self._pin)
-            self._active, self._pin = False, None
+            # ESPHome core emits a failed component's status after dump_config returns.
+            self._active = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,6 +301,7 @@ def parse_calibration_sources(
     expected_instance_ids: set[str],
     *,
     offset_stage: Literal[1, 2] | None = None,
+    previous_sources: dict[str, Literal["flash", "configuration", "unknown"]] | None = None,
 ) -> dict[str, Literal["flash", "configuration", "unknown"]]:
     """Read reported calibration sources, not proof of a new run or restart."""
     if offset_stage not in (None, 1, 2):
@@ -290,13 +314,13 @@ def parse_calibration_sources(
     configuration_terms: tuple[str, ...] = (
         "No stored gain calibrations found",
         "Gain calibration is disabled",
-        _GAIN_CONFIG_FALLBACK,
     )
+    kind = "gain"
     if offset_stage is not None:
-        kind = "Power offset" if offset_stage == 2 else "Offset"
+        kind = "power offset" if offset_stage == 2 else "offset"
         flash_terms = (
-            f"Restored {kind.lower()} calibration from memory",
-            f"{kind} mismatch: using flash values",
+            f"Restored {kind} calibration from memory",
+            f"{kind.capitalize()} mismatch: using flash values",
         )
         configuration_terms = (
             (
@@ -307,13 +331,22 @@ def parse_calibration_sources(
             else ("No stored offset calibrations found",)
         ) + ("Power & Voltage/Current offset calibration is disabled",)
     sources: dict[str, Literal["flash", "configuration", "unknown"]] = {
-        instance_id: "unknown" for instance_id in expected_instance_ids
+        instance_id: previous_sources.get(instance_id, "unknown")
+        if previous_sources
+        else "unknown"
+        for instance_id in expected_instance_ids
     }
     for line in lines:
         instance_id = _instance(line)
         if instance_id not in sources:
             continue
-        if any(term in line for term in flash_terms):
+        if _restore_failed(line, kind):
+            sources[instance_id] = (
+                "configuration"
+                if line.endswith("; config values verified.")
+                else "unknown"
+            )
+        elif any(term in line for term in flash_terms):
             sources[instance_id] = "flash"
         elif any(term in line for term in configuration_terms):
             sources[instance_id] = "configuration"
@@ -383,7 +416,7 @@ def parse_gain_run(
         key=lambda item: item.arrived_at,
     )
     button_index = next(
-        (index for index, item in enumerate(matching) if button_name in item.line), None
+        (index for index, item in enumerate(matching) if _button_text(item.line, button_name) == button_name), None
     )
     if button_index is None:
         raise LogEvidenceError("matching Run Gain button line is missing")
@@ -403,11 +436,14 @@ def parse_gain_run(
     operation_end = len(matching)
     for index, item in enumerate(matching[button_index + 1 :], start=button_index + 1):
         instance = _instance(item.line)
-        if terminal_seen and "3. Run " in item.line and " Gain Cal" in item.line:
-            operation_end = index
-            break
+        if _button_text(item.line, button_name) is not None:
+            if terminal_seen:
+                operation_end = index
+                break
+            raise LogEvidenceError("interleaved button in gain operation window")
         if instance is not None and instance != target_instance_id:
             raise LogEvidenceError("interleaved ATM90E32 instance in operation window")
+        _check_action_rejection(item.line)
         if is_evidence(item) and instance != target_instance_id:
             raise LogEvidenceError("gain evidence is missing the target instance tag")
         if instance == target_instance_id and any(
@@ -534,16 +570,17 @@ def parse_gain_clear(
     empty = "No stored gain calibrations to clear. Current values:"
     verified = "Gain calibrations cleared; config values verified."
     buttons = [
-        index for index, item in enumerate(lines) if _button_text(item.line) == button_name
+        index for index, item in enumerate(lines) if _button_text(item.line, button_name) == button_name
     ]
     if len(buttons) != 1:
         raise LogEvidenceError("gain clear requires one matching button response")
 
     window: list[CalibrationLogLine] = []
     for item in lines[buttons[0] + 1 :]:
-        if _button_text(item.line) is not None:
+        if _button_text(item.line, button_name) is not None:
             break
         if _instance(item.line) == target_instance_id:
+            _check_action_rejection(item.line)
             window.append(item)
     payloads = [_calibration_payload(item.line) or "" for item in window]
     headers = [
@@ -684,10 +721,9 @@ def _parse_offset_operation(
         if power
         else "Offset calibration saved to memory."
     )
-    save_failed = (
-        "Failed to save power offset calibration to memory!"
-        if power
-        else "Failed to save offset calibration to memory!"
+    save_failure_terms = (
+        f"Failed to save {kind} calibration to memory!",
+        f"Failed to save {kind.capitalize()} calibration to memory!",
     )
     completed = (
         "Power offset calibration completed and verified."
@@ -728,7 +764,7 @@ def _parse_offset_operation(
     button_indices = [
         index
         for index, item in enumerate(matching)
-        if _button_text(item.line) == button_name
+        if _button_text(item.line, button_name) == button_name
     ]
     if not button_indices:
         raise LogEvidenceError(f"matching {kind} button line is missing")
@@ -736,7 +772,7 @@ def _parse_offset_operation(
         raise LogEvidenceError(f"matching {kind} button line is duplicate")
     button_index = button_indices[0]
     if any(
-        (found := _button_text(item.line)) is not None and found != button_name
+        (found := _button_text(item.line, button_name)) is not None and found != button_name
         for item in matching
     ):
         raise LogEvidenceError(f"wrong button interleaved with {kind} operation")
@@ -746,7 +782,7 @@ def _parse_offset_operation(
     def is_header(item: CalibrationLogLine) -> bool:
         return title in item.line and "====" in item.line
 
-    evidence_terms = (saved, save_failed, completed, failed, rollback_failed)
+    evidence_terms = (saved, *save_failure_terms, completed, failed, rollback_failed)
 
     def is_evidence(item: CalibrationLogLine) -> bool:
         normalized = re.sub(r"\s+", "", item.line)
@@ -764,6 +800,7 @@ def _parse_offset_operation(
         instance = _instance(item.line)
         if instance is not None and instance != target_instance_id:
             raise LogEvidenceError("interleaved ATM90E32 instance in operation window")
+        _check_action_rejection(item.line)
         category = _offset_log_category(item.line)
         if category is not None and instance != target_instance_id:
             raise LogEvidenceError(
@@ -850,7 +887,7 @@ def _parse_offset_operation(
     save_failures = [
         item
         for item in matching[header_index:]
-        if _calibration_payload(item.line) == save_failed
+        if _calibration_payload(item.line) in save_failure_terms
     ]
     mismatches = [
         item
@@ -951,8 +988,6 @@ def parse_restore(
         "No stored gain calibrations found",
         "Gain calibration is disabled",
         "Gain verification failed!",
-        _GAIN_CONFIG_FALLBACK,
-        _GAIN_CONFIG_FALLBACK_FAILED,
         "Restored offset calibration from memory",
         "Restored power offset calibration from memory",
         "Offset mismatch: using flash values",
@@ -962,13 +997,12 @@ def parse_restore(
         "No stored offset calibrations found",
         "No stored power offset calibrations found",
         "No stored power offsets found",
-        "offset restore failed verification",
-        "Offset calibration restore failed verification",
     )
 
     def is_restore_evidence(item: CalibrationLogLine) -> bool:
         return (
             any(term in item.line for term in restore_terms)
+            or _RESTORE_FAILURE_RE.search(item.line) is not None
             or _RESTORE_ROW_RE.search(item.line) is not None
             or _COMPARE_ROW_RE.search(item.line) is not None
             or _OFFSET_ROW_RE.search(item.line) is not None
@@ -1040,14 +1074,14 @@ def parse_restore(
         gain_expected = "gain" in categories
         if gain_expected and any(
             "Gain verification failed!" in item.line
-            or _GAIN_CONFIG_FALLBACK_FAILED in item.line
+            or (_restore_failed(item.line, "gain") and not item.line.endswith("; config values verified."))
             for item in instance_lines
         ):
             raise LogEvidenceError(f"{instance_id}: gain verification failed")
         if gain_expected and any(
             "No stored gain calibrations found" in item.line
             or "Gain calibration is disabled" in item.line
-            or _GAIN_CONFIG_FALLBACK in item.line
+            or _restore_failed(item.line, "gain")
             for item in instance_lines
         ):
             raise LogEvidenceError(f"{instance_id}: restore fell back to config")
@@ -1173,20 +1207,7 @@ def parse_offset_table_snapshot(
     fallback_terms = (
         _POWER_OFFSET_FALLBACK_TERMS if power else (_OFFSET_FALLBACK_TERM,)
     )
-    failure_terms = (
-        (
-            "Power offset restore failed verification",
-            "Power offset calibration restore failed verification",
-            "Power offset calibration restore and config fallback both failed verification",
-            "Power offset readback failed",
-        )
-        if power
-        else (
-            "Offset calibration restore failed verification",
-            "Offset calibration restore and config fallback both failed verification",
-            "Offset readback failed",
-        )
-    )
+    readback_failure = "Power offset readback failed" if power else "Offset readback failed"
     matching = sorted(
         (
             item
@@ -1212,7 +1233,7 @@ def parse_offset_table_snapshot(
             or columns in normalized
             or verified_term in item.line
             or any(term in item.line for term in fallback_terms)
-            or any(term in item.line for term in failure_terms)
+            or _restore_failed(item.line, kind) or readback_failure in item.line
             # Validate tags on either stage's rows without making them selected
             # stage evidence; the table category still comes from its header.
             or _OFFSET_ROW_RE.search(item.line) is not None
@@ -1248,7 +1269,7 @@ def parse_offset_table_snapshot(
         has_mismatch = any(mismatch_header in item.line for item in instance_lines)
         has_verified = any(verified_term in item.line for item in instance_lines)
         has_failure = any(
-            any(term in item.line for term in failure_terms)
+            _restore_failed(item.line, kind) or readback_failure in item.line
             for item in instance_lines
         )
         has_other_stage_table = any(
@@ -1337,10 +1358,11 @@ def parse_offset_clear(
     names = ("active", "reactive") if power else ("voltage", "current")
     row_pattern = _POWER_OFFSET_ROW_RE if power else _OFFSET_ROW_RE
     terminal = "Power offsets cleared." if power else "Offsets cleared."
-    failed = (
+    failure_terms = (
         "Failed to clear stored power offsets!"
         if power
-        else "Failed to clear stored offsets!"
+        else "Failed to clear stored offsets!",
+        f"Failed to clear {kind.capitalize()} calibrations!",
     )
     other_markers = (
         (
@@ -1368,13 +1390,13 @@ def parse_offset_clear(
     buttons = [
         index
         for index, item in enumerate(matching)
-        if _button_text(item.line) == button_name
+        if _button_text(item.line, button_name) == button_name
     ]
     if len(buttons) != 1:
         raise LogEvidenceError(f"matching {kind} clear button is missing or duplicate")
     button_index = buttons[0]
     if any(
-        (found := _button_text(item.line)) is not None and found != button_name
+        (found := _button_text(item.line, button_name)) is not None and found != button_name
         for item in matching
     ):
         raise LogEvidenceError(f"wrong button interleaved with {kind} clear")
@@ -1397,6 +1419,7 @@ def parse_offset_clear(
         payload = _calibration_payload(item.line) or ""
         if instance is not None and instance != target_instance_id:
             raise LogEvidenceError("interleaved ATM90E32 instance in clear response")
+        _check_action_rejection(item.line)
         if any(marker in payload for marker in other_markers):
             raise LogEvidenceError(
                 "interleaved clear response for another offset stage"
@@ -1410,7 +1433,7 @@ def parse_offset_clear(
             or columns in re.sub(r"\s+", "", item.line)
             or row_pattern.search(item.line) is not None
             or terminal in payload
-            or failed in payload
+            or any(term in payload for term in failure_terms)
         ) and instance != target_instance_id:
             raise LogEvidenceError(
                 f"{kind} clear evidence is missing the target instance tag"
@@ -1448,7 +1471,7 @@ def parse_offset_clear(
     failures = [
         item
         for item in window[branch_index:]
-        if _calibration_payload(item.line) == failed
+        if _calibration_payload(item.line) in failure_terms
     ]
     row_indices = [
         index for index, item in enumerate(window) if row_pattern.search(item.line)
@@ -1535,9 +1558,28 @@ def _offset_log_category(
     return None
 
 
-def _button_text(line: str) -> str | None:
+def _button_text(line: str, expected_name: str) -> str | None:
     match = _BUTTON_RE.search(line)
-    return match.group("button") if match else None
+    if match is None:
+        return None
+    text = match["button"]
+    if text.startswith("[CALIBRATION]"):
+        return None
+    # Current firmware shares its tag with measurements and diagnostics.
+    if match["legacy"] or text == expected_name or _METER_BUTTON_NAME.fullmatch(text):
+        return text
+    return None
+
+
+def _check_action_rejection(line: str) -> None:
+    payload = _calibration_payload(line)
+    if payload in _ACTION_REJECTIONS:
+        raise LogEvidenceError(payload)
+
+
+def _restore_failed(line: str, kind: str) -> bool:
+    match = _RESTORE_FAILURE_RE.search(line)
+    return match is not None and match["kind"].lower() == kind
 
 
 def _signed_16(value: str, context: str) -> int:
@@ -1579,20 +1621,7 @@ def _restore_offset_category(
     fallback_terms = (
         _POWER_OFFSET_FALLBACK_TERMS if power else (_OFFSET_FALLBACK_TERM,)
     )
-    failure_terms = (
-        (
-            "Power offset restore failed verification",
-            "Power offset calibration restore failed verification",
-            "Power offset calibration restore and config fallback both failed verification",
-            "Power offset readback failed",
-        )
-        if power
-        else (
-            "Offset calibration restore failed verification",
-            "Offset calibration restore and config fallback both failed verification",
-            "Offset readback failed",
-        )
-    )
+    readback_failure = "Power offset readback failed" if power else "Offset readback failed"
     disabled = "Power & Voltage/Current offset calibration is disabled"
     payloads = [_calibration_payload(item.line) for item in lines]
     category_observed = any(
@@ -1600,10 +1629,10 @@ def _restore_offset_category(
         or mismatch_header in item.line
         or verified_term in item.line
         or any(term in item.line for term in fallback_terms)
-        or any(term in item.line for term in failure_terms)
+        or _restore_failed(item.line, kind) or readback_failure in item.line
         for item in lines
     )
-    failed = any(any(term in item.line for term in failure_terms) for item in lines)
+    failed = any(_restore_failed(item.line, kind) or readback_failure in item.line for item in lines)
     fell_back = any(
         any(term in item.line for term in fallback_terms) or disabled in item.line
         for item in lines
