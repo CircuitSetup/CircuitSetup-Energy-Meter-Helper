@@ -875,6 +875,33 @@ def test_requests_dump_config_and_reports_current_calibration_sources() -> None:
     asyncio.run(run())
 
 
+def test_source_dump_revokes_an_earlier_report_after_restore_failure() -> None:
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        pending = asyncio.create_task(
+            session.async_calibration_sources({"meter_main1"}, timeout=0.2)
+        )
+        await asyncio.sleep(0)
+        assert client.on_log is not None
+        client.on_log(
+            SimpleNamespace(
+                message="[CALIBRATION][meter_main1] Restoring saved gain calibrations to registers"
+            )
+        )
+        await asyncio.sleep(0.07)
+        client.on_log(
+            SimpleNamespace(
+                message="[CALIBRATION][meter_main1] gain calibration restore and config fallback both failed verification."
+            )
+        )
+        assert await pending == {"meter_main1": "unknown"}
+        await session.async_shutdown()
+
+    asyncio.run(run())
+
+
 def test_missing_saved_gain_evidence_remains_unknown_for_workflow_reconciliation() -> (
     None
 ):
@@ -1718,6 +1745,45 @@ def test_meter_communication_checks_fresh_complete_dump_despite_log_eviction(
             await pending
         assert client.dump_configs[-1] is None
         assert len(session.log_lines) <= 2
+        await session.async_shutdown()
+
+    asyncio.run(run())
+
+
+def test_meter_communication_checks_current_esphome_trailing_component_failure() -> (
+    None
+):
+    async def run() -> None:
+        client = FakeClient()
+        session = make_session([client])
+        await session.async_connect()
+        pending = asyncio.create_task(
+            session.async_check_meter_communication(
+                1, expected_cs_pins={5}, timeout=0.25
+            )
+        )
+        await asyncio.sleep(0)
+        assert client.on_log is not None
+        client.on_log(
+            SimpleNamespace(
+                message=(
+                    "[C][:402]: ATM90E32:\n[C][atm90e32:403]:   CS Pin: GPIO5\n"
+                    "[C][atm90e32:366]:   Update Interval: 5.0s"
+                )
+            )
+        )
+        # The API can deliver the component's final status in a later packet.
+        await asyncio.sleep(0.07)
+        client.on_log(
+            SimpleNamespace(
+                message=(
+                    "[E][component:143]:   atm90e32.sensor is marked FAILED: Communication failed"
+                )
+            )
+        )
+        with pytest.raises(MeterCommunicationError) as caught:
+            await pending
+        assert caught.value.cs_pins == (5,)
         await session.async_shutdown()
 
     asyncio.run(run())

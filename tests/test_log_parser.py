@@ -74,6 +74,31 @@ def test_meter_communication_does_not_reuse_a_pin_from_an_incomplete_block() -> 
     assert parser.checked_cs_pins == {5}
 
 
+def test_core_failure_belongs_to_the_dump_that_just_finished() -> None:
+    from custom_components.circuitsetup_energy_meter_helper.log_parser import (
+        MeterCommunicationParser,
+    )
+
+    parser = MeterCommunicationParser()
+    for pin in (5, 16):
+        parser.feed("[C][:402]: ATM90E32:")
+        parser.feed(f"[C][atm90e32:403]:   CS Pin: GPIO{pin}")
+        parser.feed("[C][atm90e32:366]:   Update Interval: 5.0s")
+    parser.feed(
+        "[E][component:143]:   atm90e32.sensor is marked FAILED: Communication failed"
+    )
+    assert parser.failed_cs_pins == {16}
+    assert parser.finished_cs_pins == {5}
+    parser.feed("[C][wifi:123]: WiFi:")
+    parser.feed("[E][component:143]:   wifi is marked FAILED: Communication failed")
+    assert not parser.unattributed_failure
+    assert parser.finished_cs_pins == {5, 16}
+    parser.feed(
+        "[E][component:143]:   atm90e32.sensor is marked FAILED: Communication failed"
+    )
+    assert parser.unattributed_failure
+
+
 @pytest.mark.parametrize("stage,kind", ((1, "offset"), (2, "power offset")))
 def test_detects_saved_offsets_separately_from_gain_and_other_stage(
     stage: int, kind: str
@@ -135,6 +160,21 @@ def test_detects_verified_gain_config_fallback_as_configuration() -> None:
     )
 
     assert sources == {"meter_main1": "configuration"}
+
+
+@pytest.mark.parametrize(
+    ("stage", "kind"), ((None, "gain"), (1, "offset"), (2, "power offset"))
+)
+def test_restore_failure_updates_reported_source(stage, kind) -> None:
+    prefix = f"[CALIBRATION][meter_main1] {kind} calibration restore "
+    fallback = prefix + "failed verification; config values verified."
+    failed = prefix + "and config fallback both failed verification."
+    assert parse_calibration_sources(
+        [fallback], {"meter_main1"}, offset_stage=stage
+    ) == {"meter_main1": "configuration"}
+    assert parse_calibration_sources(
+        [fallback, failed], {"meter_main1"}, offset_stage=stage
+    ) == {"meter_main1": "unknown"}
 
 
 def test_parses_exact_producer_configuration_selection_for_each_chip() -> None:
@@ -671,23 +711,25 @@ def test_offset_snapshot_rejects_ambiguous_tags_only_on_signed_comparison_rows(
         ),
     ),
 )
+@pytest.mark.parametrize("tag", ("atm90e32.button", "atm90e32"))
 def test_offset_runs_distinguish_button_guidance_from_another_press(
     fixture: str,
     parser: Callable[..., OffsetRunEvidence | PowerOffsetRunEvidence],
     button: str,
     guidance: str,
+    tag: str,
 ) -> None:
     lines = log_lines(fixture)
-    lines[0] = CalibrationLogLine(3, 8, 11.0, f"[I][atm90e32.button:037]: {button}")
+    lines[0] = CalibrationLogLine(3, 8, 11.0, f"[I][{tag}:037]: {button}")
     lines[1:1] = [
         CalibrationLogLine(
             3,
             8,
             11.1,
-            "[I][atm90e32.button:038]: [CALIBRATION] **NOTE: CTs and ACVs must be 0 during this process. USB power only**",
+            f"[I][{tag}:038]: [CALIBRATION] **NOTE: CTs and ACVs must be 0 during this process. USB power only**",
         ),
         CalibrationLogLine(
-            3, 8, 11.2, f"[I][atm90e32.button:039]: [CALIBRATION] {guidance}"
+            3, 8, 11.2, f"[I][{tag}:039]: [CALIBRATION] {guidance}"
         ),
     ]
     arguments = {
@@ -704,11 +746,51 @@ def test_offset_runs_distinguish_button_guidance_from_another_press(
     lines.insert(
         3,
         CalibrationLogLine(
-            3, 8, 11.3, "[I][atm90e32.button:051]: z1. Clear Main Meter 2 Offset Cal"
+            3, 8, 11.3, f"[I][{tag}:051]: z1. Clear Main Meter 2 Offset Cal"
         ),
     )
     with pytest.raises(LogEvidenceError, match="wrong button"):
         parser(lines, **arguments)
+
+
+@pytest.mark.parametrize(
+    ("fixture", "parser", "button"),
+    (
+        ("gain_success.log", parse_gain_run, "3. Run Main Meter 1 Gain Cal"),
+        ("offset_success.log", parse_offset_run, "1. Run Main Meter 1 Offset Cal"),
+        (
+            "power_offset_success.log",
+            parse_power_offset_run,
+            "2. Run Main Meter 1 Power Offset Cal",
+        ),
+    ),
+)
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "Calibration in progress; try again shortly",
+        "Component failed; calibration action unavailable",
+    ),
+)
+def test_rejected_button_cannot_claim_another_operations_results(
+    fixture, parser, button, reason
+):
+    lines = log_lines(fixture)
+    lines.insert(
+        1,
+        CalibrationLogLine(
+            3, 8, 11.1, f"[W][atm90e32] [CALIBRATION][meter_main1] {reason}"
+        ),
+    )
+    with pytest.raises(LogEvidenceError, match=reason):
+        parser(
+            lines,
+            connection_generation=3,
+            operation_sequence=8,
+            target_instance_id="meter_main1",
+            button_name=button,
+            dispatched_after=10.0,
+        )
 
 
 def test_parses_combined_offset_save_and_verification_terminals() -> None:
@@ -795,6 +877,7 @@ def test_stock_offset_save_is_not_claimed_as_register_verification(
     (
         "Offset calibration completed and verified. unexpected",
         "Failed to save offset calibration to memory!",
+        "Failed to save Offset calibration to memory!",
         "Offset calibration failed; rollback readback verification failed.",
         "SPI read mismatch: expected 0x55AA, got 0x0000",
     ),
@@ -1727,6 +1810,11 @@ def test_offset_snapshot_rejects_duplicate_tags_and_unassignable_readback_failur
     ("stage", "failure"),
     (
         (1, "Offset calibration restore and config fallback both failed verification."),
+        (1, "offset calibration restore failed verification; config values verified."),
+        (
+            2,
+            "power offset calibration restore and config fallback both failed verification.",
+        ),
         (
             2,
             "Power offset calibration restore failed verification; config values verified.",
@@ -1817,6 +1905,8 @@ def test_offset_clear_parser_is_stage_isolated_and_marks_no_stored_as_noop() -> 
     "diagnostic",
     (
         "Failed to clear stored offsets!",
+        "Failed to clear Offset calibrations!",
+        "Calibration in progress; try again shortly",
         "Failed to save offset calibration to memory!",
         "Offset readback failed for Phase A: expected 0x0000, got 0x0001",
         "Offset calibration failed; rollback readback verification failed.",
@@ -1980,6 +2070,14 @@ def test_restore_rejects_failure_or_missing_instance() -> None:
         ),
         (
             "Gain calibration restore failed; config readback verification failed.",
+            "verification failed",
+        ),
+        (
+            "gain calibration restore failed verification; config values verified.",
+            "fell back to config",
+        ),
+        (
+            "gain calibration restore and config fallback both failed verification.",
             "verification failed",
         ),
     ),

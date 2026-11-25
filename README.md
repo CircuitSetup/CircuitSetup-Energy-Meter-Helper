@@ -68,6 +68,8 @@ persistence, or **Save to ESPHome and install** to persist it in the configurati
 Installing firmware can replace flash-only calibration values, so review the
 summary before installing. The Helper completes a gain handoff only when
 firmware can confirm that flash was cleared and the configured gains are active.
+ESPHome's updated ATM90E32 component reports that confirmation and can verify both
+saved offset tables when the Helper reconnects. [ESPHome PR #22281](https://github.com/esphome/esphome/pull/22281)
 
 Current native offset preparation does not create a configuration transaction.
 Historical preparation can require a private backup and a reviewed zero-offset
